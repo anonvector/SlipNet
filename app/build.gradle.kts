@@ -2,6 +2,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.net.URL
 import java.io.FileOutputStream
 import java.util.zip.ZipInputStream
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -24,6 +25,13 @@ fun abiFromTarget(target: String): String = when {
     target.startsWith("i686") -> "x86"
     target.startsWith("x86_64") -> "x86_64"
     else -> target
+}
+
+// Signing configuration
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(keystorePropertiesFile.inputStream())
 }
 
 // OpenSSL configuration
@@ -51,6 +59,17 @@ android {
         targetCompatibility = javaVersion
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+            }
+        }
+    }
+
     defaultConfig {
         applicationId = "app.slipnet"
         minSdk = minSdkVersion
@@ -73,6 +92,7 @@ android {
             isShrinkResources = true
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
