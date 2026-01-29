@@ -1,0 +1,30 @@
+[package]
+name = "slipstream-server"
+version = "0.1.0"
+edition = "2021"
+description = "Slipstream DNS tunnel server CLI"
+license = "Apache-2.0"
+repository = "https://github.com/Mygod/slipstream-rust"
+readme = "../../README.md"
+
+[dependencies]
+clap = { workspace = true }
+slipstream-core = { path = "../slipstream-core" }
+slipstream-dns = { path = "../slipstream-dns" }
+slipstream-ffi = { path = "../slipstream-ffi" }
+libc = "0.2"
+openssl = "0.10"
+socket2 = "0.6"
+tokio = { version = "1.37", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+time = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[features]
+default = []
+openssl-vendored = ["slipstream-ffi/openssl-vendored", "openssl/vendored"]
+openssl-static = ["slipstream-ffi/openssl-static", "openssl/vendored"]
+picoquic-minimal-build = ["slipstream-ffi/picoquic-minimal-build"]
+
+[dev-dependencies]
+slipstream-core = { path = "../slipstream-core", features = ["invariant-panic", "test-support"] }

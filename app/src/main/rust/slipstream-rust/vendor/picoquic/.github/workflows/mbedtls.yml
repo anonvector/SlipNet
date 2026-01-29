@@ -1,0 +1,66 @@
+---
+name: "MbedTLS-test"
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  mbedtls:
+    name: MbedTLS-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          # We must fetch at least the immediate parents so that if this is
+          # a pull request then we can checkout the head.
+          fetch-depth: 2
+          submodules: 'recursive'
+
+      - name: Installing MbedTLS
+        run: |
+             pwd
+             cd ..
+             git clone --single-branch --branch master https://github.com/Mbed-TLS/mbedtls
+             cd mbedtls
+             echo "cloned mbedtls, branch=master"
+             git submodule init
+             git submodule update
+             mkdir build
+             cd build
+             cmake -S .. .
+             echo "cmake done"
+             make
+             echo "compiled MbedTLS"
+             pwd
+             cd ../../picoquic
+
+      - name: Building picoquic
+        run: |
+          sudo apt-get install clangd
+          sudo apt-get install -y libssl-dev
+          echo $CC
+          echo $CXX
+          # $CC --version
+          ./ci/build_picotls.sh
+          cmake -S . -B build "-DWITH_OPENSSL=OFF" "-DWITH_MBEDTLS=ON"
+          echo ls  /home/runner/work/picoquic/mbedtls/include
+          ls /home/runner/work/picoquic/mbedtls/include
+          cmake --build build
+
+      - name: Perform Unit Tests
+        run: |
+            ulimit -c unlimited -S
+            cd build
+            make picoquic_ct
+            ./picoquic_ct -S .. mbedtls_crypto mbedtls_load_key mbedtls_load_key_fail \
+                          mbedtls_retrieve_pubkey mbedtls_sign_verify \
+                          minicrypto_is_last mbedtls && QUICRESULT=$?
+            if [[ ${QUICRESULT} == 0 ]]; then exit 0; fi;
+            exit 1

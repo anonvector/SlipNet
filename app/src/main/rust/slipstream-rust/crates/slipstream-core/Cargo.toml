@@ -1,0 +1,16 @@
+[package]
+name = "slipstream-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core utilities for Slipstream"
+license = "Apache-2.0"
+repository = "https://github.com/Mygod/slipstream-rust"
+readme = "../../README.md"
+
+[dependencies]
+libc = "0.2"
+
+[features]
+default = []
+invariant-panic = []
+test-support = []

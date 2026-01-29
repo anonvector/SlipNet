@@ -1,0 +1,49 @@
+---
+name: "CITestsNoFusion"
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  citests:
+    name: CI-Tests-No-Fusion
+    runs-on: ubuntu-latest
+    env:
+        PTLS_CMAKE_OPTS: -DWITH_FUSION=OFF
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          # We must fetch at least the immediate parents so that if this is
+          # a pull request then we can checkout the head.
+          fetch-depth: 2
+          submodules: 'recursive'
+
+      - name: Building picoquic
+        run: |
+          sudo apt-get install -y libssl-dev
+          ./ci/build_picotls.sh
+          cmake -S . -B build "-DCMAKE_C_FLAGS=-g" "-DCMAKE_CXX_FLAGS=-g"
+          cmake --build build
+
+      - name: Perform Unit Tests
+        run: |
+            ulimit -c unlimited -S
+            cd build
+            ./picoquic_ct -S .. -n -r && QUICRESULT=$?
+            ./picohttp_ct -S .. -n -r -x http_corrupt && HTTPRESULT=$?
+            if [[ ${QUICRESULT} == 0 ]] && [[ ${HTTPRESULT} == 0 ]]; then exit 0; fi;
+            exit 1
+            
+      #TODO: reset the test once openssl issue is understood.
+      # - name: Run Valgrind
+      #   run: |
+      #      sudo apt-get update
+      #      sudo apt-get install -y valgrind
+      #      valgrind -v --error-exitcode=1  --track-origins=yes build/picoquic_ct zero_rtt_many_losses

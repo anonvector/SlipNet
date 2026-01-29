@@ -1,0 +1,48 @@
+---
+name: "CITestsNoOpenSSL"
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  citests:
+    name: CI-Tests-No-OpenSSL
+    runs-on: ubuntu-latest
+    env:
+        CC: clang
+        CXX: clang++
+        PTLS_CMAKE_OPTS: -DWITH_FUSION=OFF
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          # We must fetch at least the immediate parents so that if this is
+          # a pull request then we can checkout the head.
+          fetch-depth: 2
+          submodules: 'recursive'
+
+      - name: Building picoquic
+        run: |
+          sudo apt-get install clangd
+          sudo apt-get install -y libssl-dev
+          echo $CC
+          echo $CXX
+          # $CC --version
+          ./ci/build_picotls.sh
+          cmake -S . -B build "-DWITH_OPENSSL=OFF"
+          cmake --build build
+
+      - name: Perform Unit Tests
+        run: |
+            ulimit -c unlimited -S
+            cd build
+            make picoquic_ct
+            ./picoquic_ct -S .. minicrypto_is_last minicrypto && QUICRESULT=$?
+            if [[ ${QUICRESULT} == 0 ]]; then exit 0; fi;
+            exit 1

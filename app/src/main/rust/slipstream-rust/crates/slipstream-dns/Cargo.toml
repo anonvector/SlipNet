@@ -1,0 +1,16 @@
+[package]
+name = "slipstream-dns"
+version = "0.1.0"
+edition = "2021"
+description = "DNS codec for Slipstream's QUIC-over-DNS tunnel"
+license = "Apache-2.0"
+repository = "https://github.com/Mygod/slipstream-rust"
+readme = "../../README.md"
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

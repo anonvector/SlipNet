@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SLIPSTREAM_DIR="${SLIPSTREAM_DIR:-"${ROOT_DIR}/../slipstream"}"
+BUILD_DIR="${ROOT_DIR}/.interop/slipstream-build"
+CERT_DIR="${CERT_DIR:-"${ROOT_DIR}/fixtures/certs"}"
+RUN_DIR="${ROOT_DIR}/.interop/run-$(date +%Y%m%d_%H%M%S)"
+
+DNS_LISTEN_PORT="${DNS_LISTEN_PORT:-8853}"
+PROXY_PORT="${PROXY_PORT:-5300}"
+TCP_TARGET_PORT="${TCP_TARGET_PORT:-5201}"
+CLIENT_TCP_PORT="${CLIENT_TCP_PORT:-7000}"
+DOMAIN="${DOMAIN:-test.com}"
+
+if [[ ! -d "${SLIPSTREAM_DIR}" ]]; then
+  echo "Slipstream repo not found at ${SLIPSTREAM_DIR}. Set SLIPSTREAM_DIR to override." >&2
+  exit 1
+fi
+if [[ ! -f "${CERT_DIR}/cert.pem" || ! -f "${CERT_DIR}/key.pem" ]]; then
+  echo "Missing test certs in ${CERT_DIR}. Set CERT_DIR to override." >&2
+  exit 1
+fi
+
+mkdir -p "${RUN_DIR}" "${ROOT_DIR}/.interop"
+
+cleanup() {
+  for pid in "${CLIENT_PID:-}" "${PROXY_PID:-}" "${SERVER_PID:-}" "${ECHO_PID:-}"; do
+    if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+      kill "${pid}" 2>/dev/null || true
+      wait "${pid}" 2>/dev/null || true
+    fi
+  done
+}
+trap cleanup EXIT INT TERM HUP
+
+if [[ ! -d "${BUILD_DIR}" ]]; then
+  meson setup "${BUILD_DIR}" "${SLIPSTREAM_DIR}"
+fi
+
+picotls_libs=(
+  "${BUILD_DIR}/subprojects/picoquic/libpicotls_core.a"
+  "${BUILD_DIR}/subprojects/picoquic/libpicotls_openssl.a"
+  "${BUILD_DIR}/subprojects/picoquic/libpicotls_minicrypto.a"
+  "${BUILD_DIR}/subprojects/picoquic/libpicotls_fusion.a"
+)
+picotls_link_args=$(printf '"%s",' "${picotls_libs[@]}")
+picotls_link_args="[${picotls_link_args%,}]"
+meson configure "${BUILD_DIR}" \
+  -Dc_link_args="${picotls_link_args}" \
+  -Dcpp_link_args="${picotls_link_args}"
+
+meson compile -C "${BUILD_DIR}"
+
+SERVER_BIN="${BUILD_DIR}/slipstream-server"
+CLIENT_BIN="${BUILD_DIR}/slipstream-client"
+
+if [[ ! -x "${SERVER_BIN}" || ! -x "${CLIENT_BIN}" ]]; then
+  echo "Missing slipstream binaries in ${BUILD_DIR}." >&2
+  exit 1
+fi
+
+python3 "${ROOT_DIR}/scripts/interop/tcp_echo.py" \
+  --listen "127.0.0.1:${TCP_TARGET_PORT}" \
+  --log "${RUN_DIR}/tcp_echo.jsonl" \
+  >"${RUN_DIR}/tcp_echo.log" 2>&1 &
+ECHO_PID=$!
+
+"${SERVER_BIN}" \
+  --dns-listen-port "${DNS_LISTEN_PORT}" \
+  --target-address "127.0.0.1:${TCP_TARGET_PORT}" \
+  --domain "${DOMAIN}" \
+  --cert "${CERT_DIR}/cert.pem" \
+  --key "${CERT_DIR}/key.pem" \
+  >"${RUN_DIR}/server.log" 2>&1 &
+SERVER_PID=$!
+
+python3 "${ROOT_DIR}/scripts/interop/udp_capture_proxy.py" \
+  --listen "127.0.0.1:${PROXY_PORT}" \
+  --upstream "127.0.0.1:${DNS_LISTEN_PORT}" \
+  --log "${RUN_DIR}/dns_capture.jsonl" \
+  >"${RUN_DIR}/udp_proxy.log" 2>&1 &
+PROXY_PID=$!
+
+"${CLIENT_BIN}" \
+  --tcp-listen-port "${CLIENT_TCP_PORT}" \
+  --resolver "127.0.0.1:${PROXY_PORT}" \
+  --domain "${DOMAIN}" \
+  >"${RUN_DIR}/client.log" 2>&1 &
+CLIENT_PID=$!
+
+sleep 3
+
+if ! CLIENT_TCP_PORT="${CLIENT_TCP_PORT}" python3 - <<'PY'
+import os
+import socket
+import sys
+import time
+
+host = "127.0.0.1"
+port = int(os.environ["CLIENT_TCP_PORT"])
+payload = b"slipstream-stage-a\n"
+
+for _ in range(10):
+    try:
+        with socket.create_connection((host, port), timeout=2) as sock:
+            sock.sendall(payload)
+            sock.shutdown(socket.SHUT_WR)
+            sock.settimeout(2)
+            try:
+                sock.recv(1024)
+            except socket.timeout:
+                pass
+        sys.exit(0)
+    except OSError:
+        time.sleep(1)
+
+sys.exit(1)
+PY
+then
+  echo "Probe failed: client/server did not exchange data" >&2
+  exit 1
+fi
+
+sleep 2
+
+printf "Run artifacts in %s\n" "${RUN_DIR}"

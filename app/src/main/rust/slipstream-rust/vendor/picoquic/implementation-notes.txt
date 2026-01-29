@@ -1,0 +1,70 @@
+Designing the QUIC processor:
+
+Client-Starting:
+- on start connection:
+	- Send a first handshake message in Client Initial packet.
+        - Move to Client-Handshake-Start
+
+Server-IDLE:
+- if received Client Initial:
+	- Check the version number.
+		If incorrect, send version negotiation, move back to Server Idle. No context created.
+	- If correct but client is not verified, may send Stateless Retry.
+	- If correct, commit to version, proceed with handshake. Context is created there.
+		Send handshake message as Server Clear Text.
+		Depending on status of negotiation, move to Server-Handshake progress or 
+		Server Ready.
+		If server ready, get 1-RTT keys.
+	
+
+Client-Handshake-Start:
+- if receive Version Negotiation:
+	- Find an adequate version number.
+	- If none exists, fail.
+	- If OK, commit to that. Repeat the handshake packet as Client Initial, with correct version and 
+	  incremented packet number. Remain in Client-Handshake-Start.
+
+- if receive Stateless Retry:
+	- Verify that PN & CN are echoes of Initial Message.
+	- Treat it as handshake message (carries Hello Retry).
+	- Extract Address Token if any, and include them in the handshake (how?).
+        - Send new handshake packet as Client Initial. Increment PN, etc.
+        - Remain in Client-Handshake-Start.
+
+Client Handshake Start or Client Handshake progress:
+- if receive Server Clear text:
+	- Note CN as server CN associated with connection. (should remain consistent.)
+	- Treat as handshake message.
+	- (Start using this for all new messages. Really? What if the handshake is an error? How do
+		we detect that there is spoofing in progress?)
+	- Send Handshake Reply as Client Clear text.
+	- If handshake complete:
+		Move to Client-Handshake-Complete.
+		Obtain 1-RTT key.
+		Packets will now be sent encrypted.
+		STREAM0 frame copied in multiple packets for reliability (until ack).
+- On timer: repeat last message.
+
+Server-Handshake-Progress:
+	Expect Client Clear text.
+	Based on negotiation state, move to Server-Handshake progress or Server Ready.
+	Handshake response if any goes to Server Clear Text.
+		If server ready, get 1-RTT keys.
+
+
+
+====
+Frame processing:
+- If restricted state (clear text), only accept STREAM0, ACK, PAD.
+- In 0-RTT, accept STREAM-N. Stream 0 does not make sense. ACK does not make sense.
+- Established state, accept anything. (Including Stateless Reset).
+====
+Close the connection:
+- Send CONNECTION CLOSE Frame.
+	
+
+
+
+
+
+

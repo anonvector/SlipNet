@@ -1,0 +1,78 @@
+dist: bionic
+os: linux
+language: c
+
+addons:
+  apt:
+    sources:
+    - ubuntu-toolchain-r-test
+    packages:
+    - cmake
+    - cmake-data
+    - libssl-dev
+    - gdb
+jobs:
+    include:
+        - name: Linux (gcc-8)
+          os: linux
+          dist: bionic
+          addons:
+            apt:
+                sources:
+                   - ubuntu-toolchain-r-test
+                packages:
+                   - g++-8
+          env:
+              - CC=gcc-8
+              - CXX=g++-8
+              - EXTRA_LDFLAGS="-fuse-ld=gold"
+        - name: Linux (clang)
+          os: linux
+          dist: bionic
+          env:
+              - CC=clang
+              - CXX=clang++
+        - name: Linux (scan-build)
+          os: linux
+          dist: bionic
+          env:
+              - CC=/usr/local/clang/libexec/ccc-analyzer
+              - CXX=/usr/local/clang/libexec/c++-analyzer
+              - EXTRA="scan-build"
+        - name: Linux (cppcheck)
+          os: linux
+          dist: bionic
+          env:
+              - CHECK="cppcheck"
+        - name: macOS (xcode)
+          os: osx
+          env:
+              - CMAKE_OPTS=" -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl/"
+        - name: macOS (xcode 10.1/clang-10)
+          os: osx
+          osx_image: xcode10.1
+          env:
+              - CMAKE_OPTS=" -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl/"
+before_install:
+  - cmake --version
+before_script:
+  # First build external lib
+  - if [ "$TRAVIS_OSX_IMAGE" == "xcode10.1" ]; then brew reinstall openssl; fi
+  - ./ci/build_picotls.sh
+  - if [ "$CHECK" == "cppcheck" ]; then ./ci/build_cppcheck.sh; fi
+  - if [ "$TRAVIS_OS_NAME" == "linux" ]; then sudo sh -c 'echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6'; fi
+script:
+  # Now build picoquic examples and run test
+  - echo $CC
+  - echo $CXX
+  - $CC --version
+  - ${EXTRA} cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ${CMAKE_OPTS} .
+  - if [ "$CHECK" == "cppcheck" ]; then cppcheck --project=compile_commands.json --quiet; fi
+  - ${EXTRA} make
+  - ulimit -c unlimited -S
+  - ./picoquic_ct -n -r && QUICRESULT=$?
+  - ./picohttp_ct -n -r -x http_corrupt && HTTPRESULT=$?
+  - if [[ ${QUICRESULT} != 0 ]]; then for i in $(find ./ -maxdepth 1 -name 'core*' -print); do gdb $(pwd)/picoquic_ct core* -ex "thread apply all bt" -ex "set pagination 0" -batch; done; fi;
+  - if [[ ${HTTPRESULT} != 0 ]]; then for i in $(find ./ -maxdepth 1 -name 'core*' -print); do gdb $(pwd)/picohttp_ct core* -ex "thread apply all bt" -ex "set pagination 0" -batch; done; fi;
+  - if [[ ${QUICRESULT} == 0 ]] && [[ ${HTTPRESULT} == 0 ]]; then exit 0; fi;
+  - exit 1

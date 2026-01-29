@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="picohttp_t.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\picoquicfirst\getopt.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{5c6ba6ea-dfe2-4e12-88de-467b2a884ebd}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

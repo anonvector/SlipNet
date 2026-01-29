@@ -1,0 +1,80 @@
+0102030405060708:     Extension list (54 bytes):
+0102030405060708:         Extension type: 5 (max_stream_data_bidi_local), length 4, 8000ffff
+0102030405060708:         Extension type: 4 (initial_max_data), length 4, 80400000
+0102030405060708:         Extension type: 8 (max_streams_bidi), length 4, 80004000
+0102030405060708:         Extension type: 1 (idle_timeout), length 1, 1e
+0102030405060708:         Extension type: 3 (max_packet_size), length 2, 45c8
+0102030405060708:         Extension type: 9 (max_streams_uni), length 4, 80004000
+0102030405060708:         Extension type: 14 (active_connection_id_limit), length 1, 08
+0102030405060708:         Extension type: 15 (hcid), length 8, 0203040506070809
+0102030405060708:         Extension type: 2676072822 (address_discovery), length 1, 02
+
+0102030405060708:     Extension list (50 bytes):
+0102030405060708:         Extension type: 5 (max_stream_data_bidi_local), length 4, 81000000
+0102030405060708:         Extension type: 4 (initial_max_data), length 4, 81000000
+0102030405060708:         Extension type: 8 (max_streams_bidi), length 1, 01
+0102030405060708:         Extension type: 1 (idle_timeout), length 2, 40ff
+0102030405060708:         Extension type: 3 (max_packet_size), length 2, 45c8
+0102030405060708:         Extension type: 15 (hcid), length 8, 0203040506070809
+0102030405060708:         Extension type: 32 (max_datagram_frame_size), length 2, 45c8
+0102030405060708:         Extension type: 4183 (enable_loss_bit), length 1, 01
+0102030405060708:         Extension type: 29016 (enable_time_stamp), length 1, 03
+0102030405060708:         Extension type: 10930 (grease_quic_bit), length 0
+
+0102030405060708:     Extension list (46 bytes):
+0102030405060708:         Extension type: 5 (max_stream_data_bidi_local), length 4, 81000000
+0102030405060708:         Extension type: 4 (initial_max_data), length 4, 81000000
+0102030405060708:         Extension type: 8 (max_streams_bidi), length 1, 01
+0102030405060708:         Extension type: 1 (idle_timeout), length 2, 40ff
+0102030405060708:         Extension type: 15 (hcid), length 8, 0203040506070809
+0102030405060708:         Extension type: 4278509083 (min_ack_delay), length 2, 43e8
+0102030405060708:         Extension type: 29016 (enable_time_stamp), length 1, 03
+
+0102030405060708:     Extension list (63 bytes):
+0102030405060708:         Extension type: 5 (max_stream_data_bidi_local), length 4, 8000ffff
+0102030405060708:         Extension type: 4 (initial_max_data), length 4, 80400000
+0102030405060708:         Extension type: 8 (max_streams_bidi), length 4, 80004000
+0102030405060708:         Extension type: 1 (idle_timeout), length 1, 1e
+0102030405060708:         Extension type: 3 (max_packet_size), length 2, 45c8
+0102030405060708:         Extension type: 15 (hcid), length 8, 0203040506070809
+0102030405060708:         Extension type: 0 (ocid), length 8, 0102030405060708
+0102030405060708:         Extension type: 2 (stateless_reset_token), length 16, 0102030405060708090a0b0c0d0e0f10
+
+0102030405060708:     Extension list (61 bytes):
+0102030405060708:         Extension type: 5 (max_stream_data_bidi_local), length 4, 81000000
+0102030405060708:         Extension type: 4 (initial_max_data), length 4, 81000000
+0102030405060708:         Extension type: 8 (max_streams_bidi), length 1, 02
+0102030405060708:         Extension type: 1 (idle_timeout), length 2, 40ff
+0102030405060708:         Extension type: 3 (max_packet_size), length 2, 45c8
+0102030405060708:         Extension type: 15 (hcid), length 8, 0203040506070809
+0102030405060708:         Extension type: 0 (ocid), length 8, 0102030405060708
+0102030405060708:         Extension type: 2 (stateless_reset_token), length 16, 0102030405060708090a0b0c0d0e0f10
+
+0102030405060708:     Extension list (43 bytes):
+0102030405060708:         Extension type: 5 (max_stream_data_bidi_local), length 4, 80010000
+0102030405060708:         Extension type: 4 (initial_max_data), length 8, c0000000ffffffff
+0102030405060708:         Extension type: 1 (idle_timeout), length 1, 1e
+0102030405060708:         Extension type: 3 (max_packet_size), length 2, 45c8
+0102030405060708:         Extension type: 15 (hcid), length 8, 0203040506070809
+0102030405060708:         Extension type: 1113404765106498833 (initial_max_path_id), length 1, 04
+
+0102030405060708:     Extension list (36 bytes):
+0102030405060708:         Extension type: 1 (idle_timeout), length 2, 400a
+0102030405060708:         Extension type: 8 (max_streams_bidi), length 1, 02
+0102030405060708:         Extension type: 5 (max_stream_data_bidi_local), length 4, 80002000
+0102030405060708:         Extension type: 4 (initial_max_data), length 4, 80004000
+0102030405060708:         Extension type: 3 (max_packet_size), length 2, 45c0
+0102030405060708:         Extension type: 10 (ack_delay_exponent), length 1, 11
+0102030405060708:         Extension type: 15 (hcid), length 8, 0203040506070809
+
+0102030405060708:     Extension list (108 bytes):
+0102030405060708:         Extension type: 5 (max_stream_data_bidi_local), length 4, 81000000
+0102030405060708:         Extension type: 4 (initial_max_data), length 4, 81000000
+0102030405060708:         Extension type: 8 (max_streams_bidi), length 1, 02
+0102030405060708:         Extension type: 1 (idle_timeout), length 2, 40ff
+0102030405060708:         Extension type: 3 (max_packet_size), length 2, 45c8
+0102030405060708:         Extension type: 15 (hcid), length 8, 0203040506070809
+0102030405060708:         Extension type: 0 (ocid), length 8, 0102030405060708
+0102030405060708:         Extension type: 2 (stateless_reset_token), length 16, 0102030405060708090a0b0c0d0e0f10
+0102030405060708:         Extension type: 13 (server_preferred_address), length 45, 0a000001115100000000000000000000000000000000000004010203040102030405060708090a0b0c0d0e0f10
+

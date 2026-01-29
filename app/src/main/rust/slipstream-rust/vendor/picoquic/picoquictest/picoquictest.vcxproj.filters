@@ -1,0 +1,198 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="ReadMe.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="hashtest.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="parseheadertest.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="pn2pn64test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="intformattest.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sacktest.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="tls_api_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="transport_param_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="stream0_frame_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cnx_creation_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ack_of_ack_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cleartext_aead_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="skip_frame_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="socket_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ticket_store_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="stresstest.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="splay_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="h3zerotest.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="util_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="bytestream_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="multipath_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cplusplus.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cnxstress.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="netperf_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="config_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cert_verify_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="picoquic_lb_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="satellite_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="datagram_tests.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="high_latency_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="edge_cases.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="l4s_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="mediatest.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="warptest.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="code_version_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="delay_tolerant_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="webtransport_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="code_version_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="delay_tolerant_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="webtransport_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="h3zero_uri_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="wifitest.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="quic_tester.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cpu_limited.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="minicrypto_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="app_limited.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="mbedtls_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sockloop_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="h3zero_stream_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="openssl_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="pacing_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="p2p_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ack_frequency_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="quicperf_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="getter_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="spinbit_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="congestion_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="picoquictest.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picoquictest_internal.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

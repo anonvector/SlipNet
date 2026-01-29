@@ -1,0 +1,59 @@
+/*
+* Author: Christian Huitema
+* Copyright (c) 2019, Private Octopus, Inc.
+* All rights reserved.
+*
+* Permission to use, copy, modify, and distribute this software for any
+* purpose with or without fee is hereby granted, provided that the above
+* copyright notice and this permission notice appear in all copies.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+* ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+* WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+* DISCLAIMED. IN NO EVENT SHALL Private Octopus, Inc. BE LIABLE FOR ANY
+* DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+* (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+* LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+* ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+* (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+* SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <inttypes.h>
+
+#include "picoquic_internal.h"
+#include "bytestream.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct svg_context_st {
+
+    FILE * f_txtlog;      /*!< The file handle of the opened output file. */
+    FILE * f_template;    /*!< The file handle of the opened template file. */
+
+    const char * cid_name; /*!< Name of the connection, default = initial connection id */
+
+    uint64_t start_time;  /*!< Timestamp is very first log event reported. */
+    int packet_count;
+    int frame_count;
+
+    int state;
+} svg_context_t;
+
+int svg_pdu(uint64_t time, int rxtx, void * ptr);
+int svg_connection_start(uint64_t time, const picoquic_connection_id_t * cid, int client_mode,
+    uint32_t proposed_version, const picoquic_connection_id_t * remote_cnxid, void * ptr);
+int svg_connection_end(uint64_t time, void * ptr);
+int svg_packet_start(uint64_t time, uint64_t size, const picoquic_packet_header * ph, int rxtx, void * ptr);
+int svg_packet_frame(bytestream * s, void * ptr);
+int svg_packet_end(void * ptr);
+
+int svg_convert(const picoquic_connection_id_t * cid, FILE * f_binlog, FILE * f_template, const char * binlog_name, const char * out_dir);
+
+#ifdef __cplusplus
+}
+#endif

@@ -1,0 +1,46 @@
+version: build{build}
+image: Visual Studio 2017
+
+environment:
+  matrix:
+    - platform: x86
+      configuration: Debug
+      OPENSSLDIR: C:\OpenSSL-v11-Win32
+    - platform: x64
+      configuration: Debug
+      OPENSSL64DIR: C:\OpenSSL-v11-Win64
+    - platform: x86
+      configuration: Release
+      OPENSSLDIR: C:\OpenSSL-v11-Win32
+    - platform: x64
+      configuration: Release
+      OPENSSL64DIR: C:\OpenSSL-v11-Win64
+matrix:
+  allow_failures:
+    # For some reason linking picoquicdemo.lib fails with
+    # cifra.lib(chash.obj) : error LNK2001: unresolved external symbol __CheckForDebuggerJustMyCode [C:\projects\picoquic\picoquicfirst\picoquicfirst.vcxproj]
+    - platform: x64
+      configuration: Debug
+      OPENSSL64DIR: C:\OpenSSL-v11-Win64
+
+build:
+  parallel: true
+  project: picoquic.sln
+
+before_build:
+  - ps: ci\build_picotls.ps1
+
+test_script:
+ - ps: if ($Env:Platform -eq "x64") { cd x64 }
+ - ps: cd "$Env:Configuration"
+ - ps: pwd
+ - ps: dir
+ # using alternative because of error `vstest.console.exe .\UnitTest1.dll`
+ # - ps: vstest.console /logger:Appveyor "/testcasefilter:(Name!=config_quic)&(Name!=config_option)&(Name!=qlog_trace)&(Name!=qlog_trace_auto)&(Name!=qlog_trace_ecn)&(Name!=qlog_trace_only)&(Name!=simple_multipath_qlog)&(Name!=multipath_qlog)&(Name!=threading)" UnitTest1.dll
+ # Alternative to UnitTest1 (running the same tests):
+ # - ps: .\picoquic_t.exe -x fuzz_initial
+
+deploy: off
+
+#on_finish:
+#  - ps: $blockRdp = $true; iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))

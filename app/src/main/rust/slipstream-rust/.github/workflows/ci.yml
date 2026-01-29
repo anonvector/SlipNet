@@ -1,0 +1,320 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust-tests:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out slipstream-rust
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev python3
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Rust fmt
+        run: cargo fmt --check
+
+      - name: Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust tests
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          cargo test -p slipstream-dns
+          cargo test
+
+      - name: IPv4 listener check
+        run: ./scripts/verify_ipv4_listener.sh
+
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out slipstream-rust
+        uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit
+
+  rust-clippy-features:
+    name: Rust Clippy (features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out slipstream-rust
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev python3
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust clippy (features)
+        env:
+          PICOQUIC_BUILD_DIR: .picoquic-build/minimal
+        run: cargo clippy -p slipstream-client -p slipstream-server --features openssl-vendored,picoquic-minimal-build -- -D warnings
+
+  build-binaries:
+    name: Build Binaries (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: slipstream-macos-arm64
+          - name: linux-x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: slipstream-linux-x86_64
+    steps:
+      - name: Check out slipstream-rust
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev python3
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake pkg-config openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build slipstream-client
+        run: cargo build -p slipstream-client --release --target ${{ matrix.target }}
+
+      - name: Build slipstream-server
+        run: cargo build -p slipstream-server --release --target ${{ matrix.target }}
+
+      - name: Package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist_dir="dist"
+          base_name="${{ matrix.artifact_name }}"
+          bin_dir="target/${{ matrix.target }}/release"
+          mkdir -p "${dist_dir}"
+          cp "${bin_dir}/slipstream-client" "${dist_dir}/"
+          cp "${bin_dir}/slipstream-server" "${dist_dir}/"
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd "${dist_dir}" && sha256sum slipstream-client slipstream-server > "${base_name}.sha256")
+          else
+            (cd "${dist_dir}" && shasum -a 256 slipstream-client slipstream-server > "${base_name}.sha256")
+          fi
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            dist/*
+          if-no-files-found: error
+
+  interop:
+    name: Interop (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # C repo interop disabled (C repo currently broken).
+          # - name: run_local
+          #   script: run_local.sh
+          # - name: run_rust_client
+          #   script: run_rust_client.sh
+          # - name: run_rust_server
+          #   script: run_rust_server.sh
+          - name: rust-rust
+            script: run_rust_rust.sh
+            domains: ""
+            client_domain: ""
+          - name: rust-rust-multi-domain
+            script: run_rust_rust.sh
+            domains: "example.com,tunnel.example.com"
+            client_domain: "tunnel.example.com"
+    steps:
+      - name: Check out slipstream-rust
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # C repo interop disabled (C repo currently broken).
+      # - name: Check out C slipstream
+      #   uses: actions/checkout@v4
+      #   with:
+      #     repository: EndPositive/slipstream
+      #     path: slipstream-c
+      #     submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build cmake pkg-config libssl-dev python3
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run interop script
+        env:
+          SLIPSTREAM_DIR: slipstream-c
+          RUST_BACKTRACE: "1"
+          DOMAINS: ${{ matrix.domains }}
+          CLIENT_DOMAIN: ${{ matrix.client_domain }}
+        run: ./scripts/interop/${{ matrix.script }}
+
+  benchmarks:
+    name: Bench (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: rust-rust
+            script: run_rust_rust_10mb.sh
+            needs_c: false
+            client_args: ""
+            resolver_mode: resolver
+            min_exfil: "5"
+            min_download: "10"
+            artifact_glob: bench-rust-rust-*
+          - name: rust-rust-auth
+            script: run_rust_rust_10mb.sh
+            needs_c: false
+            client_args: ""
+            resolver_mode: authoritative
+            min_exfil: "5"
+            min_download: "15"
+            artifact_glob: bench-rust-rust-*
+          - name: rust-rust-mixed
+            script: run_rust_rust_10mb.sh
+            needs_c: false
+            client_args: ""
+            resolver_mode: mixed
+            min_exfil: "5"
+            min_download: "25"
+            artifact_glob: bench-rust-rust-mixed-*
+          # C repo benchmark disabled (C repo currently broken).
+          # - name: c-c
+          #   script: run_c_c_10mb.sh
+          #   needs_c: true
+    steps:
+      - name: Check out slipstream-rust
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # C repo benchmark disabled (C repo currently broken).
+      # - name: Check out C slipstream
+      #   if: matrix.needs_c
+      #   uses: actions/checkout@v4
+      #   with:
+      #     repository: EndPositive/slipstream
+      #     path: slipstream-c
+      #     submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build cmake pkg-config libssl-dev python3
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run benchmark
+        env:
+          SLIPSTREAM_DIR: slipstream-c
+          RUNS: "5"
+          TRANSFER_BYTES: "10485760"
+          CLIENT_ARGS: ${{ matrix.client_args }}
+          RESOLVER_MODE: ${{ matrix.resolver_mode }}
+          MIN_AVG_MIB_S_EXFIL: ${{ matrix.min_exfil }}
+          MIN_AVG_MIB_S_DOWNLOAD: ${{ matrix.min_download }}
+        run: ./scripts/bench/${{ matrix.script }}
+
+      - name: Upload benchmark logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.name }}-logs
+          path: .interop/${{ matrix.artifact_glob }}
+          include-hidden-files: true
+
+  bench-memory:
+    name: Bench Memory (rust-rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out slipstream-rust
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev python3 procps
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run memory benchmark
+        env:
+          TRANSFER_BYTES: "104857600"
+          RUNS: "1"
+          RUN_EXFIL: "1"
+          RUN_DOWNLOAD: "1"
+          SOCKET_TIMEOUT: "60"
+          MAX_RSS_MB: "80"
+          MIN_AVG_MIB_S: "0"
+        run: ./scripts/bench/run_rust_rust_mem.sh
+
+      - name: Upload memory logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-rust-rust-mem-logs
+          path: .interop/mem-rust-rust-*.csv
+          include-hidden-files: true

@@ -1,0 +1,73 @@
+---
+name: "CILeaktests"
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  citests:
+    name: CI-Leaks
+    runs-on: ubuntu-latest
+    env:
+        PTLS_CMAKE_OPTS: "-DCMAKE_C_FLAGS=-fsanitize=address,undefined -DCMAKE_CXX_FLAGS=-fsanitize=address,undefined"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          # We must fetch at least the immediate parents so that if this is
+          # a pull request then we can checkout the head.
+          fetch-depth: 2
+          submodules: 'recursive'
+
+      - name: Building picoquic
+        run: |
+          sudo apt-get install -y libssl-dev
+          ./ci/build_picotls.sh
+          cmake -DENABLE_ASAN=ON -DENABLE_UBSAN=on .
+          make
+
+      - name: Perform Unit Tests and Check for Leaks
+        run: |
+            ulimit -c unlimited -S
+            ./picoquic_ct -n -r 1>quic_ct.txt 2>sanity.txt || QUICRESULT=$? 
+            echo "running picoquic_ct returns <$QUICRESULT> "
+            cat sanity.txt
+            if [ ! -z ${QUICRESULT} ]; then
+                if [ ${QUICRESULT} != 0 ]; then exit 1; fi;
+            fi
+            leaked=`grep "SUMMARY: AddressSanitizer:" sanity.txt | cut -d ' ' -f 3`
+            previous_leak=0
+            if [ ! -z "$leaked" ]; then
+                if [ $leaked -gt $previous_leak ]; then
+                    echo "$leaked > $previous_leak"; exit 1;
+                else
+                    echo "$leaked <= $previous_leak";
+                fi
+            else
+                echo "No leaks detected in picoquic_ct"
+            fi
+            #./picohttp_ct -n -r 1>http_ct.txt 2>sanity.txt || QUICHTTPRESULT=$? 
+            ./picohttp_ct -n -r 2>sanity.txt || QUICHTTPRESULT=$? 
+            echo "running picohttp_ct returns <$QUICHTTPRESULT> "
+            cat sanity.txt
+            if [ ! -z ${QUICHTTPRESULT} ]; then
+                if [ ${QUICHTTPRESULT} != 0 ]; then exit 1; fi;
+            fi
+            leaked=`grep "SUMMARY: AddressSanitizer:" sanity.txt | cut -d ' ' -f 3`
+            previous_leak=0
+            if [ ! -z "$leaked" ]; then
+                if [ $leaked -gt $previous_leak ]; then
+                    echo "$leaked > $previous_leak"; exit 1;
+                else
+                    echo "$leaked <= $previous_leak";
+                fi
+            else
+                echo "No leaks detected in picohttp_ct"
+            fi
+            exit 0

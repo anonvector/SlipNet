@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<svg width="600" height="20000" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <style>
+    .seq_in { font: 10px sans-serif; fill: blue; }
+    .seq_out { font: 10px sans-serif; fill: light-blue; }
+    .time { font: 10px sans-serif; fill: green; }
+    .arw { font: 10px sans-serif; }
+    .frm { font: 10px sans-serif; fill: teal }
+    .chs { font: 10px sans-serif; fill: red }
+  </style>
+  <rect x="0" y="0" width="600" height="20000" fill="white" stroke-width="4" stroke="pink" />
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="black" />
+    </marker>
+    <g id="packet-out">
+      <line x1="0" y1="0" x2="500" y2="0" stroke="#000" stroke-width="1" marker-end="url(#arrow)" />
+    </g>
+    <g id="packet-in">
+      <line x1="500" y1="0" x2="0" y2="0" stroke="#000" stroke-width="1" marker-end="url(#arrow)" />
+    </g>
+  </defs>
+#
+</svg>

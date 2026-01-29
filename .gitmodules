@@ -1,0 +1,3 @@
+[submodule "app/src/main/rust/slipstream-rust"]
+	path = app/src/main/rust/slipstream-rust
+	url = https://github.com/Mygod/slipstream-rust

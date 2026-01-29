@@ -1,0 +1,130 @@
+    padding, 3 bytes
+    reset_stream 17, Error 0x00000001, Offset 0x1.
+    connection_close, Error 0xcfff, Reason length 9
+        Reason: 123456789
+    application_close, Error 0x0000, Reason length 0
+    application_close, Error 0x0404, Reason length 4
+        Reason: test
+    max_data: 0x10000000000.
+    max_stream_data, Stream: 1, max data: 0x10000.
+    max_streams_bidir: max rank 256.
+    max_streams_unidir: max rank 263.
+    ping, 1 bytes
+    data_blocked: offset 65536.
+    stream_data_blocked: 65536.
+    streams_blocked_bidir: 256
+    streams_blocked_unidir: 512
+    retire_connection_id[7]: 0x0102030405060708, a0a1a2a3a4a5a6a7a8a9aaabacadaeaf
+    stop_sending: Stream 17 (0x11), Error 0x17.
+    path_challenge: 0102030405060708
+    path_response: 0102030405060708
+    new_token[17]: 0x0102030405060708090a0b0c0d0e0f10...
+    ack (nb=2), 4328719360-4328719365, 4328719358, 4328719339-4328719351
+    ack_ecn (nb=2), 4328719360-4328719365, 4328719358, 4328719339-4328719351, ect0=3, ect1=0, ce=1
+    stream 1, offset 0, length 16, fin = 0: a0a1a2a3a4a5a6a7...
+    stream 1, offset 1024, length 16, fin = 0: a0a1a2a3a4a5a6a7...
+    crypto_hs, offset 0, length 16: a0a1a2a3a4a5a6a7...
+    retire_connection_id[1]
+    datagram, length: 16: a0a1a2a3a4a5a6a7...
+    datagram, length: 16: a0a1a2a3a4a5a6a7...
+    handshake_done
+    ack_frequency: S=17, P=10, uS=1056, Reordering threshold: 0
+    ack_frequency: S=17, P=10, uS=1056, Reordering threshold: 5
+    immediate_ack
+    time_stamp: 1024
+    path_abandon, path_id: 1, reason: 0
+    path_abandon, path_id: 1, reason: 17
+    path_backup, path_id: 0, sequence: 15
+    path_available, path_id: 0, sequence: 15
+    max_path_id, max_path_id: 17
+    path_retire_connection_id[1, 7]: 0x0102030405060708, a1a2a3a4a5a6a7a8a9aaabacadaeafb0
+    path_retire_connection_id[0, 2]
+    path_blocked, max_path_id: 17
+    bdp_frame, lifetime: 1, bytes_in_flight: 2, min_rtt: 3, ip: 0a000001
+    observed_address_v4, sequence: 1, addr: 1.2.3.4, port: 4660
+    observed_address_v6, sequence: 2, addr: 102:304:506:708:90a:b0c:d0e:f00, port: 17767
+    path_ack (nb=2), path=0, 4328719360-4328719365, 4328719358, 4328719339-4328719351
+    path_ack_ecn (nb=2), path=0, 4328719360-4328719365, 4328719358, 4328719339-4328719351, ect0=3, ect1=0, ce=1
+    reset_stream 17, Error 0x00000001, Offset 0x3fffffffffffffff.
+    reset_stream 4611686018427387903, Error 0x00000001, Offset 0x1.
+    Malformed RESET STREAM, requires 12 bytes out of 7
+    connection_close, Error 0xcfff, Reason length 4611686018427387903
+    Malformed connection_close, requires 4611686018427387917 bytes out of 23
+    Malformed connection_close, requires 9 bytes out of 4
+    application_close, Error 0x0404, Reason length 4611686018427387903
+    Malformed application_close, requires 4611686018427387914 bytes out of 15
+    max_stream_data, Stream: 4611686018427387903, max data: 0x10000.
+    max_streams_bidir: max rank 4611686018427387903.
+    max_streams_unidir: max rank 4611686018427387903.
+    Malformed NEW CONNECTION ID, requires 83 bytes out of 28
+    retire_connection_id[7]: 0x0102030405060708, a0a1a2a3a4a5a6a7a8a9aaabacadaeaf, retire before: 4611686018427387903
+    retire_connection_id[7]: 0x0102030405060708, a0a1a2a3a4a5a6a7a8a9aaabacadaeaf, retire before: 8
+    retire_connection_id[7]: 0x, 01020304050607080900010203040506
+    new_token[8]: 0x090001a0a1a2a3a4
+    Unknown frame, type: 631678888 (0xa5a6a7a8a9aaabac... + 3 bytes)
+    stop_sending: Stream 19 (0x13), Error 0x17.
+    Malformed STOP SENDING, requires more than 2 bytes
+    Malformed new_token, requires 8 bytes out of 26
+    ack (nb=2), 4328719360-4328719365
+        ack gap error: largest=4328719365, range=6, gap=4611686018427387904
+    ack (nb=1)
+        ack range error: largest=2, range=4
+    ack (nb=2), 4328719360-4328719365
+        ack range error: largest=4328719358, range=4611686018427387904
+    ack_ecn (nb=4294967295), 4328719360-4328719365, 4328719358, 4328719339-4328719351, 4328719334
+        Malformed ACK RANGE, -5 blocks remain.
+    Malformed crypto_hs frame.
+    Malformed datagram: 318fffffffa0a1a2...
+    ping, 1 bytes
+    padding, 1 bytes
+    stream 4611684923227504639, offset 4611686018427387903, length 3, fin = 1: ffffff
+    Malformed path_abandon frame: 95228c0500
+    Malformed path_abandon frame: 95228c0500ff
+    Malformed path_available frame: 95228c0800
+    Malformed bdp_frame frame: 8000ebd9010204
+    Malformed bdp_frame frame: 8000ebd901020405...
+    Malformed bdp_frame frame: 8000ebd90802048f...
+    Unknown frame, type: 1073741823 (0xbfffffff0802048f... + 7 bytes)
+
+0b0c0d0e0f101112: ticket time = 1548462100832, kx = 17, suite = 1302, 61 ticket, 48 secret.
+0b0c0d0e0f101112: lifetime = 7200, age_add = 3fc0960b, 8 nonce, 32 ticket, 8 extensions.
+0b0c0d0e0f101112: ticket extensions: 42(ED: ffffffff),
+0b0c0d0e0f101112: This is an app message test.
+0b0c0d0e0f101112: This is app message test #1, severity 2.
+
+0b0c0d0e0f101112: Sending packet type: 2 (initial), S0, Q1, Version 0,
+0b0c0d0e0f101112:     <0b0c0d0e0f101112>, <>, Seq: 0, pl: 0
+0b0c0d0e0f101112:     Token length: 0
+0b0c0d0e0f101112:     Prepared 25 bytes
+0b0c0d0e0f101112:     crypto_hs, offset 0, length 16: a0a1a2a3a4a5a6a7...
+0b0c0d0e0f101112:     padding, 6 bytes
+
+0b0c0d0e0f101112: Receiving packet type: 4 (handshake), S0, Q1, Version 0,
+0b0c0d0e0f101112:     <0b0c0d0e0f101112>, <>, Seq: 1, pl: 0
+0b0c0d0e0f101112:     Decrypted 20 bytes
+0b0c0d0e0f101112:     ping, 1 bytes
+0b0c0d0e0f101112:     crypto_hs, offset 0, length 16: a0a1a2a3a4a5a6a7...
+
+0b0c0d0e0f101112: Sending packet type: 5 (0rtt protected), S0, Q1, Version 0,
+0b0c0d0e0f101112:     <0b0c0d0e0f101112>, <>, Seq: 2, pl: 0
+0b0c0d0e0f101112:     Prepared 11 bytes
+0b0c0d0e0f101112:     stream 0, offset 0, length 7, fin = 0: 01020304050607
+
+0b0c0d0e0f101112: Receiving packet type: 6 (1rtt protected), S0, Q1,
+0b0c0d0e0f101112:     <0b0c0d0e0f101112>, Seq: 3 (3), Phi: 0,
+0b0c0d0e0f101112:     Decrypted 17 bytes
+0b0c0d0e0f101112:     ack (nb=2), 4328719360-4328719365, 4328719358, 4328719339-4328719351
+
+0b0c0d0e0f101112: Sending packet type: 1 (version negotiation), S0, Q1,
+0b0c0d0e0f101112:     <0b0c0d0e0f101112>, <>
+0b0c0d0e0f101112:     versions: 1020304, 5060708, 
+
+0b0c0d0e0f101112: Receiving packet type: 3 (retry), S0, Q1, Version 0,
+0b0c0d0e0f101112:     <0b0c0d0e0f101112>, <>, Seq: 5, pl: 0
+0b0c0d0e0f101112:     Token length: 8, Checksum length: 16
+0b0c0d0e0f101112:     Token: 1f20212223242526
+
+0b0c0d0e0f101112: Receiving 1234 bytes from [2020:2020:2020:2020:2020:2020:2020:2020]:443 at T=12.345000 (8182bbd)
+0b0c0d0e0f101112: Sending 55 bytes to 1.1.1.1:443 at T=12.345000 (8182bbd)
+123456789abcdef0: Sending 1234 bytes to [2020:0:0:0:0:0:0:ffff]:12345 at T=135.801789 (8182bbd)
+123456789abcdef0: Receiving 55 bytes from 34.34.34.34:12345 at T=135.801789 (8182bbd)

@@ -1,0 +1,19 @@
+[package]
+name = "slipstream-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "FFI bindings and runtime helpers for picoquic in Slipstream"
+license = "Apache-2.0"
+repository = "https://github.com/Mygod/slipstream-rust"
+readme = "../../README.md"
+
+[dependencies]
+libc = "0.2"
+openssl-sys = { version = "0.9", optional = true, features = ["vendored"] }
+slipstream-core = { path = "../slipstream-core" }
+
+[features]
+default = []
+openssl-vendored = ["dep:openssl-sys", "openssl-sys/vendored", "openssl-static"]
+openssl-static = []
+picoquic-minimal-build = []

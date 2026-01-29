@@ -1,0 +1,210 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="ReadMe.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="packet.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="picohash.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="quicctx.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="intformat.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="frames.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sacks.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sender.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="tls_api.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="logger.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="transport.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="util.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="newreno.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="picosocks.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ticket_store.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="picosplay.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="spinbit.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cubic.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="token_store.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="bytestream.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="fastcc.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cc_common.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="logwriter.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="bbr.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sim_link.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sockloop.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="winsockloop.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="config.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="unified_log.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="performance_log.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="picoquic_lb.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="port_blocking.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="prague.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="timing.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="picoquic_ptls_fusion.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="picoquic_ptls_openssl.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="picoquic_ptls_minicrypto.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="loss_recovery.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="picoquic_mbedtls.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="bbr1.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="pacing.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="picoquic.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picohash.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="wincompat.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="tls_api.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picoquic_internal.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picosocks.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picosplay.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="bytestream.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="cc_common.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="logwriter.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="frames.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picoquic_utils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picoquic_packet_loop.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picoquic_config.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="performance_log.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picoquic_unified_log.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picoquic_logger.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picoquic_set_binlog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picoquic_set_textlog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="picoquic_crypto_provider_api.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sockloop.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\picoquic_mbedtls\ptls_mbedtls.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

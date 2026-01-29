@@ -1,0 +1,26 @@
+# name,id,domain,payload_hex[,mode,qname_override,error_rcode,raw_query_hex]
+basic-hello,0x1234,test.com,68656C6C6F
+tiny-1,0x1235,test.com,FF
+tiny-4,0x1236,test.com,01020304
+# 35-byte payload keeps base32 length under dotify boundary
+dotify-35,0x2344,test.com,000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F202122
+# 36-byte payload to force inline dot insertion (base32 length 58)
+dotify-36,0x2345,test.com,000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20212223
+domain-depth,0x3456,a.b.c.example.com,001122334455
+# Near DNS QNAME length limit for test.com (150 bytes payload)
+max-payload-150,0x3F00,test.com,000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F202122232425262728292A2B2C2D2E2F303132333435363738393A3B3C3D3E3F404142434445464748494A4B4C4D4E4F505152535455565758595A5B5C5D5E5F606162636465666768696A6B6C6D6E6F707172737475767778797A7B7C7D7E7F808182838485868788898A8B8C8D8E8F909192939495
+# Invalid base32 character (0) triggers server failure
+invalid-base32,0x4001,test.com,-,invalid_base32,INVALID0DATA.test.com.,SERVER_FAILURE
+# Suffix mismatch should yield NAME_ERROR in strict mode
+suffix-mismatch,0x4002,test.com,68656C6C6F,suffix_mismatch,NBSWY3DP.other.com.,NAME_ERROR
+# Non-TXT query yields NAME_ERROR
+non-txt,0x4003,test.com,68656C6C6F,non_txt
+# Empty subdomain yields NAME_ERROR
+empty-subdomain,0x4004,test.com,-,empty_subdomain,test.com.,NAME_ERROR
+# QDCOUNT=0 yields FORMAT_ERROR
+qdcount-zero,0x4005,test.com,68656C6C6F,qdcount_zero
+# QR=1 (not a query) yields FORMAT_ERROR
+not-query,0x4006,test.com,68656C6C6F,not_query
+# Raw malformed/truncated packets (dns_decode should fail, no response)
+raw-truncated-header,0x5001,test.com,-,raw_query_hex,-,-,0102030405060708090A0B
+raw-missing-question,0x5002,test.com,-,raw_query_hex,-,-,123401000001000000000000

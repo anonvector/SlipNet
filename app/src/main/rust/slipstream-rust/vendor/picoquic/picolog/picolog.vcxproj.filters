@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="picolog.c">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="..\picoquicfirst\getopt.c">
+      <Filter>Source</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source">
+      <UniqueIdentifier>{54d129f9-7332-41da-bdee-d2ee860c27b9}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

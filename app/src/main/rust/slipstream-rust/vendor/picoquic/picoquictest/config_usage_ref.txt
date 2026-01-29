@@ -1,0 +1,45 @@
+Picoquic options:
+  -c file         cert file
+  -k file         key file
+  -p number       server port
+  -v              Version proposed by client, e.g. -v ff000012
+  -o folder       Folder where client writes downloaded files, defaults to current directory.
+  -w folder       Folder containing web pages served by server
+  -x number       Maximum number of concurrent connections, default 256
+  -r              Do Retry Request
+  -R option       Randomize packet number spaces: none(0), initial(1, default), all(2).
+  -s <32 hex chars> Reset seed
+  -X              Disable the check for blocked ports
+  -S folder       Set the path to the source files to find the default files
+  -G cc_algorithm Use the specified congestion control algorithm: reno, cubic, bbr or fast. Defaults to bbr.
+  -P number       Set the default spinbit policy
+  -O number       Set the default lossbit policy
+  -M              Enable QUIC multipath extension
+  -e if           Send on interface (default: -1)
+  -C cipher_suite_id specify cipher suite (e.g. -C 20 = chacha20)
+  -i per-text-lb-spec See documentation for LB compatible CID configuration
+  -l file         Log file, Log to stdout if file = "-". No text logging if absent.
+  -L              Log all packets. If absent, log stops after 100 packets.
+  -b folder       Binary logging to this directory. No binary logging if absent.
+  -q folder       Qlog logging to this directory. No qlog logging if absent, but qlogs could be produced using picolog if binary logs are available.
+  -m mtu_max      Largest mtu value that can be tried for discovery.
+  -n sni          sni (default: server name)
+  -a alpn         alpn (default function of version)
+  -t file         root trust file
+  -z              Set TLS zero share behavior on client, to force HRR
+  -I length       Length of CNX_ID used by the client, default=8
+  -d ms           Duration of idle timeout in milliseconds
+  -D              no disk: do not save received files on disk
+  -Q              send a large client hello in order to test post quantum readiness
+  -T file         File storing the session tickets
+  -N file         File storing the new tokens
+  -B number       Set buffer size with SO_SNDBUF SO_RCVBUF
+  -F file         Append performance reports to performance log
+  -V              enable preemptive repeat
+  -U              Version upgrade if server agrees, e.g. -U 6b3343cf
+  -0              Do not use UDP GSO or equivalent
+  -j number       use bdp extension frame(1) or don't (0). Default=0
+  -W bytes        Max value for CWIN. Default=UINT64_MAX
+  -8              Enable SSLKEYLOG
+  -J mode         provider (0), receiver (1) or both (2).
+  -h              This help message

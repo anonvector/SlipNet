@@ -1,0 +1,26 @@
+/build/
+*/Debug
+Debug
+*/Release
+Release
+*/.vs
+.vs
+*/Generated Files
+*.sdf
+*/*.sdf
+*/*.user
+*.ipch
+*/*.ipch
+*.db
+*/*.db
+*/*.lib
+*/*.pdb
+*/AppX
+*/*.exe
+*/*.dll
+*/*.xbf
+*/*.ilk
+*.b
+/picoquic/qlogger.c
+/picohttp_t/h3-m-www
+/enc_temp_folder/b4cf614ae2082c1d235e80918228e6
