@@ -144,5 +144,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- [slipstream-rust](https://github.com/AnyConnect/slipstream) - Rust QUIC tunneling library
-- [picoquic](https://github.com/AnyConnect/picoquic) - QUIC protocol implementation
+- [slipstream-rust](https://github.com/Mygod/slipstream-rust) - Rust QUIC tunneling library
