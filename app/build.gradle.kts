@@ -1,4 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.net.URL
+import java.io.FileOutputStream
+import java.util.zip.ZipInputStream
 
 plugins {
     id("com.android.application")
@@ -21,6 +24,22 @@ fun abiFromTarget(target: String): String = when {
     target.startsWith("i686") -> "x86"
     target.startsWith("x86_64") -> "x86_64"
     else -> target
+}
+
+// OpenSSL configuration
+val opensslVersion = "3.0.15"
+val opensslBaseDir = file("${System.getenv("HOME")}/android-openssl/android-ssl")
+val supportedAbis = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+
+// Check if OpenSSL is available for all ABIs
+fun isOpenSslAvailable(): Boolean {
+    return supportedAbis.all { abi ->
+        val libDir = opensslBaseDir.resolve("$abi/lib")
+        val includeDir = opensslBaseDir.resolve("$abi/include")
+        libDir.resolve("libssl.a").exists() &&
+        libDir.resolve("libcrypto.a").exists() &&
+        includeDir.exists()
+    }
 }
 
 android {
@@ -81,6 +100,146 @@ kotlin {
 val cargoHome = System.getenv("HOME") + "/.cargo"
 val cargoBin = "$cargoHome/bin"
 
+// Task to setup OpenSSL for Android
+tasks.register("setupOpenSsl") {
+    group = "build setup"
+    description = "Downloads and sets up OpenSSL for Android if not present"
+
+    doLast {
+        if (isOpenSslAvailable()) {
+            println("OpenSSL for Android is already available at: $opensslBaseDir")
+            return@doLast
+        }
+
+        println("OpenSSL for Android not found. Setting up...")
+
+        val downloadUrl = "https://github.com/passy/build-openssl-android/releases/download/v${opensslVersion}/openssl-${opensslVersion}-android.zip"
+        val tempZip = file("${buildDir}/tmp/openssl-android.zip")
+        val extractDir = file("${buildDir}/tmp/openssl-extract")
+
+        // Create directories
+        tempZip.parentFile.mkdirs()
+        extractDir.mkdirs()
+        opensslBaseDir.mkdirs()
+
+        println("Downloading OpenSSL from: $downloadUrl")
+
+        try {
+            // Try primary download source
+            downloadFile(downloadUrl, tempZip)
+        } catch (e: Exception) {
+            println("Primary download failed, trying alternative source...")
+            // Alternative: build from source using script
+            val buildScript = file("$projectDir/scripts/build-openssl-android.sh")
+            if (buildScript.exists()) {
+                exec {
+                    commandLine("bash", buildScript.absolutePath)
+                    environment("OPENSSL_VERSION", opensslVersion)
+                    environment("OUTPUT_DIR", opensslBaseDir.absolutePath)
+                    environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+                }
+                return@doLast
+            } else {
+                throw GradleException("""
+                    Failed to download OpenSSL for Android.
+
+                    Please manually set up OpenSSL:
+                    1. Download pre-built OpenSSL for Android
+                    2. Extract to: $opensslBaseDir
+                    3. Ensure each ABI folder (arm64-v8a, armeabi-v7a, x86, x86_64) contains:
+                       - lib/libssl.a
+                       - lib/libcrypto.a
+                       - include/openssl/
+
+                    Or run: ./scripts/build-openssl-android.sh
+                """.trimIndent())
+            }
+        }
+
+        println("Extracting OpenSSL...")
+        extractZip(tempZip, extractDir)
+
+        // Copy to final location
+        supportedAbis.forEach { abi ->
+            val srcDir = extractDir.resolve(abi)
+            val dstDir = opensslBaseDir.resolve(abi)
+            if (srcDir.exists()) {
+                srcDir.copyRecursively(dstDir, overwrite = true)
+                println("Installed OpenSSL for $abi")
+            }
+        }
+
+        // Cleanup
+        tempZip.delete()
+        extractDir.deleteRecursively()
+
+        println("OpenSSL setup complete!")
+    }
+}
+
+fun downloadFile(url: String, destination: File) {
+    URL(url).openStream().use { input ->
+        FileOutputStream(destination).use { output ->
+            input.copyTo(output)
+        }
+    }
+}
+
+fun extractZip(zipFile: File, destDir: File) {
+    ZipInputStream(zipFile.inputStream()).use { zis ->
+        var entry = zis.nextEntry
+        while (entry != null) {
+            val destFile = File(destDir, entry.name)
+            if (entry.isDirectory) {
+                destFile.mkdirs()
+            } else {
+                destFile.parentFile?.mkdirs()
+                destFile.outputStream().use { fos ->
+                    zis.copyTo(fos)
+                }
+            }
+            entry = zis.nextEntry
+        }
+    }
+}
+
+// Task to verify OpenSSL setup
+tasks.register("verifyOpenSsl") {
+    group = "verification"
+    description = "Verifies that OpenSSL for Android is properly set up"
+
+    doLast {
+        val missing = mutableListOf<String>()
+
+        supportedAbis.forEach { abi ->
+            val libDir = opensslBaseDir.resolve("$abi/lib")
+            val includeDir = opensslBaseDir.resolve("$abi/include")
+
+            if (!libDir.resolve("libssl.a").exists()) {
+                missing.add("$abi/lib/libssl.a")
+            }
+            if (!libDir.resolve("libcrypto.a").exists()) {
+                missing.add("$abi/lib/libcrypto.a")
+            }
+            if (!includeDir.resolve("openssl").exists()) {
+                missing.add("$abi/include/openssl/")
+            }
+        }
+
+        if (missing.isNotEmpty()) {
+            throw GradleException("""
+                OpenSSL for Android is not properly set up.
+                Missing files in $opensslBaseDir:
+                ${missing.joinToString("\n  - ", prefix = "  - ")}
+
+                Run './gradlew setupOpenSsl' to download and set up OpenSSL.
+            """.trimIndent())
+        }
+
+        println("OpenSSL verification passed! All required files present.")
+    }
+}
+
 cargo {
     cargoCommand = "$cargoBin/cargo"
     rustcCommand = "$cargoBin/rustc"
@@ -124,15 +283,14 @@ cargo {
         spec.environment("BUILD_TYPE", if (cargoProfile == "release") "Release" else "Debug")
 
         // Add OpenSSL paths for picoquic build and openssl-sys
-        // Note: Update this path to your local android-openssl location
-        val opensslBase = file("${System.getenv("HOME")}/android-openssl/android-ssl/$abi")
-        spec.environment("OPENSSL_DIR", opensslBase.absolutePath)
-        spec.environment("OPENSSL_LIB_DIR", opensslBase.resolve("lib").absolutePath)
-        spec.environment("OPENSSL_INCLUDE_DIR", opensslBase.resolve("include").absolutePath)
+        val opensslAbiDir = opensslBaseDir.resolve(abi)
+        spec.environment("OPENSSL_DIR", opensslAbiDir.absolutePath)
+        spec.environment("OPENSSL_LIB_DIR", opensslAbiDir.resolve("lib").absolutePath)
+        spec.environment("OPENSSL_INCLUDE_DIR", opensslAbiDir.resolve("include").absolutePath)
         // For picoquic build script
-        spec.environment("OPENSSL_ROOT_DIR", opensslBase.absolutePath)
-        spec.environment("OPENSSL_CRYPTO_LIBRARY", opensslBase.resolve("lib/libcrypto.a").absolutePath)
-        spec.environment("OPENSSL_SSL_LIBRARY", opensslBase.resolve("lib/libssl.a").absolutePath)
+        spec.environment("OPENSSL_ROOT_DIR", opensslAbiDir.absolutePath)
+        spec.environment("OPENSSL_CRYPTO_LIBRARY", opensslAbiDir.resolve("lib/libcrypto.a").absolutePath)
+        spec.environment("OPENSSL_SSL_LIBRARY", opensslAbiDir.resolve("lib/libssl.a").absolutePath)
         spec.environment("OPENSSL_USE_STATIC_LIBS", "1")
 
         val toolchainPrebuilt = android.ndkDirectory
@@ -147,8 +305,12 @@ cargo {
     }
 }
 
+// Make cargo build tasks depend on OpenSSL verification
 tasks.whenTaskAdded {
     when (name) {
+        "cargoBuildArm", "cargoBuildArm64", "cargoBuildX86", "cargoBuildX86_64" -> {
+            dependsOn("verifyOpenSsl")
+        }
         "mergeDebugJniLibFolders", "mergeReleaseJniLibFolders" -> {
             dependsOn("cargoBuild")
             // Track Rust JNI output without adding a second source set (avoids duplicate resources).

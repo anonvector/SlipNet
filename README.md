@@ -40,17 +40,24 @@ A modern Android VPN client built with Jetpack Compose and Kotlin, featuring DNS
 
 3. **Set up OpenSSL for Android**
 
-   Download or build OpenSSL for Android and set the path in `app/build.gradle.kts`:
-   ```kotlin
-   val opensslBase = file("${System.getenv("HOME")}/android-openssl/android-ssl/$abi")
+   OpenSSL will be automatically downloaded when you build for the first time. You can also set it up manually:
+   ```bash
+   ./gradlew setupOpenSsl
+   ```
+
+   This will download pre-built OpenSSL libraries or build from source if the download fails. OpenSSL files will be installed to `~/android-openssl/android-ssl/`.
+
+   To verify your OpenSSL setup:
+   ```bash
+   ./gradlew verifyOpenSsl
    ```
 
 ### Build Steps
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/slipnet.git
-   cd slipnet
+   git clone https://github.com/obscuraio/SlipNet.git
+   cd SlipNet
    ```
 
 2. **Initialize submodules**
