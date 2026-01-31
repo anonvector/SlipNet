@@ -11,6 +11,10 @@
 -keep class app.slipnet.data.native.NativeConfig { *; }
 -keep class app.slipnet.data.native.NativeStats { *; }
 
+# Keep SlipstreamBridge and tunnel classes for JNI
+-keep class app.slipnet.tunnel.SlipstreamBridge { *; }
+-keep class app.slipnet.tunnel.** { *; }
+
 # Hilt
 -keep class dagger.hilt.** { *; }
 -keep class javax.inject.** { *; }
