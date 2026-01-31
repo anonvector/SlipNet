@@ -19,8 +19,18 @@ import java.util.concurrent.atomic.AtomicLong
 data class KotlinTunnelConfig(
     val domain: String,
     val resolvers: List<ResolverConfig>,
-    val slipstreamPort: Int = 15201,
-    val dnsServer: String = "8.8.8.8"
+    val slipstreamPort: Int = SlipstreamBridge.DEFAULT_SLIPSTREAM_PORT,
+    val slipstreamHost: String = "127.0.0.1",
+    val dnsServer: String = "8.8.8.8",
+    val congestionControl: String = "bbr",
+    val keepAliveInterval: Int = 200,
+    val gsoEnabled: Boolean = false,
+    // Network Optimization Settings
+    val dnsTimeout: Int = 5000,
+    val connectionTimeout: Int = 30000,
+    val bufferSize: Int = 262144, // 256KB default
+    val connectionPoolSize: Int = 10,
+    val verboseLogging: Boolean = false
 )
 
 data class ResolverConfig(
@@ -43,12 +53,14 @@ class KotlinTunnelManager(
     companion object {
         private const val TAG = "KotlinTunnelManager"
         private const val CLEANUP_INTERVAL_MS = 60_000L
-        private const val VERBOSE_LOGGING = false  // Set to true for debugging
     }
+
+    // Use config setting for verbose logging
+    private val verboseLogging: Boolean get() = config.verboseLogging
 
     // Helper to avoid Log.v overhead when disabled
     private inline fun logV(message: () -> String) {
-        if (VERBOSE_LOGGING) Log.v(TAG, message())
+        if (verboseLogging) Log.v(TAG, message())
     }
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -74,11 +86,15 @@ class KotlinTunnelManager(
     // Direct UDP sessions (used as fallback when UDP ASSOCIATE not supported)
     private val directUdpSessions = ConcurrentHashMap<String, DirectUdpSession>()
 
-    // Direct connection pool for faster connection establishment
+    // Connection pool for faster connection establishment
+    // Larger pool size for DNS tunneling which is inherently slow
     private val connectionPool = Socks5ConnectionPool(
         slipstreamPort = config.slipstreamPort,
-        poolSize = 3,  // Reduced for better performance
-        scope = scope
+        poolSize = config.connectionPoolSize,
+        scope = scope,
+        bufferSize = config.bufferSize,
+        connectionTimeout = config.connectionTimeout,
+        verboseLogging = config.verboseLogging
     )
 
     // Stats
@@ -95,9 +111,20 @@ class KotlinTunnelManager(
             return@withContext Result.failure(Exception("Tunnel already running"))
         }
 
+        Log.i(TAG, "========================================")
         Log.i(TAG, "Starting Kotlin tunnel manager")
-        Log.i(TAG, "Domain: ${config.domain}")
-        Log.i(TAG, "Resolvers: ${config.resolvers}")
+        Log.i(TAG, "  Domain: ${config.domain}")
+        Log.i(TAG, "  Resolvers: ${config.resolvers.joinToString { "${it.host}:${it.port}${if (it.authoritative) " (auth)" else ""}" }}")
+        Log.i(TAG, "  SOCKS5 proxy: ${config.slipstreamHost}:${config.slipstreamPort}")
+        Log.i(TAG, "  DNS server: ${config.dnsServer}")
+        Log.i(TAG, "  Congestion control: ${config.congestionControl}")
+        Log.i(TAG, "  Keep-alive: ${config.keepAliveInterval}ms")
+        Log.i(TAG, "  GSO: ${config.gsoEnabled}")
+        Log.i(TAG, "  DNS timeout: ${config.dnsTimeout}ms")
+        Log.i(TAG, "  Connection timeout: ${config.connectionTimeout}ms")
+        Log.i(TAG, "  Buffer size: ${config.bufferSize} bytes")
+        Log.i(TAG, "  Connection pool size: ${config.connectionPoolSize}")
+        Log.i(TAG, "========================================")
 
         try {
             // Initialize TUN interface
@@ -113,7 +140,7 @@ class KotlinTunnelManager(
             // Wait for slipstream to be ready
             delay(500)
 
-            // Start SOCKS5 connection pool
+            // Start connection pool
             connectionPool.start()
 
             // Start packet processing
@@ -155,7 +182,7 @@ class KotlinTunnelManager(
         directUdpSessions.values.forEach { it.close() }
         directUdpSessions.clear()
 
-        // Stop SOCKS5 connection pool
+        // Stop connection pool
         connectionPool.stop()
 
         // Clear NAT table
@@ -219,7 +246,7 @@ class KotlinTunnelManager(
                 delay(CLEANUP_INTERVAL_MS)
                 val removed = natTable.cleanupExpired()
                 if (removed > 0) {
-                    if (VERBOSE_LOGGING) Log.d(TAG, "Cleaned up $removed expired NAT entries")
+                    if (verboseLogging) Log.d(TAG, "Cleaned up $removed expired NAT entries")
                 }
             }
         }
@@ -356,7 +383,7 @@ class KotlinTunnelManager(
         // Block QUIC (UDP port 443) to force apps to use TCP, which goes through the tunnel
         // This ensures the user's IP is hidden for HTTPS traffic
         if (dstPort == 443) {
-            if (VERBOSE_LOGGING) Log.v(TAG, "Blocking QUIC (UDP:443) to force TCP fallback")
+            if (verboseLogging) Log.v(TAG, "Blocking QUIC (UDP:443) to force TCP fallback")
             return
         }
 
@@ -445,7 +472,7 @@ class KotlinTunnelManager(
 
         init {
             vpnProtect?.invoke(socket)
-            if (VERBOSE_LOGGING) Log.d(TAG, "Direct UDP session created for $sessionKey, socket protected")
+            if (verboseLogging) Log.d(TAG, "Direct UDP session created for $sessionKey, socket protected")
         }
 
         fun sendPacket(dstAddr: InetAddress, dstPort: Int, data: ByteArray) {
@@ -453,7 +480,7 @@ class KotlinTunnelManager(
             try {
                 val packet = DatagramPacket(data, data.size, dstAddr, dstPort)
                 socket.send(packet)
-                if (VERBOSE_LOGGING) Log.d(TAG, "Direct UDP: sent ${data.size} bytes to ${dstAddr.hostAddress}:$dstPort")
+                if (verboseLogging) Log.d(TAG, "Direct UDP: sent ${data.size} bytes to ${dstAddr.hostAddress}:$dstPort")
             } catch (e: Exception) {
                 Log.e(TAG, "Direct UDP send failed: ${e.message}")
             }
@@ -462,14 +489,14 @@ class KotlinTunnelManager(
         fun startReceiver(scope: CoroutineScope) {
             receiverJob = scope.launch(Dispatchers.IO) {
                 val buffer = ByteArray(65535)
-                socket.soTimeout = 30000 // 30 second timeout
+                socket.soTimeout = config.connectionTimeout
 
                 while (isActive && !isClosed.get()) {
                     try {
                         val packet = DatagramPacket(buffer, buffer.size)
                         socket.receive(packet)
                         val data = buffer.copyOf(packet.length)
-                        if (VERBOSE_LOGGING) Log.d(TAG, "Direct UDP: received ${data.size} bytes from ${packet.address.hostAddress}:${packet.port}")
+                        if (verboseLogging) Log.d(TAG, "Direct UDP: received ${data.size} bytes from ${packet.address.hostAddress}:${packet.port}")
                         onPacketReceived(packet.address, packet.port, data)
                     } catch (e: java.net.SocketTimeoutException) {
                         // Timeout, cleanup if no activity
@@ -491,7 +518,7 @@ class KotlinTunnelManager(
             receiverJob?.cancel()
             try { socket.close() } catch (e: Exception) {}
             directUdpSessions.remove(sessionKey)
-            if (VERBOSE_LOGGING) Log.d(TAG, "Direct UDP session closed: $sessionKey")
+            if (verboseLogging) Log.d(TAG, "Direct UDP session closed: $sessionKey")
         }
     }
 
@@ -510,7 +537,7 @@ class KotlinTunnelManager(
         return withContext(Dispatchers.IO) {
             try {
                 val relayId = udpRelayIdCounter.incrementAndGet()
-                Log.i(TAG, "[UDP-$relayId] Creating SOCKS5 UDP relay for $sessionKey")
+                if (verboseLogging) Log.i(TAG, "[UDP-$relayId] Creating SOCKS5 UDP relay for $sessionKey")
 
                 // Connect to slipstream SOCKS5 proxy
                 val controlSocket = Socket()
@@ -524,7 +551,7 @@ class KotlinTunnelManager(
                     return@withContext null
                 }
 
-                Log.i(TAG, "[UDP-$relayId] SOCKS5 UDP relay established at ${relayInfo.first}:${relayInfo.second}")
+                if (verboseLogging) Log.i(TAG, "[UDP-$relayId] SOCKS5 UDP relay established at ${relayInfo.first}:${relayInfo.second}")
 
                 // Create UDP socket for communicating with the relay
                 val udpSocket = DatagramSocket()
@@ -559,7 +586,7 @@ class KotlinTunnelManager(
                     },
                     onClosed = {
                         udpRelayConnections.remove(sessionKey)
-                        if (VERBOSE_LOGGING) Log.d(TAG, "[UDP-$relayId] Relay closed and removed")
+                        if (verboseLogging) Log.d(TAG, "[UDP-$relayId] Relay closed and removed")
                     },
                     onRelayFailed = {
                         // Mark UDP ASSOCIATE as not working and close this relay
@@ -590,13 +617,13 @@ class KotlinTunnelManager(
         try {
             val input = socket.getInputStream()
             val output = socket.getOutputStream()
-            socket.soTimeout = 10000
+            socket.soTimeout = 45000 // 45 seconds for DNS tunneling
 
             // Step 1: Send greeting
             val greeting = byteArrayOf(0x05, 0x01, 0x00)
             output.write(greeting)
             output.flush()
-            if (VERBOSE_LOGGING) Log.d(TAG, "[UDP-$relayId] SOCKS5: Sent greeting")
+            if (verboseLogging) Log.d(TAG, "[UDP-$relayId] SOCKS5: Sent greeting")
 
             // Step 2: Read auth response
             val authResponse = ByteArray(2)
@@ -610,7 +637,7 @@ class KotlinTunnelManager(
                 Log.e(TAG, "[UDP-$relayId] SOCKS5: Auth failed")
                 return null
             }
-            if (VERBOSE_LOGGING) Log.d(TAG, "[UDP-$relayId] SOCKS5: Auth successful")
+            if (verboseLogging) Log.d(TAG, "[UDP-$relayId] SOCKS5: Auth successful")
 
             // Step 3: Send UDP ASSOCIATE request (command 0x03)
             // We use 0.0.0.0:0 to indicate we'll send from any address
@@ -624,7 +651,7 @@ class KotlinTunnelManager(
             )
             output.write(udpAssociateRequest)
             output.flush()
-            if (VERBOSE_LOGGING) Log.d(TAG, "[UDP-$relayId] SOCKS5: Sent UDP ASSOCIATE request")
+            if (verboseLogging) Log.d(TAG, "[UDP-$relayId] SOCKS5: Sent UDP ASSOCIATE request")
 
             // Step 4: Read response
             val responseHeader = ByteArray(4)
@@ -708,7 +735,7 @@ class KotlinTunnelManager(
                 address
             }
 
-            Log.i(TAG, "[UDP-$relayId] SOCKS5: UDP ASSOCIATE successful, relay at ${relayAddr.hostAddress}:$port (original: ${address.hostAddress})")
+            if (verboseLogging) Log.i(TAG, "[UDP-$relayId] SOCKS5: UDP ASSOCIATE successful, relay at ${relayAddr.hostAddress}:$port (original: ${address.hostAddress})")
             socket.soTimeout = 0 // Reset timeout
 
             return Pair(relayAddr, port)
@@ -777,7 +804,7 @@ class KotlinTunnelManager(
                 packetsSent.incrementAndGet()
                 lastSendTime.set(System.currentTimeMillis())
 
-                if (VERBOSE_LOGGING) Log.d(TAG, "[UDP-$id] Sent ${data.size} bytes to ${dstAddr.hostAddress}:$dstPort via relay (${relayAddress.hostAddress}:$relayPort)")
+                if (verboseLogging) Log.d(TAG, "[UDP-$id] Sent ${data.size} bytes to ${dstAddr.hostAddress}:$dstPort via relay (${relayAddress.hostAddress}:$relayPort)")
             } catch (e: Exception) {
                 Log.e(TAG, "[UDP-$id] Send failed: ${e.message}")
             }
@@ -796,7 +823,7 @@ class KotlinTunnelManager(
                 var consecutiveTimeouts = 0
                 val maxTimeoutsBeforeFallback = 3
 
-                Log.i(TAG, "[UDP-$id] Receiver started, waiting for packets from relay ${relayAddress.hostAddress}:$relayPort")
+                if (verboseLogging) Log.i(TAG, "[UDP-$id] Receiver started, waiting for packets from relay ${relayAddress.hostAddress}:$relayPort")
 
                 while (isActive && !isClosed.get()) {
                     try {
@@ -832,7 +859,7 @@ class KotlinTunnelManager(
 
                         val payload = data.copyOfRange(headerLen, packet.length)
                         packetsReceived.incrementAndGet()
-                        Log.i(TAG, "[UDP-$id] Received ${payload.size} bytes from ${srcAddr.hostAddress}:$srcPort (total received: ${packetsReceived.get()})")
+                        if (verboseLogging) Log.i(TAG, "[UDP-$id] Received ${payload.size} bytes from ${srcAddr.hostAddress}:$srcPort (total received: ${packetsReceived.get()})")
 
                         onPacketReceived(srcAddr, srcPort, payload)
                     } catch (e: java.net.SocketTimeoutException) {
@@ -848,7 +875,7 @@ class KotlinTunnelManager(
                         }
 
                         if (consecutiveTimeouts % 6 == 0) { // Log every 30 seconds
-                            if (VERBOSE_LOGGING) Log.d(TAG, "[UDP-$id] Waiting for relay responses (sent=$sent, received=$received, timeouts=$consecutiveTimeouts)")
+                            if (verboseLogging) Log.d(TAG, "[UDP-$id] Waiting for relay responses (sent=$sent, received=$received, timeouts=$consecutiveTimeouts)")
                         }
                     } catch (e: Exception) {
                         if (!isClosed.get()) {
@@ -867,7 +894,7 @@ class KotlinTunnelManager(
         fun close() {
             if (isClosed.getAndSet(true)) return
 
-            if (VERBOSE_LOGGING) Log.d(TAG, "[UDP-$id] Closing relay (sent=${packetsSent.get()}, received=${packetsReceived.get()})")
+            if (verboseLogging) Log.d(TAG, "[UDP-$id] Closing relay (sent=${packetsSent.get()}, received=${packetsReceived.get()})")
             receiverJob?.cancel()
             try { udpSocket.close() } catch (e: Exception) {}
             try { controlSocket.close() } catch (e: Exception) {}
@@ -887,13 +914,13 @@ class KotlinTunnelManager(
                 } else if (protected == null) {
                     Log.w(TAG, "No VPN protect callback - DNS may not work correctly")
                 } else {
-                    if (VERBOSE_LOGGING) Log.d(TAG, "DNS socket protected successfully")
+                    if (verboseLogging) Log.d(TAG, "DNS socket protected successfully")
                 }
 
-                socket.soTimeout = 5000 // 5 second timeout
+                socket.soTimeout = config.dnsTimeout
 
                 val serverAddr = java.net.InetAddress.getByName(dnsServer)
-                if (VERBOSE_LOGGING) Log.d(TAG, "Sending DNS query (${query.size} bytes) to $dnsServer:$port")
+                if (verboseLogging) Log.d(TAG, "Sending DNS query (${query.size} bytes) to $dnsServer:$port")
                 val requestPacket = java.net.DatagramPacket(query, query.size, serverAddr, port)
                 socket.send(requestPacket)
 
@@ -903,7 +930,7 @@ class KotlinTunnelManager(
 
                 socket.close()
 
-                Log.i(TAG, "DNS response received: ${responsePacket.length} bytes from ${responsePacket.address?.hostAddress}")
+                if (verboseLogging) Log.i(TAG, "DNS response received: ${responsePacket.length} bytes from ${responsePacket.address?.hostAddress}")
                 responseBuffer.copyOf(responsePacket.length)
             } catch (e: java.net.SocketTimeoutException) {
                 Log.e(TAG, "DNS query timed out to $dnsServer:$port - check if socket protection is working")
@@ -1110,7 +1137,7 @@ class KotlinTunnelManager(
 
         // Handle SYN - new connection
         if (tcpHeader.isSyn && !tcpHeader.isAck) {
-            Log.i(TAG, "SYN from ${key.srcAddress}:${key.srcPort} to ${key.dstAddress}:${key.dstPort}")
+            if (verboseLogging) Log.i(TAG, "SYN from ${key.srcAddress}:${key.srcPort} to ${key.dstAddress}:${key.dstPort}")
             handleNewConnection(key, tcpHeader.seqNum)
             return
         }
@@ -1121,7 +1148,7 @@ class KotlinTunnelManager(
             if (entry != null) {
                 val conn = connections[entry.streamId]
                 if (conn != null) {
-                    if (VERBOSE_LOGGING) Log.v(TAG, "[${entry.streamId}] Forwarding ${tcpHeader.payload.size} bytes to tunnel")
+                    if (verboseLogging) Log.v(TAG, "[${entry.streamId}] Forwarding ${tcpHeader.payload.size} bytes to tunnel")
                     conn.sendData(tcpHeader.payload)
                     conn.updateClientSeq(tcpHeader.seqNum, tcpHeader.payload.size)
                     // Send immediate ACK to acknowledge received data
@@ -1130,19 +1157,19 @@ class KotlinTunnelManager(
                     // Check if this is a pending connection (SOCKS5 still connecting)
                     val pending = pendingConnections[entry.streamId]
                     if (pending != null) {
-                        if (VERBOSE_LOGGING) Log.d(TAG, "[${entry.streamId}] Buffering ${tcpHeader.payload.size} bytes (connection pending)")
+                        if (verboseLogging) Log.d(TAG, "[${entry.streamId}] Buffering ${tcpHeader.payload.size} bytes (connection pending)")
                         pending.bufferData(tcpHeader.payload, tcpHeader.seqNum)
                         // Send ACK for buffered data
                         pending.sendAckForBufferedData()
                     } else {
                         // Connection closed but NAT entry still exists (TIME_WAIT)
                         // Silently drop the packet - this is normal after FIN
-                        if (VERBOSE_LOGGING) Log.v(TAG, "[${entry.streamId}] Dropping late packet (connection closed)")
+                        if (verboseLogging) Log.v(TAG, "[${entry.streamId}] Dropping late packet (connection closed)")
                     }
                 }
             } else {
                 // Only log as warning if this is not a known closed connection
-                if (VERBOSE_LOGGING) Log.v(TAG, "Dropping packet - no NAT entry for ${key.dstAddress}:${key.dstPort}")
+                if (verboseLogging) Log.v(TAG, "Dropping packet - no NAT entry for ${key.dstAddress}:${key.dstPort}")
             }
         }
 
@@ -1160,7 +1187,7 @@ class KotlinTunnelManager(
             if (entry != null) {
                 val conn = connections[entry.streamId]
                 if (conn != null) {
-                    if (VERBOSE_LOGGING) Log.d(TAG, "FIN received for stream ${entry.streamId}")
+                    if (verboseLogging) Log.d(TAG, "FIN received for stream ${entry.streamId}")
                     conn.handleClientFin()
                 }
                 // else: connection already closed, ignore late FIN
@@ -1173,7 +1200,7 @@ class KotlinTunnelManager(
             if (entry != null) {
                 val conn = connections[entry.streamId]
                 if (conn != null) {
-                    if (VERBOSE_LOGGING) Log.d(TAG, "RST received for stream ${entry.streamId}")
+                    if (verboseLogging) Log.d(TAG, "RST received for stream ${entry.streamId}")
                     conn.close()
                 }
                 // else: connection already closed, ignore late RST
@@ -1189,13 +1216,13 @@ class KotlinTunnelManager(
             val conn = connections[entry.streamId]
             if (conn != null) {
                 // Connection exists, this is likely a SYN retransmit - resend SYN-ACK
-                if (VERBOSE_LOGGING) Log.d(TAG, "[${entry.streamId}] SYN retransmit, resending SYN-ACK")
+                if (verboseLogging) Log.d(TAG, "[${entry.streamId}] SYN retransmit, resending SYN-ACK")
                 conn.resendSynAck()
             } else {
                 // Check if connection is still pending (tunnel connecting)
                 val pending = pendingConnections[entry.streamId]
                 if (pending != null) {
-                    if (VERBOSE_LOGGING) Log.d(TAG, "[${entry.streamId}] SYN retransmit (pending), resending SYN-ACK")
+                    if (verboseLogging) Log.d(TAG, "[${entry.streamId}] SYN retransmit (pending), resending SYN-ACK")
                     scope.launch { pending.sendSynAck() }
                 } else {
                     Log.w(TAG, "[${entry.streamId}] SYN retransmit but no connection found")
@@ -1204,13 +1231,15 @@ class KotlinTunnelManager(
             return
         }
 
-        Log.i(TAG, "========================================")
-        Log.i(TAG, "New TCP connection request:")
-        Log.i(TAG, "  Stream ID: ${entry.streamId}")
-        Log.i(TAG, "  Source: ${key.srcAddress}:${key.srcPort}")
-        Log.i(TAG, "  Destination: ${key.dstAddress}:${key.dstPort}")
-        Log.i(TAG, "  Client ISN: $clientIsn")
-        Log.i(TAG, "========================================")
+        if (verboseLogging) {
+            Log.i(TAG, "========================================")
+            Log.i(TAG, "New TCP connection request:")
+            Log.i(TAG, "  Stream ID: ${entry.streamId}")
+            Log.i(TAG, "  Source: ${key.srcAddress}:${key.srcPort}")
+            Log.i(TAG, "  Destination: ${key.dstAddress}:${key.dstPort}")
+            Log.i(TAG, "  Client ISN: $clientIsn")
+            Log.i(TAG, "========================================")
+        }
 
         // Create a pending connection that can receive SYN-ACK retransmits
         val pendingConnection = PendingTunnelConnection(
@@ -1232,7 +1261,7 @@ class KotlinTunnelManager(
         // Connect through slipstream in background (using connection pool)
         scope.launch {
             try {
-                if (VERBOSE_LOGGING) Log.d(TAG, "[${entry.streamId}] Connecting via SOCKS5 pool...")
+                if (verboseLogging) Log.i(TAG, "[${entry.streamId}] Connecting to slipstream...")
 
                 // Use connection pool for faster establishment
                 val socket = connectionPool.connectTo(
@@ -1242,11 +1271,11 @@ class KotlinTunnelManager(
                 )
 
                 if (socket == null) {
-                    Log.e(TAG, "[${entry.streamId}] SOCKS5 connection failed")
-                    throw Exception("SOCKS5 connection failed")
+                    Log.e(TAG, "[${entry.streamId}] Slipstream connection failed")
+                    throw Exception("Slipstream connection failed")
                 }
 
-                Log.i(TAG, "[${entry.streamId}] SOCKS5 connected!")
+                if (verboseLogging) Log.i(TAG, "[${entry.streamId}] Slipstream connected!")
 
                 // Remove from pending and upgrade to full connection
                 pendingConnections.remove(entry.streamId)
@@ -1255,9 +1284,9 @@ class KotlinTunnelManager(
                 connections[entry.streamId] = connection
                 natTable.update(key) { it.tcpState = TcpState.ESTABLISHED }
 
-                if (VERBOSE_LOGGING) Log.d(TAG, "[${entry.streamId}] Starting TunnelConnection...")
+                if (verboseLogging) Log.d(TAG, "[${entry.streamId}] Starting TunnelConnection...")
                 connection.start()
-                if (VERBOSE_LOGGING) Log.d(TAG, "[${entry.streamId}] TunnelConnection started")
+                if (verboseLogging) Log.d(TAG, "[${entry.streamId}] TunnelConnection started")
 
             } catch (e: Exception) {
                 Log.e(TAG, "[${entry.streamId}] Failed to establish connection: ${e.message}", e)
@@ -1287,13 +1316,14 @@ class KotlinTunnelManager(
             val output = socket.getOutputStream()
 
             // Set socket timeout for handshake
-            socket.soTimeout = 10000 // 10 seconds
+            // DNS tunneling is slow - use longer timeout
+            socket.soTimeout = 45000 // 45 seconds for DNS tunneling
 
             // Step 1: Send greeting (version 5, 1 auth method, no auth)
             val greeting = byteArrayOf(0x05, 0x01, 0x00)
             output.write(greeting)
             output.flush()
-            if (VERBOSE_LOGGING) Log.v(TAG, "[$streamId] SOCKS5: Sent greeting")
+            if (verboseLogging) Log.v(TAG, "[$streamId] SOCKS5: Sent greeting")
 
             // Step 2: Read auth response
             val authResponse = ByteArray(2)
@@ -1315,7 +1345,7 @@ class KotlinTunnelManager(
                 Log.e(TAG, "[$streamId] SOCKS5: Auth method rejected: ${authResponse[1]}")
                 return@withContext false
             }
-            if (VERBOSE_LOGGING) Log.v(TAG, "[$streamId] SOCKS5: Auth OK")
+            if (verboseLogging) Log.v(TAG, "[$streamId] SOCKS5: Auth OK")
 
             // Step 3: Send CONNECT request
             val addressBytes = dstAddr.address
@@ -1347,7 +1377,7 @@ class KotlinTunnelManager(
 
             output.write(connectRequest)
             output.flush()
-            if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] SOCKS5: Sent CONNECT to ${dstAddr.hostAddress}:$dstPort")
+            if (verboseLogging) Log.d(TAG, "[$streamId] SOCKS5: Sent CONNECT to ${dstAddr.hostAddress}:$dstPort")
 
             // Step 4: Read CONNECT response
             // Response format: VER REP RSV ATYP BND.ADDR BND.PORT
@@ -1419,7 +1449,7 @@ class KotlinTunnelManager(
             // Reset socket timeout (will be handled by connection)
             socket.soTimeout = 0
 
-            Log.i(TAG, "[$streamId] SOCKS5: CONNECT successful to ${dstAddr.hostAddress}:$dstPort")
+            if (verboseLogging) Log.i(TAG, "[$streamId] SOCKS5: CONNECT successful to ${dstAddr.hostAddress}:$dstPort")
             true
 
         } catch (e: java.net.SocketTimeoutException) {
@@ -1458,7 +1488,7 @@ class KotlinTunnelManager(
                 ackNum = clientAckNum
             )
             if (packet != null) {
-                Log.i(TAG, "[$streamId] >>> SYN-ACK (early): seq=$ourIsn ack=$clientAckNum")
+                if (verboseLogging) Log.i(TAG, "[$streamId] >>> SYN-ACK (early): seq=$ourIsn ack=$clientAckNum")
                 onPacketToTun(packet)
                 ourSeqNum = ourIsn + 1
             }
@@ -1470,7 +1500,7 @@ class KotlinTunnelManager(
             if (expectedAck > clientAckNum) {
                 clientAckNum = expectedAck
             }
-            if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Buffered ${data.size} bytes while connecting (total buffered: ${bufferedData.size} chunks)")
+            if (verboseLogging) Log.d(TAG, "[$streamId] Buffered ${data.size} bytes while connecting (total buffered: ${bufferedData.size} chunks)")
         }
 
         suspend fun sendAckForBufferedData() {
@@ -1483,7 +1513,7 @@ class KotlinTunnelManager(
                 ackNum = clientAckNum
             )
             if (packet != null) {
-                if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] >>> ACK (pending): seq=$ourSeqNum ack=$clientAckNum")
+                if (verboseLogging) Log.d(TAG, "[$streamId] >>> ACK (pending): seq=$ourSeqNum ack=$clientAckNum")
                 onPacketToTun(packet)
             }
         }
@@ -1501,7 +1531,8 @@ class KotlinTunnelManager(
                 onConnectionClosed = onConnectionClosed,
                 initialSeqNum = ourSeqNum,
                 initialAckNum = clientAckNum,
-                bufferedData = bufferedData.toList()
+                bufferedData = bufferedData.toList(),
+                verboseLogging = config.verboseLogging
             )
         }
     }
@@ -1530,9 +1561,9 @@ class KotlinTunnelManager(
         scope.launch {
             delay(2000) // 2 second delay before removing NAT entry
             natTable.remove(key)
-            if (VERBOSE_LOGGING) Log.d(TAG, "Connection $streamId NAT entry removed")
+            if (verboseLogging) Log.d(TAG, "Connection $streamId NAT entry removed")
         }
-        if (VERBOSE_LOGGING) Log.d(TAG, "Connection $streamId closed")
+        if (verboseLogging) Log.d(TAG, "Connection $streamId closed")
     }
 
     /**
@@ -1556,22 +1587,23 @@ class KotlinTunnelManager(
 }
 
 /**
- * Direct connection pool - NO SOCKS5 handshakes!
+ * Connection pool for Direct protocol connections to slipstream.
  *
- * Protocol: addr_type | address | port | data...
+ * Direct Protocol: addr_type | address | port | data...
  * - addr_type 0x01 = IPv4 (4 bytes)
  * - addr_type 0x04 = IPv6 (16 bytes)
- *
  * Server parses header and connects directly - no round-trip handshake!
  */
 class Socks5ConnectionPool(
     private val slipstreamPort: Int,
-    private val poolSize: Int = 3,  // Reduced from 8
-    private val scope: CoroutineScope
+    private val poolSize: Int = 3,
+    private val scope: CoroutineScope,
+    private val bufferSize: Int = 262144,
+    private val connectionTimeout: Int = 30000,
+    private val verboseLogging: Boolean = false
 ) {
     companion object {
         private const val TAG = "DirectPool"
-        private const val VERBOSE_LOGGING = false  // Disable for production
     }
 
     // Pool of pre-connected sockets (just TCP connected, no protocol yet)
@@ -1585,7 +1617,7 @@ class Socks5ConnectionPool(
     ) {
         fun isValid(): Boolean {
             return !socket.isClosed && socket.isConnected &&
-                   (System.currentTimeMillis() - createdAt) < 60000 // 60 second max age
+                   (System.currentTimeMillis() - createdAt) < 120000 // 120 second max age
         }
     }
 
@@ -1594,7 +1626,7 @@ class Socks5ConnectionPool(
      */
     fun start() {
         if (isRunning.getAndSet(true)) return
-        Log.i(TAG, "Starting direct connection pool (size=$poolSize)")
+        if (verboseLogging) Log.i(TAG, "Starting connection pool (size=$poolSize)")
 
         // Initial pool fill
         scope.launch(Dispatchers.IO) {
@@ -1626,7 +1658,7 @@ class Socks5ConnectionPool(
             val conn = pool.poll() ?: break
             try { conn.socket.close() } catch (e: Exception) { }
         }
-        Log.i(TAG, "Direct connection pool stopped")
+        if (verboseLogging) Log.i(TAG, "Direct connection pool stopped")
     }
 
     /**
@@ -1636,7 +1668,7 @@ class Socks5ConnectionPool(
         while (true) {
             val conn = pool.poll() ?: return null
             if (conn.isValid()) {
-                if (VERBOSE_LOGGING) Log.v(TAG, "Got pooled socket (${pool.size} remaining)")
+                if (verboseLogging) Log.v(TAG, "Got pooled socket (${pool.size} remaining)")
                 return conn.socket
             }
             // Socket is stale, close it and try next
@@ -1654,86 +1686,215 @@ class Socks5ConnectionPool(
             val socket = Socket()
             socket.tcpNoDelay = true
             socket.keepAlive = true
-            socket.sendBufferSize = 262144  // 256KB
-            socket.receiveBufferSize = 262144  // 256KB
+            socket.sendBufferSize = bufferSize
+            socket.receiveBufferSize = bufferSize
 
-            socket.connect(InetSocketAddress("127.0.0.1", slipstreamPort), 5000)
+            socket.connect(InetSocketAddress("127.0.0.1", slipstreamPort), connectionTimeout / 3)
 
             val conn = PooledSocket(socket)
             if (!pool.offer(conn)) {
                 socket.close()
             } else {
-                if (VERBOSE_LOGGING) Log.v(TAG, "Added socket to pool (${pool.size}/$poolSize)")
+                if (verboseLogging) Log.v(TAG, "Added socket to pool (${pool.size}/$poolSize)")
             }
         } catch (e: Exception) {
-            if (VERBOSE_LOGGING) Log.v(TAG, "Failed to create pooled socket: ${e.message}")
+            if (verboseLogging) Log.v(TAG, "Failed to create pooled socket: ${e.message}")
         }
     }
 
     /**
-     * Connect to destination using DIRECT protocol (no SOCKS5 handshake).
-     * Just sends: [addr_type][address][port] header, then data flows immediately.
-     *
+     * Connect to destination via local slipstream SOCKS5 proxy.
      * Returns the socket ready for data transfer, or null on failure.
      */
     suspend fun connectTo(dstAddr: InetAddress, dstPort: Int, streamId: Long): Socket? {
-        // Try to get a pooled socket, or create new one
-        var socket = getPooledSocket()
+        return connectViaSocks5(dstAddr, dstPort, streamId)
+    }
 
-        if (socket == null) {
-            socket = Socket()
-            socket.tcpNoDelay = true
-            socket.keepAlive = true
-            socket.sendBufferSize = 262144  // 256KB
-            socket.receiveBufferSize = 262144  // 256KB
+    /**
+     * Connect using SOCKS5 protocol to the local slipstream proxy.
+     * Slipstream then tunnels the traffic through DNS to the destination.
+     */
+    private suspend fun connectViaSocks5(dstAddr: InetAddress, dstPort: Int, streamId: Long): Socket? {
+        // Retry logic for DNS tunnel which can be slow under load
+        val maxRetries = 3
+        var lastException: Exception? = null
 
-            try {
-                withContext(Dispatchers.IO) {
-                    socket.connect(InetSocketAddress("127.0.0.1", slipstreamPort), 5000)
-                }
-            } catch (e: Exception) {
-                try { socket.close() } catch (ex: Exception) { }
-                return null
+        for (attempt in 1..maxRetries) {
+            val socket = tryConnectViaSocks5(dstAddr, dstPort, streamId, attempt)
+            if (socket != null) {
+                return socket
             }
+            if (attempt < maxRetries) {
+                if (verboseLogging) Log.i(TAG, "[$streamId] SOCKS5: Retrying connection (attempt ${attempt + 1}/$maxRetries)")
+                kotlinx.coroutines.delay(1000) // 1 second delay before retry
+            }
+        }
+
+        return null
+    }
+
+    private suspend fun tryConnectViaSocks5(dstAddr: InetAddress, dstPort: Int, streamId: Long, attempt: Int): Socket? {
+        // Don't use pooled sockets for SOCKS5 - each connection needs its own handshake
+        if (attempt == 1) {
+            if (verboseLogging) Log.i(TAG, "[$streamId] SOCKS5: Connecting to slipstream at 127.0.0.1:$slipstreamPort")
+        }
+
+        val socket = Socket()
+        socket.tcpNoDelay = true
+        socket.keepAlive = true
+        socket.sendBufferSize = bufferSize
+        socket.receiveBufferSize = bufferSize
+
+        try {
+            withContext(Dispatchers.IO) {
+                socket.connect(InetSocketAddress("127.0.0.1", slipstreamPort), connectionTimeout / 2)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "[$streamId] SOCKS5: Failed to connect to slipstream: ${e.message}")
+            try { socket.close() } catch (ex: Exception) { }
+            return null
         }
 
         return withContext(Dispatchers.IO) {
             try {
+                val input = socket.getInputStream()
                 val output = socket.getOutputStream()
+                // Use configured connection timeout for handshake (with some buffer for slow DNS tunnels)
+                socket.soTimeout = (connectionTimeout * 1.5).toInt().coerceAtLeast(30000)
 
-                // Build DIRECT protocol header (no SOCKS5!)
-                // Format: [addr_type][address][port big-endian]
+                // Step 1: Send SOCKS5 greeting (version 5, 1 auth method, no auth)
+                output.write(byteArrayOf(0x05, 0x01, 0x00))
+                output.flush()
+
+                // Step 2: Read auth response
+                val authResponse = ByteArray(2)
+                if (readFully(input, authResponse) != 2) {
+                    Log.e(TAG, "[$streamId] SOCKS5: Failed to read auth response")
+                    socket.close()
+                    return@withContext null
+                }
+
+                if (authResponse[0] != 0x05.toByte() || authResponse[1] != 0x00.toByte()) {
+                    Log.e(TAG, "[$streamId] SOCKS5: Auth rejected (ver=${authResponse[0]}, method=${authResponse[1]})")
+                    socket.close()
+                    return@withContext null
+                }
+
+                // Step 3: Send CONNECT request
                 val addressBytes = dstAddr.address
-                val header = if (addressBytes.size == 4) {
-                    // IPv4: 1 + 4 + 2 = 7 bytes
-                    ByteArray(7).apply {
-                        this[0] = 0x01  // IPv4
-                        System.arraycopy(addressBytes, 0, this, 1, 4)
-                        this[5] = (dstPort shr 8).toByte()
-                        this[6] = (dstPort and 0xFF).toByte()
+                val isIpv4 = addressBytes.size == 4
+
+                val connectRequest = if (isIpv4) {
+                    ByteArray(10).apply {
+                        this[0] = 0x05  // Version
+                        this[1] = 0x01  // CONNECT command
+                        this[2] = 0x00  // Reserved
+                        this[3] = 0x01  // IPv4
+                        System.arraycopy(addressBytes, 0, this, 4, 4)
+                        this[8] = (dstPort shr 8).toByte()
+                        this[9] = (dstPort and 0xFF).toByte()
                     }
                 } else {
-                    // IPv6: 1 + 16 + 2 = 19 bytes
-                    ByteArray(19).apply {
-                        this[0] = 0x04  // IPv6
-                        System.arraycopy(addressBytes, 0, this, 1, 16)
-                        this[17] = (dstPort shr 8).toByte()
-                        this[18] = (dstPort and 0xFF).toByte()
+                    ByteArray(22).apply {
+                        this[0] = 0x05  // Version
+                        this[1] = 0x01  // CONNECT command
+                        this[2] = 0x00  // Reserved
+                        this[3] = 0x04  // IPv6
+                        System.arraycopy(addressBytes, 0, this, 4, 16)
+                        this[20] = (dstPort shr 8).toByte()
+                        this[21] = (dstPort and 0xFF).toByte()
                     }
                 }
 
-                // Send header - NO WAITING FOR RESPONSE!
-                output.write(header)
+                output.write(connectRequest)
                 output.flush()
 
-                Log.i(TAG, "[$streamId] Direct: connected to ${dstAddr.hostAddress}:$dstPort (no handshake)")
+                // Step 4: Read CONNECT response
+                val responseHeader = ByteArray(4)
+                if (readFully(input, responseHeader) != 4) {
+                    Log.e(TAG, "[$streamId] SOCKS5: Failed to read connect response")
+                    socket.close()
+                    return@withContext null
+                }
+
+                if (responseHeader[0] != 0x05.toByte()) {
+                    Log.e(TAG, "[$streamId] SOCKS5: Invalid version in response: ${responseHeader[0]}")
+                    socket.close()
+                    return@withContext null
+                }
+
+                if (responseHeader[1] != 0x00.toByte()) {
+                    val statusCode = responseHeader[1].toInt() and 0xFF
+                    val statusMsg = when (statusCode) {
+                        1 -> "general SOCKS server failure"
+                        2 -> "connection not allowed by ruleset"
+                        3 -> "network unreachable"
+                        4 -> "host unreachable"
+                        5 -> "connection refused"
+                        6 -> "TTL expired"
+                        7 -> "command not supported"
+                        8 -> "address type not supported"
+                        else -> "unknown error"
+                    }
+                    Log.e(TAG, "[$streamId] SOCKS5: Connect failed with status $statusCode: $statusMsg")
+                    socket.close()
+                    return@withContext null
+                }
+
+                // Read the rest of the response based on address type
+                val addrType = responseHeader[3].toInt() and 0xFF
+                val remainingBytes = when (addrType) {
+                    0x01 -> 4 + 2  // IPv4 + port
+                    0x04 -> 16 + 2 // IPv6 + port
+                    0x03 -> {
+                        // Domain name - read length first
+                        val lenByte = ByteArray(1)
+                        if (readFully(input, lenByte) != 1) {
+                            socket.close()
+                            return@withContext null
+                        }
+                        (lenByte[0].toInt() and 0xFF) + 2
+                    }
+                    else -> {
+                        Log.e(TAG, "[$streamId] SOCKS5: Unknown address type: $addrType")
+                        socket.close()
+                        return@withContext null
+                    }
+                }
+
+                val remaining = ByteArray(remainingBytes)
+                if (readFully(input, remaining) != remainingBytes) {
+                    Log.e(TAG, "[$streamId] SOCKS5: Failed to read full response")
+                    socket.close()
+                    return@withContext null
+                }
+
+                // Reset socket timeout for data transfer
+                socket.soTimeout = 0
+
+                if (verboseLogging) Log.i(TAG, "[$streamId] SOCKS5: Connected to ${dstAddr.hostAddress}:$dstPort via slipstream")
                 socket
 
             } catch (e: Exception) {
-                Log.e(TAG, "[$streamId] Direct connect error: ${e.message}")
+                Log.e(TAG, "[$streamId] SOCKS5 handshake error: ${e.message}")
                 try { socket.close() } catch (ex: Exception) { }
                 null
             }
         }
     }
+
+    /**
+     * Read exactly buffer.size bytes from the input stream.
+     * Returns the number of bytes read, or less if EOF reached.
+     */
+    private fun readFully(input: java.io.InputStream, buffer: ByteArray): Int {
+        var offset = 0
+        while (offset < buffer.size) {
+            val read = input.read(buffer, offset, buffer.size - offset)
+            if (read == -1) return offset
+            offset += read
+        }
+        return offset
+    }
+
 }

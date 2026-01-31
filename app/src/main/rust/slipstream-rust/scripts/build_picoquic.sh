@@ -21,8 +21,7 @@ CMAKE_ARGS=(
 
 BUILD_TARGET=()
 if [[ -n "${CARGO_FEATURE_PICOQUIC_MINIMAL_BUILD:-}" ]]; then
-  MINIMAL_BUILD_LOWER="$(echo "${CARGO_FEATURE_PICOQUIC_MINIMAL_BUILD}" | tr '[:upper:]' '[:lower:]')"
-  case "${MINIMAL_BUILD_LOWER}" in
+  case "${CARGO_FEATURE_PICOQUIC_MINIMAL_BUILD,,}" in
     1|true|yes|on)
       CMAKE_ARGS+=(
         "-DBUILD_DEMO=OFF"

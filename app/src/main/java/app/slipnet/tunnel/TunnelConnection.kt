@@ -24,19 +24,19 @@ class TunnelConnection(
     // Optional: pre-established sequence numbers from early SYN-ACK
     initialSeqNum: Long? = null,
     initialAckNum: Long? = null,
-    private val bufferedData: List<ByteArray> = emptyList()
+    private val bufferedData: List<ByteArray> = emptyList(),
+    private val verboseLogging: Boolean = false
 ) {
     companion object {
         private const val TAG = "TunnelConnection"
-        private const val BUFFER_SIZE = 131072  // 128KB for better throughput
+        private const val BUFFER_SIZE = 65536  // 64KB buffer
         // Max TCP payload to respect MTU 1500 (1500 - 20 IP - 20 TCP = 1460)
         private const val MAX_TCP_PAYLOAD = 1460
-        private const val VERBOSE_LOGGING = false  // Disable for production
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Data channel for sending data from app to tunnel - limited size
+    // Data channel for sending data from app to tunnel
     private val outboundChannel = Channel<ByteArray>(32)
 
     // Sequence numbers - use provided values or generate new ones
@@ -61,12 +61,15 @@ class TunnelConnection(
      */
     fun start() {
         try {
-            if (VERBOSE_LOGGING) Log.d(TAG, "Starting connection $streamId: socket connected=${socket.isConnected}, closed=${socket.isClosed}")
+            if (verboseLogging) Log.d(TAG, "Starting connection $streamId: socket connected=${socket.isConnected}, closed=${socket.isClosed}")
+
+            // Configure socket for better performance
+            socket.tcpNoDelay = true
 
             inputStream = socket.getInputStream()
             outputStream = socket.getOutputStream()
 
-            if (VERBOSE_LOGGING) Log.d(TAG, "Connection $streamId: got streams, inputStream=$inputStream, outputStream=$outputStream")
+            if (verboseLogging) Log.d(TAG, "Connection $streamId: got streams")
 
             // Send SYN-ACK if not already sent (early SYN-ACK case)
             if (!synAckSent) {
@@ -74,41 +77,40 @@ class TunnelConnection(
                     sendSynAck()
                 }
             } else {
-                if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] SYN-ACK already sent (early)")
+                if (verboseLogging) Log.d(TAG, "[$streamId] SYN-ACK already sent (early)")
             }
 
             // Send any buffered data to the tunnel
             if (bufferedData.isNotEmpty()) {
                 scope.launch {
                     try {
-                        if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Sending ${bufferedData.size} buffered chunks to tunnel")
+                        if (verboseLogging) Log.d(TAG, "[$streamId] Sending ${bufferedData.size} buffered chunks to tunnel")
+                        val out = outputStream ?: return@launch
                         for (data in bufferedData) {
                             if (!isRunning || socket.isClosed) break
-                            withContext(Dispatchers.IO) {
-                                outputStream?.write(data)
-                                outputStream?.flush()
-                            }
-                            if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Sent buffered ${data.size} bytes")
+                            out.write(data)
+                            if (verboseLogging) Log.d(TAG, "[$streamId] Sent buffered ${data.size} bytes")
                         }
+                        out.flush()
                     } catch (e: Exception) {
-                        if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Error sending buffered data: ${e.message}")
+                        if (verboseLogging) Log.d(TAG, "[$streamId] Error sending buffered data: ${e.message}")
                     }
                 }
             }
 
             // Start reader (tunnel -> TUN)
             scope.launch {
-                Log.i(TAG, "Reader coroutine starting for connection $streamId")
+                if (verboseLogging) Log.i(TAG, "Reader coroutine starting for connection $streamId")
                 readFromTunnel()
             }
 
             // Start writer (app -> tunnel)
             scope.launch {
-                Log.i(TAG, "Writer coroutine starting for connection $streamId")
+                if (verboseLogging) Log.i(TAG, "Writer coroutine starting for connection $streamId")
                 writeToTunnel()
             }
 
-            Log.i(TAG, "Connection $streamId started for $dstAddr:$dstPort")
+            if (verboseLogging) Log.i(TAG, "Connection $streamId started for $dstAddr:$dstPort")
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start connection $streamId: ${e.message}", e)
@@ -130,7 +132,7 @@ class TunnelConnection(
                 ackNum = clientAckNum
             )
             if (packet != null) {
-                if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] >>> SYN-ACK (retransmit)")
+                if (verboseLogging) Log.d(TAG, "[$streamId] >>> SYN-ACK (retransmit)")
                 onPacketToTun(packet)
             }
         }
@@ -141,16 +143,14 @@ class TunnelConnection(
      */
     suspend fun sendData(data: ByteArray) {
         if (!isRunning) return
-        // During graceful close, the channel is closed, so this will fail
-        // That's OK - the client shouldn't be sending more data after FIN
         if (isClosing) {
-            if (VERBOSE_LOGGING) Log.v(TAG, "[$streamId] Ignoring data during graceful close")
+            if (verboseLogging) Log.v(TAG, "[$streamId] Ignoring data during graceful close")
             return
         }
         try {
             outboundChannel.send(data)
         } catch (e: kotlinx.coroutines.channels.ClosedSendChannelException) {
-            if (VERBOSE_LOGGING) Log.v(TAG, "[$streamId] Channel closed, ignoring ${data.size} bytes")
+            if (verboseLogging) Log.v(TAG, "[$streamId] Channel closed, ignoring ${data.size} bytes")
         } catch (e: Exception) {
             Log.w(TAG, "[$streamId] Failed to queue data: ${e.message}")
         }
@@ -163,18 +163,13 @@ class TunnelConnection(
         if (isClosing) return
         isClosing = true
 
-        if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Client FIN received, stopping outbound but continuing to read from tunnel")
+        if (verboseLogging) Log.d(TAG, "[$streamId] Client FIN received, stopping outbound")
 
-        // Update clientAckNum to acknowledge the FIN (FIN consumes 1 sequence number)
         clientAckNum += 1
-
-        // Close the outbound channel so no more data is sent to tunnel
         outboundChannel.close()
 
-        // Send ACK for the FIN (but don't send our own FIN yet - we might still have data coming)
         scope.launch {
             try {
-                // Send ACK for the FIN
                 val packet = TcpPacketBuilder.buildAck(
                     srcAddr = dstAddr,
                     srcPort = dstPort,
@@ -184,17 +179,14 @@ class TunnelConnection(
                     ackNum = clientAckNum
                 )
                 if (packet != null) {
-                    if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] >>> ACK for FIN: seq=$ourSeqNum ack=$clientAckNum")
+                    if (verboseLogging) Log.d(TAG, "[$streamId] >>> ACK for FIN")
                     onPacketToTun(packet)
                 }
 
-                // Wait for tunnel to close (reader will detect EOF and call close())
-                // Set a timeout so we don't wait forever
-                delay(10000)  // 10 second timeout
+                delay(10000)
 
-                // If we get here, tunnel didn't close in time, force close
                 if (isRunning) {
-                    if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Tunnel didn't close in time, forcing close")
+                    if (verboseLogging) Log.d(TAG, "[$streamId] Tunnel didn't close in time, forcing close")
                     close()
                 }
             } catch (e: Exception) {
@@ -210,15 +202,13 @@ class TunnelConnection(
         if (!isRunning) return
 
         if (isClosing) {
-            // Already in graceful close, just force it
             forceClose()
             return
         }
 
         isClosing = true
-        if (VERBOSE_LOGGING) Log.d(TAG, "Closing connection $streamId")
+        if (verboseLogging) Log.d(TAG, "Closing connection $streamId")
 
-        // Send FIN to app
         scope.launch {
             try {
                 sendFinAck()
@@ -234,9 +224,8 @@ class TunnelConnection(
         if (!isRunning) return
         isRunning = false
 
-        if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Force closing")
+        if (verboseLogging) Log.d(TAG, "[$streamId] Force closing")
 
-        // Close socket
         try {
             socket.close()
         } catch (e: Exception) { }
@@ -249,7 +238,7 @@ class TunnelConnection(
 
     private suspend fun sendSynAck() {
         val packet = TcpPacketBuilder.buildSynAck(
-            srcAddr = dstAddr, // From server's perspective
+            srcAddr = dstAddr,
             srcPort = dstPort,
             dstAddr = srcAddr,
             dstPort = srcPort,
@@ -258,10 +247,9 @@ class TunnelConnection(
         )
 
         if (packet != null) {
-            Log.i(TAG, "[$streamId] >>> SYN-ACK: $dstAddr:$dstPort -> $srcAddr:$srcPort")
-            Log.i(TAG, "[$streamId] >>> seq=$ourIsn ack=$clientAckNum pkt=${packet.size}")
+            if (verboseLogging) Log.i(TAG, "[$streamId] >>> SYN-ACK: $dstAddr:$dstPort -> $srcAddr:$srcPort")
             onPacketToTun(packet)
-            ourSeqNum = ourIsn + 1 // SYN consumes 1 seq number
+            ourSeqNum = ourIsn + 1
         } else {
             Log.e(TAG, "[$streamId] Failed to build SYN-ACK")
         }
@@ -278,7 +266,7 @@ class TunnelConnection(
         )
 
         if (packet != null) {
-            Log.i(TAG, "[$streamId] >>> FIN-ACK: seq=$ourSeqNum ack=$clientAckNum")
+            if (verboseLogging) Log.i(TAG, "[$streamId] >>> FIN-ACK")
             onPacketToTun(packet)
         } else {
             Log.e(TAG, "[$streamId] Failed to build FIN-ACK")
@@ -286,36 +274,34 @@ class TunnelConnection(
     }
 
     private suspend fun readFromTunnel() {
-        Log.i(TAG, "Reader task started for $streamId - socket connected=${socket.isConnected}, closed=${socket.isClosed}")
-        val buffer = ByteArray(BUFFER_SIZE)
+        if (verboseLogging) Log.i(TAG, "Reader task started for $streamId")
         var tunnelClosed = false
+        val buffer = ByteArray(BUFFER_SIZE)
 
         try {
+            val input = inputStream ?: return
+
             while (isRunning) {
                 if (socket.isClosed || !socket.isConnected) {
-                    Log.w(TAG, "Socket for $streamId is not connected/closed, exiting reader")
                     break
                 }
 
-                val bytesRead = withContext(Dispatchers.IO) {
-                    inputStream?.read(buffer) ?: -1
-                }
+                val bytesRead = input.read(buffer)
 
                 if (bytesRead < 0) {
-                    if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Tunnel closed (EOF)")
+                    if (verboseLogging) Log.d(TAG, "[$streamId] Tunnel closed (EOF)")
                     tunnelClosed = true
                     break
                 }
 
                 if (bytesRead > 0) {
-                    if (VERBOSE_LOGGING) Log.v(TAG, "[$streamId] Read $bytesRead bytes from tunnel")
-                    val data = buffer.copyOf(bytesRead)
-                    sendDataToTun(data)
+                    if (verboseLogging) Log.v(TAG, "[$streamId] Read $bytesRead bytes from tunnel")
+                    sendDataToTun(buffer, bytesRead)
                 }
             }
         } catch (e: java.net.SocketException) {
             if (isClosing) {
-                if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Socket closed during graceful shutdown")
+                if (verboseLogging) Log.d(TAG, "[$streamId] Socket closed during graceful shutdown")
             } else {
                 Log.w(TAG, "[$streamId] Socket exception in reader: ${e.message}")
             }
@@ -325,15 +311,14 @@ class TunnelConnection(
             tunnelClosed = true
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) {
-                if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Reader cancelled")
+                if (verboseLogging) Log.d(TAG, "[$streamId] Reader cancelled")
             } else {
                 Log.e(TAG, "[$streamId] Error reading from tunnel: ${e.message}", e)
             }
         }
 
-        Log.i(TAG, "Reader task exiting for $streamId (tunnelClosed=$tunnelClosed)")
+        if (verboseLogging) Log.i(TAG, "Reader task exiting for $streamId (tunnelClosed=$tunnelClosed)")
 
-        // Send FIN to client if tunnel closed normally
         if (tunnelClosed && isRunning) {
             try {
                 sendFinAck()
@@ -345,19 +330,23 @@ class TunnelConnection(
         close()
     }
 
-    private suspend fun sendDataToTun(data: ByteArray) {
-        // Segment data if it exceeds MTU
-        if (data.size > MAX_TCP_PAYLOAD) {
-            if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Segmenting ${data.size} bytes into chunks of $MAX_TCP_PAYLOAD")
+    /**
+     * Send data to TUN, segmenting if necessary.
+     */
+    private suspend fun sendDataToTun(buffer: ByteArray, length: Int) {
+        if (length <= MAX_TCP_PAYLOAD) {
+            val data = buffer.copyOf(length)
+            sendSinglePacket(data)
+        } else {
+            // Segment data
+            if (verboseLogging) Log.d(TAG, "[$streamId] Segmenting $length bytes into chunks of $MAX_TCP_PAYLOAD")
             var offset = 0
-            while (offset < data.size) {
-                val chunkSize = minOf(MAX_TCP_PAYLOAD, data.size - offset)
-                val chunk = data.copyOfRange(offset, offset + chunkSize)
+            while (offset < length) {
+                val chunkSize = minOf(MAX_TCP_PAYLOAD, length - offset)
+                val chunk = buffer.copyOfRange(offset, offset + chunkSize)
                 sendSinglePacket(chunk)
                 offset += chunkSize
             }
-        } else {
-            sendSinglePacket(data)
         }
     }
 
@@ -373,7 +362,7 @@ class TunnelConnection(
         )
 
         if (packet != null) {
-            if (VERBOSE_LOGGING) Log.v(TAG, "[$streamId] >>> DATA: len=${data.size}")
+            if (verboseLogging) Log.v(TAG, "[$streamId] >>> DATA: len=${data.size}")
             onPacketToTun(packet)
             ourSeqNum += data.size
         } else {
@@ -382,7 +371,7 @@ class TunnelConnection(
     }
 
     /**
-     * Send an ACK to the client (used to acknowledge received data)
+     * Send an ACK to the client
      */
     suspend fun sendAck() {
         val packet = TcpPacketBuilder.buildAck(
@@ -395,17 +384,19 @@ class TunnelConnection(
         )
 
         if (packet != null) {
-            if (VERBOSE_LOGGING) Log.v(TAG, "[$streamId] >>> ACK")
+            if (verboseLogging) Log.v(TAG, "[$streamId] >>> ACK")
             onPacketToTun(packet)
         }
     }
 
     private suspend fun writeToTunnel() {
-        Log.i(TAG, "Writer task started for $streamId - socket connected=${socket.isConnected}")
+        if (verboseLogging) Log.i(TAG, "Writer task started for $streamId")
         try {
+            val out = outputStream ?: return
+
             for (data in outboundChannel) {
                 if (!isRunning) {
-                    if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Writer exiting (not running)")
+                    if (verboseLogging) Log.d(TAG, "[$streamId] Writer exiting (not running)")
                     break
                 }
 
@@ -414,49 +405,41 @@ class TunnelConnection(
                     break
                 }
 
-                if (VERBOSE_LOGGING) Log.v(TAG, "[$streamId] Writing ${data.size} bytes to tunnel")
-                withContext(Dispatchers.IO) {
-                    outputStream?.write(data)
-                    outputStream?.flush()
-                }
-                // Note: clientAckNum is already updated in updateClientSeq() when data is received
+                if (verboseLogging) Log.v(TAG, "[$streamId] Writing ${data.size} bytes to tunnel")
+                out.write(data)
+                out.flush()
             }
         } catch (e: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
-            // Channel was closed (client sent FIN), this is expected
-            if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Outbound channel closed (client FIN)")
+            if (verboseLogging) Log.d(TAG, "[$streamId] Outbound channel closed (client FIN)")
         } catch (e: java.net.SocketException) {
             Log.w(TAG, "[$streamId] Socket exception in writer: ${e.message}")
         } catch (e: java.io.IOException) {
             Log.w(TAG, "[$streamId] IO exception in writer: ${e.message}")
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) {
-                if (VERBOSE_LOGGING) Log.d(TAG, "[$streamId] Writer cancelled")
+                if (verboseLogging) Log.d(TAG, "[$streamId] Writer cancelled")
             } else {
                 Log.e(TAG, "[$streamId] Error writing to tunnel: ${e.message}", e)
             }
         }
 
-        Log.i(TAG, "Writer task exiting for $streamId")
-        // Don't call close() here - let the reader handle it when tunnel closes
-        // Only close if we're not already closing (meaning this is an unexpected exit)
+        if (verboseLogging) Log.i(TAG, "Writer task exiting for $streamId")
         if (!isClosing) {
             close()
         }
     }
 
     /**
-     * Handle ACK from client (update our knowledge of what they've received)
+     * Handle ACK from client
      */
     fun handleAck(ackNum: Long) {
-        // Log ACK for debugging
-        if (VERBOSE_LOGGING) Log.v(TAG, "[$streamId] <<< ACK received: ack=$ackNum (our seq=$ourSeqNum)")
+        if (verboseLogging) Log.v(TAG, "[$streamId] <<< ACK received: ack=$ackNum")
     }
 
     /**
      * Update client sequence based on received data
      */
     fun updateClientSeq(seqNum: Long, dataLen: Int) {
-        // Update ack number based on received data
         val expectedAck = seqNum + dataLen
         if (expectedAck > clientAckNum) {
             clientAckNum = expectedAck

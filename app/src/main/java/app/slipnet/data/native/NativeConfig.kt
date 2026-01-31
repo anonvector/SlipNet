@@ -32,9 +32,6 @@ data class NativeConfig(
     /** Whether to use authoritative mode for all resolvers */
     val authoritativeMode: Boolean = false,
 
-    /** Optional path to TLS certificate for server verification */
-    val certificatePath: String? = null,
-
     /** Keep-alive interval in milliseconds */
     val keepAliveInterval: Int = 200,
 
@@ -54,13 +51,11 @@ data class NativeConfig(
         fun create(
             domain: String,
             resolvers: List<ResolverConfig>,
-            certificatePath: String? = null,
             keepAliveInterval: Int = 200,
             congestionControl: String = "bbr"
         ) = NativeConfig(
             domain = domain,
             resolvers = resolvers,
-            certificatePath = certificatePath,
             keepAliveInterval = keepAliveInterval,
             congestionControl = congestionControl
         )
@@ -84,7 +79,6 @@ data class NativeConfig(
                 domain = profile.domain,
                 resolvers = resolvers,
                 authoritativeMode = profile.authoritativeMode,
-                certificatePath = profile.certificatePath,
                 keepAliveInterval = profile.keepAliveInterval,
                 congestionControl = profile.congestionControl.value,
                 tunFd = tunFd

@@ -6,9 +6,11 @@ data class ServerProfile(
     val domain: String,
     val resolvers: List<DnsResolver>,
     val authoritativeMode: Boolean = false,
-    val certificatePath: String? = null,
     val keepAliveInterval: Int = 200,
     val congestionControl: CongestionControl = CongestionControl.BBR,
+    val tcpListenPort: Int = 10800,
+    val tcpListenHost: String = "127.0.0.1",
+    val gsoEnabled: Boolean = false,
     val isActive: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
@@ -22,8 +24,7 @@ data class DnsResolver(
 
 enum class CongestionControl(val value: String) {
     BBR("bbr"),
-    CUBIC("cubic"),
-    RENO("reno");
+    DCUBIC("dcubic");
 
     companion object {
         fun fromValue(value: String): CongestionControl {

@@ -4,15 +4,17 @@ import android.net.VpnService
 import android.util.Log
 
 /**
- * Simplified bridge to the Rust slipstream client.
- * Only handles starting/stopping the DNS tunnel client.
+ * Bridge to the Rust slipstream client library.
+ * Provides all CLI parameters for the slipstream-client.
  * TUN packet processing is done in Kotlin.
  */
 object SlipstreamBridge {
     private const val TAG = "SlipstreamBridge"
-    private const val SLIPSTREAM_PORT = 15201
+    const val DEFAULT_SLIPSTREAM_PORT = 10800
+    const val DEFAULT_LISTEN_HOST = "127.0.0.1"
 
     private var isLibraryLoaded = false
+    private var currentPort = DEFAULT_SLIPSTREAM_PORT
 
     @Volatile
     private var vpnService: VpnService? = null
@@ -58,14 +60,29 @@ object SlipstreamBridge {
 
     /**
      * Start the slipstream client (DNS tunnel).
-     * The client will listen on localhost:SLIPSTREAM_PORT.
+     * The client will listen on the specified host:port for SOCKS5 connections.
+     *
+     * Parameters match the slipstream-client CLI:
+     * @param domain The domain for DNS tunneling (--domain)
+     * @param resolvers List of DNS resolvers (--resolver, --authoritative)
+     * @param congestionControl Congestion control algorithm: "bbr" or "dcubic" (--congestion-control)
+     * @param keepAliveInterval Keep-alive interval in ms (--keep-alive-interval)
+     * @param tcpListenPort TCP port to listen on (--tcp-listen-port)
+     * @param tcpListenHost TCP host to bind to (--tcp-listen-host)
+     * @param gsoEnabled Enable Generic Segmentation Offload (--gso)
+     * @param debugPoll Enable debug logging for DNS polling (--debug-poll)
+     * @param debugStreams Enable debug logging for streams (--debug-streams)
      */
     fun startClient(
         domain: String,
         resolvers: List<ResolverConfig>,
-        certificatePath: String? = null,
         congestionControl: String = "bbr",
-        keepAliveInterval: Int = 200
+        keepAliveInterval: Int = 400,
+        tcpListenPort: Int = DEFAULT_SLIPSTREAM_PORT,
+        tcpListenHost: String = DEFAULT_LISTEN_HOST,
+        gsoEnabled: Boolean = false,
+        debugPoll: Boolean = false,
+        debugStreams: Boolean = false
     ): Result<Unit> {
         if (!isLibraryLoaded) {
             Log.e(TAG, "Cannot start client: native library not loaded")
@@ -86,36 +103,53 @@ object SlipstreamBridge {
 
             Log.i(TAG, "========================================")
             Log.i(TAG, "Starting slipstream client")
-            Log.i(TAG, "  Port: $SLIPSTREAM_PORT")
+            Log.i(TAG, "  Listen host: $tcpListenHost")
+            Log.i(TAG, "  Listen port: $tcpListenPort")
             Log.i(TAG, "  Domain: $domain")
-            Log.i(TAG, "  Resolvers: ${resolvers.joinToString { "${it.host}:${it.port}" }}")
+            Log.i(TAG, "  Resolvers: ${resolvers.joinToString { "${it.host}:${it.port}${if (it.authoritative) " (auth)" else ""}" }}")
             Log.i(TAG, "  Congestion control: $congestionControl")
             Log.i(TAG, "  Keep-alive: ${keepAliveInterval}ms")
+            Log.i(TAG, "  GSO: $gsoEnabled")
+            Log.i(TAG, "  Debug poll: $debugPoll")
+            Log.i(TAG, "  Debug streams: $debugStreams")
             Log.i(TAG, "========================================")
+
+            currentPort = tcpListenPort
 
             val result = nativeStartSlipstreamClient(
                 domain = domain,
                 resolverHosts = hosts,
                 resolverPorts = ports,
                 resolverAuthoritative = authoritative,
-                listenPort = SLIPSTREAM_PORT,
-                certificatePath = certificatePath ?: "",
+                listenPort = tcpListenPort,
+                listenHost = tcpListenHost,
                 congestionControl = congestionControl,
-                keepAliveInterval = keepAliveInterval
+                keepAliveInterval = keepAliveInterval,
+                gsoEnabled = gsoEnabled,
+                debugPoll = debugPoll,
+                debugStreams = debugStreams
             )
 
             when (result) {
                 0 -> {
                     isClientRunning = true
-                    Log.i(TAG, "Slipstream client started successfully on port $SLIPSTREAM_PORT")
+                    Log.i(TAG, "Slipstream client started successfully on $tcpListenHost:$tcpListenPort")
                     Result.success(Unit)
+                }
+                -1 -> {
+                    Log.e(TAG, "Invalid domain: $domain")
+                    Result.failure(RuntimeException("Invalid domain"))
+                }
+                -2 -> {
+                    Log.e(TAG, "Invalid resolver configuration")
+                    Result.failure(RuntimeException("Invalid resolver configuration"))
                 }
                 -10 -> {
                     Log.e(TAG, "Failed to spawn slipstream client thread")
                     Result.failure(RuntimeException("Failed to spawn client thread"))
                 }
                 -11 -> {
-                    Log.e(TAG, "Slipstream client failed to listen on port $SLIPSTREAM_PORT (port may be in use)")
+                    Log.e(TAG, "Slipstream client failed to listen on $tcpListenHost:$tcpListenPort (port may be in use)")
                     Result.failure(RuntimeException("Failed to listen on port - port may be in use"))
                 }
                 else -> {
@@ -138,7 +172,7 @@ object SlipstreamBridge {
             return
         }
 
-        Log.i(TAG, "Stopping slipstream client (wasRunning=$isClientRunning)")
+        Log.i(TAG, "Stopping slipstream client (wasRunning=$isClientRunning, port=$currentPort)")
 
         try {
             nativeStopSlipstreamClient()
@@ -150,15 +184,15 @@ object SlipstreamBridge {
 
             // Check if it actually stopped
             val stillListening = try {
-                java.net.Socket("127.0.0.1", SLIPSTREAM_PORT).use { true }
+                java.net.Socket("127.0.0.1", currentPort).use { true }
             } catch (e: Exception) {
                 false
             }
 
             if (stillListening) {
-                Log.w(TAG, "Slipstream client may still be running on port $SLIPSTREAM_PORT")
+                Log.w(TAG, "Slipstream client may still be running on port $currentPort")
             } else {
-                Log.i(TAG, "Slipstream client stopped (port $SLIPSTREAM_PORT is free)")
+                Log.i(TAG, "Slipstream client stopped (port $currentPort is free)")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping slipstream client", e)
@@ -180,18 +214,21 @@ object SlipstreamBridge {
     /**
      * Get the port the slipstream client is listening on.
      */
-    fun getClientPort(): Int = SLIPSTREAM_PORT
+    fun getClientPort(): Int = currentPort
 
-    // Native methods
+    // Native methods - matches slipstream-client CLI parameters
     private external fun nativeStartSlipstreamClient(
         domain: String,
         resolverHosts: Array<String>,
         resolverPorts: IntArray,
         resolverAuthoritative: BooleanArray,
         listenPort: Int,
-        certificatePath: String,
+        listenHost: String,
         congestionControl: String,
-        keepAliveInterval: Int
+        keepAliveInterval: Int,
+        gsoEnabled: Boolean,
+        debugPoll: Boolean,
+        debugStreams: Boolean
     ): Int
 
     private external fun nativeStopSlipstreamClient()

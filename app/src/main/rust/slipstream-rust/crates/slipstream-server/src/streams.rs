@@ -6,6 +6,8 @@ use slipstream_core::flow_control::{
     FlowControlState, HasFlowControlState, PromoteEntry, StreamReceiveConfig, StreamReceiveOps,
 };
 use slipstream_core::invariants::InvariantReporter;
+#[cfg(test)]
+use slipstream_core::test_support::FailureCounter;
 use slipstream_ffi::picoquic::{
     picoquic_call_back_event_t, picoquic_close, picoquic_close_immediate, picoquic_cnx_t,
     picoquic_current_time, picoquic_get_first_cnx, picoquic_get_next_cnx,
@@ -33,6 +35,8 @@ pub(crate) struct ServerState {
     command_counts: CommandCounts,
     last_command_report: Instant,
     last_mark_active_fail_log_at: u64,
+    #[cfg(test)]
+    mark_active_stream_failures: FailureCounter,
 }
 
 #[derive(Default)]
@@ -94,6 +98,8 @@ impl ServerState {
             command_counts: CommandCounts::default(),
             last_command_report: Instant::now(),
             last_mark_active_fail_log_at: 0,
+            #[cfg(test)]
+            mark_active_stream_failures: FailureCounter::new(),
         }
     }
 
@@ -205,6 +211,19 @@ impl ServerState {
             }
         }
         summaries
+    }
+}
+
+#[cfg(test)]
+mod test_helpers {
+    use super::ServerState;
+
+    pub(super) fn set_mark_active_stream_failures(state: &mut ServerState, count: usize) {
+        state.mark_active_stream_failures.set(count);
+    }
+
+    pub(super) fn take_mark_active_stream_failure(state: &ServerState) -> bool {
+        state.mark_active_stream_failures.take()
     }
 }
 
@@ -429,6 +448,44 @@ pub(crate) unsafe extern "C" fn server_callback(
                 let has_pending = pending_flag || has_stash;
 
                 if length == 0 {
+                    if pending_flag && !has_stash && !stream.target_fin_pending {
+                        let rx_empty = stream
+                            .data_rx
+                            .as_ref()
+                            .map(|rx| rx.is_empty())
+                            .unwrap_or(true);
+                        if rx_empty {
+                            let send_stash_bytes = stream
+                                .send_stash
+                                .as_ref()
+                                .map(|data| data.len())
+                                .unwrap_or(0);
+                            let queued_bytes = stream.flow.queued_bytes;
+                            let pending_chunks = stream.pending_data.len();
+                            let tx_bytes = stream.tx_bytes;
+                            let target_fin_pending = stream.target_fin_pending;
+                            let close_after_flush = stream.close_after_flush;
+                            let now = unsafe { picoquic_current_time() };
+                            INVARIANT_REPORTER.report(
+                                now,
+                                || {
+                                    format!(
+                                        "cnx {} stream {:?}: zero-length send callback saw pending flag with empty queue send_pending={} send_stash_bytes={} target_fin_pending={} close_after_flush={} queued={} pending_chunks={} tx_bytes={}",
+                                        key.cnx,
+                                        key.stream_id,
+                                        pending_flag,
+                                        send_stash_bytes,
+                                        target_fin_pending,
+                                        close_after_flush,
+                                        queued_bytes,
+                                        pending_chunks,
+                                        tx_bytes
+                                    )
+                                },
+                                |msg| warn!("{}", msg),
+                            );
+                        }
+                    }
                     let still_active = if has_pending || stream.target_fin_pending {
                         1
                     } else {
@@ -825,7 +882,15 @@ pub(crate) fn handle_command(state_ptr: *mut ServerState, command: Command) {
                 stream_id,
             };
             let mut remove_stream = false;
-            if let Some(stream) = state.streams.get_mut(&key) {
+            if state.streams.contains_key(&key) {
+                #[cfg(test)]
+                let forced_failure = test_helpers::take_mark_active_stream_failure(state);
+                #[cfg(not(test))]
+                let forced_failure = false;
+
+                let Some(stream) = state.streams.get_mut(&key) else {
+                    return;
+                };
                 stream.target_fin_pending = true;
                 stream.close_after_flush = true;
                 if state.debug_streams {
@@ -838,10 +903,6 @@ pub(crate) fn handle_command(state_ptr: *mut ServerState, command: Command) {
                     pending.store(true, Ordering::SeqCst);
                 }
                 let cnx = cnx_id as *mut picoquic_cnx_t;
-                #[cfg(test)]
-                let forced_failure = test_hooks::take_mark_active_stream_failure();
-                #[cfg(not(test))]
-                let forced_failure = false;
                 #[cfg(test)]
                 let ret = if forced_failure {
                     test_hooks::FORCED_MARK_ACTIVE_STREAM_ERROR
@@ -907,14 +968,45 @@ pub(crate) fn handle_command(state_ptr: *mut ServerState, command: Command) {
             if !state.streams.contains_key(&key) {
                 return;
             }
+            #[cfg(test)]
+            let forced_failure = test_helpers::take_mark_active_stream_failure(state);
+            #[cfg(not(test))]
+            let forced_failure = false;
             let cnx = cnx_id as *mut picoquic_cnx_t;
+            #[cfg(test)]
+            let ret = if forced_failure {
+                test_hooks::FORCED_MARK_ACTIVE_STREAM_ERROR
+            } else {
+                assert!(
+                    cnx_id >= 0x1000,
+                    "mark_active_stream called with synthetic cnx_id; set test failure counter"
+                );
+                unsafe { picoquic_mark_active_stream(cnx, stream_id, 1, std::ptr::null_mut()) }
+            };
+            #[cfg(not(test))]
             let ret =
                 unsafe { picoquic_mark_active_stream(cnx, stream_id, 1, std::ptr::null_mut()) };
-            if ret != 0 && state.debug_streams {
-                debug!(
-                    "stream {:?}: mark_active_stream readable failed ret={}",
-                    stream_id, ret
-                );
+            if ret != 0 {
+                if let Some(stream) = shutdown_stream(state, key) {
+                    warn!(
+                        "stream {:?}: mark_active_stream readable failed ret={} tx_bytes={} rx_bytes={} consumed_offset={} queued={} fin_offset={:?}",
+                        stream_id,
+                        ret,
+                        stream.tx_bytes,
+                        stream.flow.rx_bytes,
+                        stream.flow.consumed_offset,
+                        stream.flow.queued_bytes,
+                        stream.flow.fin_offset
+                    );
+                    if !forced_failure {
+                        unsafe { abort_stream_bidi(cnx, stream_id, SLIPSTREAM_INTERNAL_ERROR) };
+                    }
+                } else if state.debug_streams {
+                    debug!(
+                        "stream {:?}: mark_active_stream readable failed ret={}",
+                        stream_id, ret
+                    );
+                }
             }
         }
         Command::StreamReadError { cnx_id, stream_id } => {
@@ -1055,24 +1147,12 @@ pub(crate) fn handle_shutdown(quic: *mut picoquic_quic_t, state: &mut ServerStat
 
 #[cfg(test)]
 mod test_hooks {
-    use slipstream_core::test_support::FailureCounter;
-
     pub(super) const FORCED_MARK_ACTIVE_STREAM_ERROR: i32 = 0x400 + 36;
-    pub(super) static MARK_ACTIVE_STREAM_FAILS_LEFT: FailureCounter = FailureCounter::new();
-
-    pub(super) fn set_mark_active_stream_failures(count: usize) {
-        MARK_ACTIVE_STREAM_FAILS_LEFT.set(count);
-    }
-
-    pub(super) fn take_mark_active_stream_failure() -> bool {
-        MARK_ACTIVE_STREAM_FAILS_LEFT.take()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slipstream_core::test_support::ResetOnDrop;
     use std::collections::VecDeque;
     use std::net::SocketAddr;
     use std::sync::atomic::AtomicBool;
@@ -1081,7 +1161,6 @@ mod tests {
 
     #[test]
     fn mark_active_stream_failure_should_remove_stream() {
-        let _guard = ResetOnDrop::new(|| test_hooks::set_mark_active_stream_failures(0));
         let (command_tx, _command_rx) = mpsc::unbounded_channel();
         let target_addr = SocketAddr::from(([127, 0, 0, 1], 0));
         let mut state = ServerState::new(target_addr, command_tx, false, false);
@@ -1109,7 +1188,7 @@ mod tests {
             },
         );
 
-        test_hooks::set_mark_active_stream_failures(1);
+        test_helpers::set_mark_active_stream_failures(&mut state, 1);
 
         handle_command(
             &mut state as *mut _,
@@ -1122,6 +1201,58 @@ mod tests {
         assert!(
             !state.streams.contains_key(&key),
             "stream state should be removed when mark_active_stream fails"
+        );
+    }
+
+    #[test]
+    fn mark_active_stream_readable_failure_should_not_leave_send_pending_stuck() {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let target_addr = SocketAddr::from(([127, 0, 0, 1], 0));
+        let mut state = ServerState::new(target_addr, command_tx, false, false);
+        let key = StreamKey {
+            cnx: 0x1,
+            stream_id: 4,
+        };
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        let send_pending = Arc::new(AtomicBool::new(true));
+        let send_pending_handle = Arc::clone(&send_pending);
+
+        state.streams.insert(
+            key,
+            ServerStream {
+                write_tx: None,
+                data_rx: None,
+                send_pending: Some(send_pending_handle),
+                send_stash: None,
+                shutdown_tx,
+                tx_bytes: 0,
+                target_fin_pending: false,
+                close_after_flush: false,
+                pending_data: VecDeque::new(),
+                pending_fin: false,
+                fin_enqueued: false,
+                flow: FlowControlState::default(),
+            },
+        );
+
+        test_helpers::set_mark_active_stream_failures(&mut state, 1);
+
+        handle_command(
+            &mut state as *mut _,
+            Command::StreamReadable {
+                cnx_id: key.cnx,
+                stream_id: key.stream_id,
+            },
+        );
+
+        assert!(
+            !state.streams.contains_key(&key),
+            "stream state should be removed when mark_active_stream fails"
+        );
+        assert_eq!(
+            Arc::strong_count(&send_pending),
+            1,
+            "send_pending should be dropped when the stream is removed"
         );
     }
 }

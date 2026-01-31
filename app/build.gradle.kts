@@ -269,7 +269,7 @@ cargo {
     profile = cargoProfile
     rustupChannel = "stable"
     extraCargoBuildArguments = listOf(
-        "-p", "slipstream-ffi",
+        "-p", "slipstream-client",
         "--features", "openssl-static,picoquic-minimal-build",
     )
     exec = { spec, toolchain ->

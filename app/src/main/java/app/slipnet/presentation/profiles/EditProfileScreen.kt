@@ -154,23 +154,13 @@ fun EditProfileScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Certificate Path
-                OutlinedTextField(
-                    value = uiState.certificatePath,
-                    onValueChange = { viewModel.updateCertificatePath(it) },
-                    label = { Text("Certificate Path (Optional)") },
-                    placeholder = { Text("/path/to/cert.pem") },
-                    supportingText = { Text("Path to pinned certificate file") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
                 // Keep-Alive Interval
                 OutlinedTextField(
                     value = uiState.keepAliveInterval,
                     onValueChange = { viewModel.updateKeepAliveInterval(it) },
-                    label = { Text("Keep-Alive Interval (seconds)") },
-                    placeholder = { Text("400") },
+                    label = { Text("Keep-Alive Interval (ms)") },
+                    placeholder = { Text("200") },
+                    supportingText = { Text("QUIC keep-alive interval in milliseconds") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -196,7 +186,7 @@ fun EditProfileScreen(
                             style = MaterialTheme.typography.bodyLarge
                         )
                         Text(
-                            text = "Use authoritative DNS resolution",
+                            text = "Use authoritative DNS resolution (--authoritative)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -204,6 +194,31 @@ fun EditProfileScreen(
                     Switch(
                         checked = uiState.authoritativeMode,
                         onCheckedChange = { viewModel.updateAuthoritativeMode(it) }
+                    )
+                }
+
+                // GSO Mode
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "GSO (Generic Segmentation Offload)",
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Text(
+                            text = "Enable GSO for better performance (--gso)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = uiState.gsoEnabled,
+                        onCheckedChange = { viewModel.updateGsoEnabled(it) }
                     )
                 }
 
