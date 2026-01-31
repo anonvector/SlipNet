@@ -109,6 +109,15 @@ android {
     }
     ndkVersion = "29.0.14206865"
     packagingOptions.jniLibs.useLegacyPackaging = true
+
+    applicationVariants.all {
+        val variant = this
+        outputs.all {
+            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            val abi = output.filters.find { it.filterType == "ABI" }?.identifier ?: "universal"
+            output.outputFileName = "SlipNet-${abi}-${variant.buildType.name}.apk"
+        }
+    }
 }
 
 kotlin {
