@@ -21,9 +21,11 @@ data class EditProfileUiState(
     val domain: String = "",
     val resolvers: String = "", // Format: "host:port,host:port"
     val authoritativeMode: Boolean = false,
-    val certificatePath: String = "",
-    val keepAliveInterval: String = "400",
+    val keepAliveInterval: String = "200",
     val congestionControl: CongestionControl = CongestionControl.BBR,
+    val tcpListenPort: String = "10800",
+    val tcpListenHost: String = "127.0.0.1",
+    val gsoEnabled: Boolean = false,
     val isLoading: Boolean = false,
     val isSaving: Boolean = false,
     val saveSuccess: Boolean = false,
@@ -63,9 +65,11 @@ class EditProfileViewModel @Inject constructor(
                     domain = profile.domain,
                     resolvers = profile.resolvers.joinToString(",") { "${it.host}:${it.port}" },
                     authoritativeMode = profile.authoritativeMode,
-                    certificatePath = profile.certificatePath ?: "",
                     keepAliveInterval = profile.keepAliveInterval.toString(),
                     congestionControl = profile.congestionControl,
+                    tcpListenPort = profile.tcpListenPort.toString(),
+                    tcpListenHost = profile.tcpListenHost,
+                    gsoEnabled = profile.gsoEnabled,
                     isLoading = false
                 )
             } else {
@@ -93,16 +97,24 @@ class EditProfileViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(authoritativeMode = enabled)
     }
 
-    fun updateCertificatePath(path: String) {
-        _uiState.value = _uiState.value.copy(certificatePath = path)
-    }
-
     fun updateKeepAliveInterval(interval: String) {
         _uiState.value = _uiState.value.copy(keepAliveInterval = interval)
     }
 
     fun updateCongestionControl(cc: CongestionControl) {
         _uiState.value = _uiState.value.copy(congestionControl = cc)
+    }
+
+    fun updateTcpListenPort(port: String) {
+        _uiState.value = _uiState.value.copy(tcpListenPort = port)
+    }
+
+    fun updateTcpListenHost(host: String) {
+        _uiState.value = _uiState.value.copy(tcpListenHost = host)
+    }
+
+    fun updateGsoEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(gsoEnabled = enabled)
     }
 
     fun save() {
@@ -132,8 +144,9 @@ class EditProfileViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isSaving = true)
 
             try {
-                val resolversList = parseResolvers(state.resolvers)
-                val keepAlive = state.keepAliveInterval.toIntOrNull() ?: 400
+                val resolversList = parseResolvers(state.resolvers, state.authoritativeMode)
+                val keepAlive = state.keepAliveInterval.toIntOrNull() ?: 200
+                val listenPort = state.tcpListenPort.toIntOrNull() ?: 10800
 
                 val profile = ServerProfile(
                     id = state.profileId ?: 0,
@@ -141,9 +154,11 @@ class EditProfileViewModel @Inject constructor(
                     domain = state.domain.trim(),
                     resolvers = resolversList,
                     authoritativeMode = state.authoritativeMode,
-                    certificatePath = state.certificatePath.ifBlank { null },
                     keepAliveInterval = keepAlive,
-                    congestionControl = state.congestionControl
+                    congestionControl = state.congestionControl,
+                    tcpListenPort = listenPort,
+                    tcpListenHost = state.tcpListenHost.ifBlank { "127.0.0.1" },
+                    gsoEnabled = state.gsoEnabled
                 )
 
                 saveProfileUseCase(profile)
@@ -160,7 +175,7 @@ class EditProfileViewModel @Inject constructor(
         }
     }
 
-    private fun parseResolvers(input: String): List<DnsResolver> {
+    private fun parseResolvers(input: String, authoritativeMode: Boolean): List<DnsResolver> {
         return input.split(",")
             .map { it.trim() }
             .filter { it.isNotBlank() }
@@ -169,7 +184,7 @@ class EditProfileViewModel @Inject constructor(
                 DnsResolver(
                     host = parts[0].trim(),
                     port = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 53,
-                    authoritative = false
+                    authoritative = authoritativeMode
                 )
             }
     }

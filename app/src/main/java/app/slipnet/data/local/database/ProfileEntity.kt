@@ -21,14 +21,20 @@ data class ProfileEntity(
     @ColumnInfo(name = "authoritative_mode")
     val authoritativeMode: Boolean = false,
 
-    @ColumnInfo(name = "certificate_path")
-    val certificatePath: String? = null,
-
     @ColumnInfo(name = "keep_alive_interval")
     val keepAliveInterval: Int = 400,
 
     @ColumnInfo(name = "congestion_control")
     val congestionControl: String = "bbr",
+
+    @ColumnInfo(name = "tcp_listen_port")
+    val tcpListenPort: Int = 10800,
+
+    @ColumnInfo(name = "tcp_listen_host")
+    val tcpListenHost: String = "127.0.0.1",
+
+    @ColumnInfo(name = "gso_enabled")
+    val gsoEnabled: Boolean = false,
 
     @ColumnInfo(name = "is_active")
     val isActive: Boolean = false,

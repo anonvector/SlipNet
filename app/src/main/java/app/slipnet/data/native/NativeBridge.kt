@@ -82,7 +82,6 @@ object NativeBridge : NativeCallback {
                 resolverHosts = config.resolvers.map { it.host }.toTypedArray(),
                 resolverPorts = config.resolvers.map { it.port }.toIntArray(),
                 resolverAuthoritative = config.resolvers.map { it.authoritative }.toBooleanArray(),
-                certificatePath = config.certificatePath ?: "",
                 keepAliveInterval = config.keepAliveInterval,
                 congestionControl = config.congestionControl,
                 tunFd = config.tunFd,
@@ -119,7 +118,6 @@ object NativeBridge : NativeCallback {
                 resolverHosts = config.resolvers.map { "${it.host}:${it.port}" }.toTypedArray(),
                 resolverAuthoritative = config.resolvers.map { it.authoritative }.toBooleanArray(),
                 authoritativeMode = config.authoritativeMode,
-                certificatePath = config.certificatePath ?: "",
                 keepAliveInterval = config.keepAliveInterval,
                 congestionControl = config.congestionControl,
                 tunFd = config.tunFd
@@ -274,7 +272,6 @@ object NativeBridge : NativeCallback {
         resolverHosts: Array<String>,
         resolverPorts: IntArray,
         resolverAuthoritative: BooleanArray,
-        certificatePath: String,
         keepAliveInterval: Int,
         congestionControl: String,
         tunFd: Int,
@@ -287,7 +284,6 @@ object NativeBridge : NativeCallback {
         resolverHosts: Array<String>,
         resolverAuthoritative: BooleanArray,
         authoritativeMode: Boolean,
-        certificatePath: String,
         keepAliveInterval: Int,
         congestionControl: String,
         tunFd: Int

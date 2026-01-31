@@ -2,6 +2,7 @@ package app.slipnet.presentation.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.slipnet.data.local.datastore.BufferSize
 import app.slipnet.data.local.datastore.DarkMode
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.usecase.ClearLogsUseCase
@@ -19,7 +20,12 @@ data class SettingsUiState(
     val debugLogging: Boolean = false,
     val isLoading: Boolean = true,
     val showClearLogsConfirmation: Boolean = false,
-    val logsCleared: Boolean = false
+    val logsCleared: Boolean = false,
+    // Network Optimization Settings
+    val dnsTimeout: Int = 5000,
+    val connectionTimeout: Int = 30000,
+    val bufferSize: BufferSize = BufferSize.MEDIUM,
+    val connectionPoolSize: Int = 10
 )
 
 @HiltViewModel
@@ -40,16 +46,26 @@ class SettingsViewModel @Inject constructor(
             combine(
                 preferencesDataStore.autoConnectOnBoot,
                 preferencesDataStore.darkMode,
-                preferencesDataStore.debugLogging
-            ) { autoConnect, darkMode, debugLogging ->
-                Triple(autoConnect, darkMode, debugLogging)
-            }.collect { (autoConnect, darkMode, debugLogging) ->
-                _uiState.value = _uiState.value.copy(
-                    autoConnectOnBoot = autoConnect,
-                    darkMode = darkMode,
-                    debugLogging = debugLogging,
-                    isLoading = false
+                preferencesDataStore.debugLogging,
+                preferencesDataStore.dnsTimeout,
+                preferencesDataStore.connectionTimeout,
+                preferencesDataStore.bufferSize,
+                preferencesDataStore.connectionPoolSize
+            ) { values ->
+                SettingsUiState(
+                    autoConnectOnBoot = values[0] as Boolean,
+                    darkMode = values[1] as DarkMode,
+                    debugLogging = values[2] as Boolean,
+                    isLoading = false,
+                    showClearLogsConfirmation = _uiState.value.showClearLogsConfirmation,
+                    logsCleared = _uiState.value.logsCleared,
+                    dnsTimeout = values[3] as Int,
+                    connectionTimeout = values[4] as Int,
+                    bufferSize = values[5] as BufferSize,
+                    connectionPoolSize = values[6] as Int
                 )
+            }.collect { newState ->
+                _uiState.value = newState
             }
         }
     }
@@ -92,5 +108,30 @@ class SettingsViewModel @Inject constructor(
 
     fun resetLogsClearedFlag() {
         _uiState.value = _uiState.value.copy(logsCleared = false)
+    }
+
+    // Network Optimization Settings
+    fun setDnsTimeout(timeout: Int) {
+        viewModelScope.launch {
+            preferencesDataStore.setDnsTimeout(timeout)
+        }
+    }
+
+    fun setConnectionTimeout(timeout: Int) {
+        viewModelScope.launch {
+            preferencesDataStore.setConnectionTimeout(timeout)
+        }
+    }
+
+    fun setBufferSize(size: BufferSize) {
+        viewModelScope.launch {
+            preferencesDataStore.setBufferSize(size)
+        }
+    }
+
+    fun setConnectionPoolSize(size: Int) {
+        viewModelScope.launch {
+            preferencesDataStore.setConnectionPoolSize(size)
+        }
     }
 }

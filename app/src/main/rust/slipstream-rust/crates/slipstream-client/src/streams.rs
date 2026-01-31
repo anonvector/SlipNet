@@ -36,13 +36,44 @@ pub(crate) struct ClientState {
     acceptor: acceptor::ClientAcceptor,
     debug_enqueued_bytes: u64,
     debug_last_enqueue_at: u64,
+    acceptor_limit_logged: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamSendState {
+    Open,
+    Closing,
+    FinQueued,
+}
+
+impl StreamSendState {
+    fn is_closed(self) -> bool {
+        matches!(self, StreamSendState::FinQueued)
+    }
+
+    fn can_queue_fin(self) -> bool {
+        matches!(self, StreamSendState::Open | StreamSendState::Closing)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamRecvState {
+    Open,
+    FinReceived,
+}
+
+impl StreamRecvState {
+    fn is_closed(self) -> bool {
+        matches!(self, StreamRecvState::FinReceived)
+    }
 }
 
 #[derive(Default)]
 pub(crate) struct ClientStreamMetrics {
     pub(crate) streams_with_rx_queued: usize,
     pub(crate) queued_bytes_total: u64,
-    pub(crate) streams_with_fin_enqueued: usize,
+    pub(crate) streams_with_recv_fin: usize,
+    pub(crate) streams_with_send_fin: usize,
     pub(crate) streams_discarding: usize,
     pub(crate) streams_with_unconsumed_rx: usize,
 }
@@ -55,7 +86,8 @@ pub(crate) struct ClientBacklogSummary {
     pub(crate) rx_bytes: u64,
     pub(crate) consumed_offset: u64,
     pub(crate) fin_offset: Option<u64>,
-    pub(crate) fin_enqueued: bool,
+    pub(crate) recv_state: StreamRecvState,
+    pub(crate) send_state: StreamSendState,
     pub(crate) stop_sending_sent: bool,
     pub(crate) discarding: bool,
     pub(crate) has_data_rx: bool,
@@ -98,10 +130,11 @@ pub(crate) mod acceptor {
             TcpAcceptor::new(listener, command_tx, Arc::clone(&self.limiter)).spawn();
         }
 
-        pub(crate) fn update_limit(&self, cnx: *mut picoquic_cnx_t) {
+        pub(crate) fn update_limit(&self, cnx: *mut picoquic_cnx_t) -> usize {
             let max_streams = unsafe { slipstream_get_max_streams_bidir_remote(cnx) };
             let max_streams = usize::try_from(max_streams).unwrap_or(usize::MAX);
             self.limiter.set_max(max_streams);
+            max_streams
         }
 
         pub(crate) fn reset(&self) {
@@ -353,6 +386,46 @@ pub(crate) mod acceptor {
             tokio::spawn(self.run());
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::AcceptorLimiter;
+        use std::sync::Arc;
+        use tokio::time::{timeout, Duration};
+
+        #[test]
+        fn acceptor_unblocks_after_stream_limit_increase() {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("build tokio runtime");
+            rt.block_on(async {
+                let limiter = Arc::new(AcceptorLimiter::new(1024));
+
+                for _ in 0..1024 {
+                    let reservation = limiter.reserve().await;
+                    assert!(reservation.commit(), "reservation commit should succeed");
+                }
+
+                let blocked = timeout(Duration::from_millis(50), limiter.reserve()).await;
+                assert!(
+                    blocked.is_err(),
+                    "expected acceptor to block once stream credit is exhausted"
+                );
+
+                // Simulate a peer MAX_STREAMS update after previous streams close.
+                limiter.set_max(1025);
+
+                let reservation = timeout(Duration::from_secs(1), limiter.reserve())
+                    .await
+                    .expect("reservation should unblock after limit increase");
+                assert!(
+                    reservation.commit(),
+                    "reservation should commit after limit increase"
+                );
+            });
+        }
+    }
 }
 
 impl ClientState {
@@ -374,6 +447,7 @@ impl ClientState {
             acceptor,
             debug_enqueued_bytes: 0,
             debug_last_enqueue_at: 0,
+            acceptor_limit_logged: false,
         }
     }
 
@@ -390,7 +464,11 @@ impl ClientState {
     }
 
     pub(crate) fn update_acceptor_limit(&mut self, cnx: *mut picoquic_cnx_t) {
-        self.acceptor.update_limit(cnx);
+        let max_streams = self.acceptor.update_limit(cnx);
+        if !self.acceptor_limit_logged && max_streams > 0 {
+            self.acceptor_limit_logged = true;
+            info!("acceptor: initial_max_streams_bidir_remote={}", max_streams);
+        }
     }
 
     pub(crate) fn debug_snapshot(&self) -> (u64, u64) {
@@ -409,9 +487,11 @@ impl ClientState {
             if queued > 0 {
                 metrics.streams_with_rx_queued = metrics.streams_with_rx_queued.saturating_add(1);
             }
-            if stream.fin_enqueued {
-                metrics.streams_with_fin_enqueued =
-                    metrics.streams_with_fin_enqueued.saturating_add(1);
+            if stream.recv_state == StreamRecvState::FinReceived {
+                metrics.streams_with_recv_fin = metrics.streams_with_recv_fin.saturating_add(1);
+            }
+            if stream.send_state == StreamSendState::FinQueued {
+                metrics.streams_with_send_fin = metrics.streams_with_send_fin.saturating_add(1);
             }
             if stream.flow.discarding {
                 metrics.streams_discarding = metrics.streams_discarding.saturating_add(1);
@@ -433,14 +513,20 @@ impl ClientState {
                 .flow
                 .rx_bytes
                 .saturating_sub(stream.flow.consumed_offset);
-            if queued_bytes > 0 || stream.fin_enqueued || stream.flow.discarding || unconsumed > 0 {
+            if queued_bytes > 0
+                || stream.recv_state != StreamRecvState::Open
+                || stream.send_state != StreamSendState::Open
+                || stream.flow.discarding
+                || unconsumed > 0
+            {
                 summaries.push(ClientBacklogSummary {
                     stream_id: *stream_id,
                     queued_bytes,
                     rx_bytes: stream.flow.rx_bytes,
                     consumed_offset: stream.flow.consumed_offset,
                     fin_offset: stream.flow.fin_offset,
-                    fin_enqueued: stream.fin_enqueued,
+                    recv_state: stream.recv_state,
+                    send_state: stream.send_state,
                     stop_sending_sent: stream.flow.stop_sending_sent,
                     discarding: stream.flow.discarding,
                     has_data_rx,
@@ -476,6 +562,7 @@ impl ClientState {
         self.acceptor.reset();
         self.debug_enqueued_bytes = 0;
         self.debug_last_enqueue_at = 0;
+        self.acceptor_limit_logged = false;
     }
 }
 
@@ -491,29 +578,43 @@ fn check_stream_invariants(state: &ClientState, stream_id: u64, context: &str) {
     let Some(stream) = state.streams.get(&stream_id) else {
         return;
     };
-    if stream.fin_enqueued && stream.data_rx.is_some() {
+    if stream.send_state != StreamSendState::Open && stream.data_rx.is_some() {
         report_invariant(|| {
             format!(
-                "client invariant violated: fin_enqueued with data_rx stream={} context={} queued={} fin_enqueued={} discarding={} tx_bytes={}",
+                "client invariant violated: send_state closed with data_rx stream={} context={} send_state={:?} queued={} discarding={} tx_bytes={}",
                 stream_id,
                 context,
+                stream.send_state,
                 stream.flow.queued_bytes,
-                stream.fin_enqueued,
                 stream.flow.discarding,
                 stream.tx_bytes
             )
         });
     }
-    if stream.fin_enqueued && stream.flow.queued_bytes == 0 && !stream.flow.discarding {
+    if stream.send_state == StreamSendState::Open && stream.data_rx.is_none() {
         report_invariant(|| {
             format!(
-                "client invariant violated: fin_enqueued with zero queue stream={} context={} queued={} fin_enqueued={} discarding={} rx_bytes={}",
+                "client invariant violated: send_state open without data_rx stream={} context={} send_state={:?} recv_state={:?} queued={} discarding={} tx_bytes={}",
                 stream_id,
                 context,
+                stream.send_state,
+                stream.recv_state,
                 stream.flow.queued_bytes,
-                stream.fin_enqueued,
                 stream.flow.discarding,
-                stream.flow.rx_bytes
+                stream.tx_bytes
+            )
+        });
+    }
+    if stream.recv_state == StreamRecvState::FinReceived && stream.flow.fin_offset.is_none() {
+        report_invariant(|| {
+            format!(
+                "client invariant violated: recv_state fin without fin_offset stream={} context={} recv_state={:?} rx_bytes={} queued={} tx_bytes={}",
+                stream_id,
+                context,
+                stream.recv_state,
+                stream.flow.rx_bytes,
+                stream.flow.queued_bytes,
+                stream.tx_bytes
             )
         });
     }
@@ -524,7 +625,8 @@ struct ClientStream {
     read_abort_tx: Option<oneshot::Sender<()>>,
     data_rx: Option<mpsc::Receiver<Vec<u8>>>,
     tx_bytes: u64,
-    fin_enqueued: bool,
+    recv_state: StreamRecvState,
+    send_state: StreamSendState,
     flow: FlowControlState,
 }
 
@@ -598,8 +700,8 @@ pub(crate) unsafe extern "C" fn client_callback(
     match fin_or_event {
         picoquic_call_back_event_t::picoquic_callback_ready => {
             state.ready = true;
-            state.update_acceptor_limit(cnx);
             info!("Connection ready");
+            state.update_acceptor_limit(cnx);
         }
         picoquic_call_back_event_t::picoquic_callback_stream_data
         | picoquic_call_back_event_t::picoquic_callback_stream_fin => {
@@ -623,7 +725,7 @@ pub(crate) unsafe extern "C" fn client_callback(
             };
             if let Some(stream) = state.streams.remove(&stream_id) {
                 warn!(
-                    "stream {}: reset event={} rx_bytes={} tx_bytes={} queued={} consumed_offset={} fin_offset={:?} fin_enqueued={}",
+                    "stream {}: reset event={} rx_bytes={} tx_bytes={} queued={} consumed_offset={} fin_offset={:?} recv_state={:?} send_state={:?}",
                     stream_id,
                     reason,
                     stream.flow.rx_bytes,
@@ -631,7 +733,8 @@ pub(crate) unsafe extern "C" fn client_callback(
                     stream.flow.queued_bytes,
                     stream.flow.consumed_offset,
                     stream.flow.fin_offset,
-                    stream.fin_enqueued
+                    stream.recv_state,
+                    stream.send_state
                 );
             } else {
                 warn!(
@@ -771,8 +874,7 @@ fn handle_stream_data(
                 if stream.flow.fin_offset.is_none() {
                     stream.flow.fin_offset = Some(stream.flow.rx_bytes);
                 }
-                stream.data_rx = None;
-                if !stream.fin_enqueued {
+                if stream.recv_state == StreamRecvState::Open {
                     if stream.write_tx.send(StreamWrite::Fin).is_err() {
                         warn!(
                             "stream {}: tcp write channel closed on fin queued={} rx_bytes={} tx_bytes={}",
@@ -783,7 +885,7 @@ fn handle_stream_data(
                         );
                         reset_stream = true;
                     } else {
-                        stream.fin_enqueued = true;
+                        stream.recv_state = StreamRecvState::FinReceived;
                     }
                 }
             }
@@ -791,7 +893,8 @@ fn handle_stream_data(
 
         if !reset_stream
             && !stream.flow.discarding
-            && stream.fin_enqueued
+            && stream.recv_state.is_closed()
+            && stream.send_state.is_closed()
             && stream.flow.queued_bytes == 0
         {
             remove_stream = true;
@@ -867,7 +970,8 @@ mod tests {
                 read_abort_tx: Some(read_abort_tx),
                 data_rx: None,
                 tx_bytes: 0,
-                fin_enqueued: false,
+                recv_state: StreamRecvState::Open,
+                send_state: StreamSendState::Open,
                 flow: FlowControlState::default(),
             },
         );
@@ -883,6 +987,133 @@ mod tests {
         assert!(
             !state.streams.contains_key(&stream_id),
             "stream state should be removed when add_to_stream(fin) fails"
+        );
+    }
+
+    #[test]
+    fn remote_fin_keeps_local_read_open() {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let data_notify = Arc::new(Notify::new());
+        let acceptor = acceptor::ClientAcceptor::new();
+        let mut state = ClientState::new(command_tx, data_notify, false, acceptor);
+        let stream_id = 4;
+        let (write_tx, mut write_rx) = mpsc::unbounded_channel();
+        let (read_abort_tx, _read_abort_rx) = oneshot::channel();
+        let (_data_tx, data_rx) = mpsc::channel(1);
+
+        state.streams.insert(
+            stream_id,
+            ClientStream {
+                write_tx,
+                read_abort_tx: Some(read_abort_tx),
+                data_rx: Some(data_rx),
+                tx_bytes: 0,
+                recv_state: StreamRecvState::Open,
+                send_state: StreamSendState::Open,
+                flow: FlowControlState::default(),
+            },
+        );
+
+        handle_stream_data(std::ptr::null_mut(), &mut state, stream_id, true, &[]);
+
+        let stream = state
+            .streams
+            .get(&stream_id)
+            .expect("stream should remain after remote fin");
+        assert_eq!(stream.recv_state, StreamRecvState::FinReceived);
+        assert_eq!(stream.send_state, StreamSendState::Open);
+        assert!(
+            stream.data_rx.is_some(),
+            "local TCP read side should stay open after remote fin"
+        );
+        assert!(
+            matches!(write_rx.try_recv(), Ok(StreamWrite::Fin)),
+            "expected a TCP fin to be enqueued"
+        );
+    }
+
+    #[test]
+    fn stream_removal_requires_both_halves_closed() {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let data_notify = Arc::new(Notify::new());
+        let acceptor = acceptor::ClientAcceptor::new();
+        let mut state = ClientState::new(command_tx, data_notify, false, acceptor);
+        let stream_id = 4;
+        let (write_tx, _write_rx) = mpsc::unbounded_channel();
+        let (read_abort_tx, _read_abort_rx) = oneshot::channel();
+        let (_data_tx, data_rx) = mpsc::channel(1);
+
+        state.streams.insert(
+            stream_id,
+            ClientStream {
+                write_tx,
+                read_abort_tx: Some(read_abort_tx),
+                data_rx: Some(data_rx),
+                tx_bytes: 0,
+                recv_state: StreamRecvState::Open,
+                send_state: StreamSendState::Open,
+                flow: FlowControlState::default(),
+            },
+        );
+
+        handle_stream_data(std::ptr::null_mut(), &mut state, stream_id, true, &[]);
+        assert!(
+            state.streams.contains_key(&stream_id),
+            "stream should remain when only recv side is closed"
+        );
+
+        if let Some(stream) = state.streams.get_mut(&stream_id) {
+            stream.send_state = StreamSendState::FinQueued;
+        }
+        handle_command(
+            std::ptr::null_mut(),
+            &mut state as *mut _,
+            Command::StreamWriteDrained {
+                stream_id,
+                bytes: 0,
+            },
+        );
+        assert!(
+            !state.streams.contains_key(&stream_id),
+            "stream should be removed once both halves are closed"
+        );
+    }
+
+    #[test]
+    fn local_fin_does_not_remove_until_recv_fin() {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let data_notify = Arc::new(Notify::new());
+        let acceptor = acceptor::ClientAcceptor::new();
+        let mut state = ClientState::new(command_tx, data_notify, false, acceptor);
+        let stream_id = 4;
+        let (write_tx, _write_rx) = mpsc::unbounded_channel();
+        let (read_abort_tx, _read_abort_rx) = oneshot::channel();
+
+        state.streams.insert(
+            stream_id,
+            ClientStream {
+                write_tx,
+                read_abort_tx: Some(read_abort_tx),
+                data_rx: None,
+                tx_bytes: 0,
+                recv_state: StreamRecvState::Open,
+                send_state: StreamSendState::FinQueued,
+                flow: FlowControlState::default(),
+            },
+        );
+
+        handle_command(
+            std::ptr::null_mut(),
+            &mut state as *mut _,
+            Command::StreamWriteDrained {
+                stream_id,
+                bytes: 0,
+            },
+        );
+
+        assert!(
+            state.streams.contains_key(&stream_id),
+            "stream should remain when only send side is closed"
         );
     }
 
@@ -988,6 +1219,13 @@ pub(crate) fn drain_stream_data(cnx: *mut picoquic_cnx_t, state_ptr: *mut Client
     {
         let state = unsafe { &mut *state_ptr };
         slipstream_core::drain_stream_data!(state.streams, data_rx, pending, closed_streams);
+        for stream_id in &closed_streams {
+            if let Some(stream) = state.streams.get_mut(stream_id) {
+                if stream.send_state == StreamSendState::Open {
+                    stream.send_state = StreamSendState::Closing;
+                }
+            }
+        }
     }
     for (stream_id, data) in pending {
         handle_command(cnx, state_ptr, Command::StreamData { stream_id, data });
@@ -1079,7 +1317,8 @@ pub(crate) fn handle_command(
                     read_abort_tx: Some(read_abort_tx),
                     data_rx: Some(data_rx),
                     tx_bytes: 0,
-                    fin_enqueued: false,
+                    recv_state: StreamRecvState::Open,
+                    send_state: StreamSendState::Open,
                     flow: FlowControlState::default(),
                 },
             );
@@ -1122,8 +1361,6 @@ pub(crate) fn handle_command(
                 );
             }
             if state.debug_streams {
-                debug!("stream {}: accepted", stream_id);
-            } else {
                 debug!("Accepted TCP stream {}", stream_id);
             }
             check_stream_invariants(state, stream_id, "NewStream");
@@ -1150,6 +1387,13 @@ pub(crate) fn handle_command(
             check_stream_invariants(state, stream_id, "StreamData");
         }
         Command::StreamClosed { stream_id } => {
+            let should_send_fin = state
+                .streams
+                .get(&stream_id)
+                .is_some_and(|stream| stream.send_state.can_queue_fin());
+            if !should_send_fin {
+                return;
+            }
             #[cfg(test)]
             let forced_failure = test_hooks::take_add_to_stream_failure();
             #[cfg(not(test))]
@@ -1175,6 +1419,11 @@ pub(crate) fn handle_command(
                     unsafe { abort_stream_bidi(cnx, stream_id, SLIPSTREAM_INTERNAL_ERROR) };
                 }
                 state.streams.remove(&stream_id);
+            } else if let Some(stream) = state.streams.get_mut(&stream_id) {
+                stream.send_state = StreamSendState::FinQueued;
+                if stream.recv_state.is_closed() && stream.flow.queued_bytes == 0 {
+                    state.streams.remove(&stream_id);
+                }
             }
             check_stream_invariants(state, stream_id, "StreamClosed");
         }
@@ -1242,7 +1491,10 @@ pub(crate) fn handle_command(
                         return;
                     }
                 }
-                if stream.fin_enqueued && stream.flow.queued_bytes == 0 {
+                if stream.recv_state.is_closed()
+                    && stream.send_state.is_closed()
+                    && stream.flow.queued_bytes == 0
+                {
                     remove_stream = true;
                 }
             }

@@ -2,6 +2,8 @@ package app.slipnet.data.repository
 
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import app.slipnet.data.local.datastore.BufferSize
+import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
@@ -16,12 +18,16 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class VpnRepositoryImpl @Inject constructor() : VpnRepository {
+class VpnRepositoryImpl @Inject constructor(
+    private val preferencesDataStore: PreferencesDataStore
+) : VpnRepository {
     companion object {
         private const val TAG = "VpnRepositoryImpl"
     }
@@ -56,6 +62,13 @@ class VpnRepositoryImpl @Inject constructor() : VpnRepository {
     ): Result<Unit> {
         connectedProfile = profile
 
+        // Read network optimization settings from preferences
+        val dnsTimeout = runBlocking { preferencesDataStore.dnsTimeout.first() }
+        val connectionTimeout = runBlocking { preferencesDataStore.connectionTimeout.first() }
+        val bufferSize = runBlocking { preferencesDataStore.bufferSize.first() }
+        val connectionPoolSize = runBlocking { preferencesDataStore.connectionPoolSize.first() }
+        val debugLogging = runBlocking { preferencesDataStore.debugLogging.first() }
+
         // Convert profile to tunnel config
         val resolvers = profile.resolvers.map { resolver ->
             ResolverConfig(
@@ -71,8 +84,17 @@ class VpnRepositoryImpl @Inject constructor() : VpnRepository {
         val config = KotlinTunnelConfig(
             domain = profile.domain,
             resolvers = resolvers,
-            slipstreamPort = 15201,
-            dnsServer = dnsServer
+            slipstreamPort = profile.tcpListenPort,
+            slipstreamHost = profile.tcpListenHost,
+            dnsServer = dnsServer,
+            congestionControl = profile.congestionControl.value,
+            keepAliveInterval = profile.keepAliveInterval,
+            gsoEnabled = profile.gsoEnabled,
+            dnsTimeout = dnsTimeout,
+            connectionTimeout = connectionTimeout,
+            bufferSize = bufferSize.bytes,
+            connectionPoolSize = connectionPoolSize,
+            verboseLogging = debugLogging
         )
 
         // Create and start the Kotlin tunnel manager
@@ -80,7 +102,7 @@ class VpnRepositoryImpl @Inject constructor() : VpnRepository {
             config = config,
             tunFd = pfd,
             onSlipstreamStart = { domain, resolverList ->
-                startSlipstreamClient(domain, resolverList, profile)
+                startSlipstreamClient(domain, resolverList, profile, debugLogging)
             },
             onSlipstreamStop = {
                 SlipstreamBridge.stopClient()
@@ -108,14 +130,19 @@ class VpnRepositoryImpl @Inject constructor() : VpnRepository {
     private fun startSlipstreamClient(
         domain: String,
         resolvers: List<ResolverConfig>,
-        profile: ServerProfile
+        profile: ServerProfile,
+        debugLogging: Boolean
     ): Boolean {
         val result = SlipstreamBridge.startClient(
             domain = domain,
             resolvers = resolvers,
-            certificatePath = profile.certificatePath,
             congestionControl = profile.congestionControl.value,
-            keepAliveInterval = profile.keepAliveInterval
+            keepAliveInterval = profile.keepAliveInterval,
+            tcpListenPort = profile.tcpListenPort,
+            tcpListenHost = profile.tcpListenHost,
+            gsoEnabled = profile.gsoEnabled,
+            debugPoll = debugLogging,
+            debugStreams = debugLogging
         )
         return result.isSuccess
     }

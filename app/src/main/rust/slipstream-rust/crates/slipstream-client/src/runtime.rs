@@ -454,11 +454,12 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                         now.saturating_sub(last_enqueue_at) / 1_000
                     };
                     error!(
-                        "connection flow blocked: streams={} streams_with_rx_queued={} queued_bytes_total={} streams_with_fin_enqueued={} streams_discarding={} streams_with_unconsumed_rx={} enqueued_bytes={} last_enqueue_ms={} zero_send_with_streams={} zero_send_loops={} flow_blocked={} has_ready_stream={} backlog={:?}",
+                        "connection flow blocked: streams={} streams_with_rx_queued={} queued_bytes_total={} streams_with_recv_fin={} streams_with_send_fin={} streams_discarding={} streams_with_unconsumed_rx={} enqueued_bytes={} last_enqueue_ms={} zero_send_with_streams={} zero_send_loops={} flow_blocked={} has_ready_stream={} backlog={:?}",
                         streams_len,
                         metrics.streams_with_rx_queued,
                         metrics.queued_bytes_total,
-                        metrics.streams_with_fin_enqueued,
+                        metrics.streams_with_recv_fin,
+                        metrics.streams_with_send_fin,
                         metrics.streams_discarding,
                         metrics.streams_with_unconsumed_rx,
                         enqueued_bytes,

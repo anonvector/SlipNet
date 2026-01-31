@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -32,6 +33,11 @@ class PreferencesDataStore @Inject constructor(
         val TOTAL_BYTES_RECEIVED = longPreferencesKey("total_bytes_received")
         val TOTAL_CONNECTION_TIME = longPreferencesKey("total_connection_time")
         val LAST_CONNECTED_PROFILE_ID = longPreferencesKey("last_connected_profile_id")
+        // Network Optimization Keys
+        val DNS_TIMEOUT = intPreferencesKey("dns_timeout")
+        val CONNECTION_TIMEOUT = intPreferencesKey("connection_timeout")
+        val BUFFER_SIZE = stringPreferencesKey("buffer_size")
+        val CONNECTION_POOL_SIZE = intPreferencesKey("connection_pool_size")
     }
 
     // Auto-connect on boot
@@ -125,6 +131,47 @@ class PreferencesDataStore @Inject constructor(
             }
         }
     }
+
+    // Network Optimization Settings
+    val dnsTimeout: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.DNS_TIMEOUT] ?: 5000
+    }
+
+    suspend fun setDnsTimeout(timeout: Int) {
+        dataStore.edit { prefs ->
+            prefs[Keys.DNS_TIMEOUT] = timeout.coerceIn(1000, 15000)
+        }
+    }
+
+    val connectionTimeout: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.CONNECTION_TIMEOUT] ?: 30000
+    }
+
+    suspend fun setConnectionTimeout(timeout: Int) {
+        dataStore.edit { prefs ->
+            prefs[Keys.CONNECTION_TIMEOUT] = timeout.coerceIn(10000, 60000)
+        }
+    }
+
+    val bufferSize: Flow<BufferSize> = dataStore.data.map { prefs ->
+        BufferSize.fromValue(prefs[Keys.BUFFER_SIZE] ?: BufferSize.MEDIUM.value)
+    }
+
+    suspend fun setBufferSize(size: BufferSize) {
+        dataStore.edit { prefs ->
+            prefs[Keys.BUFFER_SIZE] = size.value
+        }
+    }
+
+    val connectionPoolSize: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.CONNECTION_POOL_SIZE] ?: 10
+    }
+
+    suspend fun setConnectionPoolSize(size: Int) {
+        dataStore.edit { prefs ->
+            prefs[Keys.CONNECTION_POOL_SIZE] = size.coerceIn(1, 20)
+        }
+    }
 }
 
 enum class DarkMode(val value: String) {
@@ -138,3 +185,16 @@ enum class DarkMode(val value: String) {
         }
     }
 }
+
+enum class BufferSize(val value: String, val bytes: Int) {
+    SMALL("small", 65536),       // 64KB
+    MEDIUM("medium", 262144),    // 256KB
+    LARGE("large", 524288);      // 512KB
+
+    companion object {
+        fun fromValue(value: String): BufferSize {
+            return entries.find { it.value == value } ?: MEDIUM
+        }
+    }
+}
+
