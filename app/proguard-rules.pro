@@ -14,6 +14,14 @@
 # Keep SlipstreamBridge and tunnel classes for JNI
 -keep class app.slipnet.tunnel.SlipstreamBridge { *; }
 -keep class app.slipnet.tunnel.** { *; }
+-keepclassmembers class app.slipnet.tunnel.SlipstreamBridge {
+    native <methods>;
+    private native <methods>;
+}
+# Prevent R8 from optimizing away native method declarations
+-keepclasseswithmembers class * {
+    native <methods>;
+}
 
 # Hilt
 -keep class dagger.hilt.** { *; }
