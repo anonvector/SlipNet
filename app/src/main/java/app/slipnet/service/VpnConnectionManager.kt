@@ -6,9 +6,7 @@ import android.os.ParcelFileDescriptor
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.repository.VpnRepositoryImpl
 import app.slipnet.domain.model.ConnectionState
-import app.slipnet.domain.model.LogEventType
 import app.slipnet.domain.model.ServerProfile
-import app.slipnet.domain.repository.ConnectionLogRepository
 import app.slipnet.domain.repository.ProfileRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -27,7 +25,6 @@ class VpnConnectionManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val vpnRepository: VpnRepositoryImpl,
     private val profileRepository: ProfileRepository,
-    private val logRepository: ConnectionLogRepository,
     private val preferencesDataStore: PreferencesDataStore
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -61,15 +58,6 @@ class VpnConnectionManager @Inject constructor(
             putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profile.id)
         }
         context.startForegroundService(intent)
-
-        scope.launch {
-            logRepository.addLog(
-                profileId = profile.id,
-                profileName = profile.name,
-                eventType = LogEventType.CONNECT_START,
-                message = "Initiating connection to ${profile.domain}"
-            )
-        }
     }
 
     fun disconnect() {
@@ -94,67 +82,25 @@ class VpnConnectionManager @Inject constructor(
                 _connectionState.value = ConnectionState.Connected(profile)
                 preferencesDataStore.setLastConnectedProfileId(profile.id)
                 profileRepository.setActiveProfile(profile.id)
-
-                logRepository.addLog(
-                    profileId = profile.id,
-                    profileName = profile.name,
-                    eventType = LogEventType.CONNECT_SUCCESS,
-                    message = "Connected to ${profile.domain}"
-                )
             } else {
                 _connectionState.value = ConnectionState.Error(
                     result.exceptionOrNull()?.message ?: "Unknown error"
-                )
-
-                logRepository.addLog(
-                    profileId = profile.id,
-                    profileName = profile.name,
-                    eventType = LogEventType.CONNECT_FAILED,
-                    message = "Failed to connect",
-                    details = result.exceptionOrNull()?.message
                 )
             }
         }
     }
 
     fun onVpnDisconnected() {
-        val currentState = _connectionState.value
-        val profile = when (currentState) {
-            is ConnectionState.Connected -> currentState.profile
-            else -> pendingProfile
-        }
-
         scope.launch {
             vpnRepository.disconnect()
             _connectionState.value = ConnectionState.Disconnected
             pendingProfile = null
-
-            if (profile != null) {
-                logRepository.addLog(
-                    profileId = profile.id,
-                    profileName = profile.name,
-                    eventType = LogEventType.DISCONNECT,
-                    message = "Disconnected from ${profile.domain}"
-                )
-            }
         }
     }
 
     fun onVpnError(error: String) {
-        val profile = pendingProfile
-
         scope.launch {
             _connectionState.value = ConnectionState.Error(error)
-
-            if (profile != null) {
-                logRepository.addLog(
-                    profileId = profile.id,
-                    profileName = profile.name,
-                    eventType = LogEventType.ERROR,
-                    message = "VPN Error",
-                    details = error
-                )
-            }
         }
     }
 

@@ -17,11 +17,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -33,15 +33,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,21 +58,14 @@ import kotlin.math.roundToInt
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
+    onNavigateToScanner: (() -> Unit)? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val snackbarHostState = remember { SnackbarHostState() }
     val scrollState = rememberScrollState()
 
     var showDarkModeDialog by remember { mutableStateOf(false) }
     var showBufferSizeDialog by remember { mutableStateOf(false) }
-
-    LaunchedEffect(uiState.logsCleared) {
-        if (uiState.logsCleared) {
-            snackbarHostState.showSnackbar("Logs cleared")
-            viewModel.resetLogsClearedFlag()
-        }
-    }
 
     Scaffold(
         topBar = {
@@ -87,8 +77,7 @@ fun SettingsScreen(
                     }
                 }
             )
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
+        }
     ) { paddingValues ->
         Column(
             modifier = Modifier
@@ -176,6 +165,18 @@ fun SettingsScreen(
                 )
             }
 
+            // Tools Section
+            if (onNavigateToScanner != null) {
+                SettingsSection(title = "Tools") {
+                    ClickableSettingItem(
+                        icon = Icons.Default.Search,
+                        title = "DNS Resolver Scanner",
+                        description = "Find working DNS resolvers for your profiles",
+                        onClick = onNavigateToScanner
+                    )
+                }
+            }
+
             // Debug Settings
             SettingsSection(title = "Debug") {
                 SwitchSettingItem(
@@ -185,22 +186,13 @@ fun SettingsScreen(
                     checked = uiState.debugLogging,
                     onCheckedChange = { viewModel.setDebugLogging(it) }
                 )
-
-                SettingsDivider()
-
-                ClickableSettingItem(
-                    icon = Icons.Default.Delete,
-                    title = "Clear logs",
-                    description = "Delete all connection logs",
-                    onClick = { viewModel.showClearLogsConfirmation() }
-                )
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
             // App Info
             Text(
-                text = "Slipstream VPN v1.0.0",
+                text = "SlipNet VPN v1.1.0",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.align(Alignment.CenterHorizontally)
@@ -250,25 +242,6 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showDarkModeDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Clear Logs Confirmation Dialog
-    if (uiState.showClearLogsConfirmation) {
-        AlertDialog(
-            onDismissRequest = { viewModel.dismissClearLogsConfirmation() },
-            title = { Text("Clear Logs") },
-            text = { Text("Are you sure you want to delete all connection logs?") },
-            confirmButton = {
-                TextButton(onClick = { viewModel.clearLogs() }) {
-                    Text("Clear")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.dismissClearLogsConfirmation() }) {
                     Text("Cancel")
                 }
             }
