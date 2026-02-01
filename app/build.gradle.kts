@@ -279,6 +279,7 @@ cargo {
     rustupChannel = "stable"
     extraCargoBuildArguments = listOf(
         "-p", "slipstream-client",
+        "--lib",  // Only build the library, not the binary (avoids overwriting cdylib with executable)
         "--features", "openssl-static,picoquic-minimal-build",
     )
     exec = { spec, toolchain ->
