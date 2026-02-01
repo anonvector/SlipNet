@@ -5,7 +5,6 @@ import androidx.lifecycle.viewModelScope
 import app.slipnet.data.local.datastore.BufferSize
 import app.slipnet.data.local.datastore.DarkMode
 import app.slipnet.data.local.datastore.PreferencesDataStore
-import app.slipnet.domain.usecase.ClearLogsUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,8 +18,6 @@ data class SettingsUiState(
     val darkMode: DarkMode = DarkMode.SYSTEM,
     val debugLogging: Boolean = false,
     val isLoading: Boolean = true,
-    val showClearLogsConfirmation: Boolean = false,
-    val logsCleared: Boolean = false,
     // Network Optimization Settings
     val dnsTimeout: Int = 5000,
     val connectionTimeout: Int = 30000,
@@ -30,8 +27,7 @@ data class SettingsUiState(
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val preferencesDataStore: PreferencesDataStore,
-    private val clearLogsUseCase: ClearLogsUseCase
+    private val preferencesDataStore: PreferencesDataStore
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -57,8 +53,6 @@ class SettingsViewModel @Inject constructor(
                     darkMode = values[1] as DarkMode,
                     debugLogging = values[2] as Boolean,
                     isLoading = false,
-                    showClearLogsConfirmation = _uiState.value.showClearLogsConfirmation,
-                    logsCleared = _uiState.value.logsCleared,
                     dnsTimeout = values[3] as Int,
                     connectionTimeout = values[4] as Int,
                     bufferSize = values[5] as BufferSize,
@@ -86,28 +80,6 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             preferencesDataStore.setDebugLogging(enabled)
         }
-    }
-
-    fun showClearLogsConfirmation() {
-        _uiState.value = _uiState.value.copy(showClearLogsConfirmation = true)
-    }
-
-    fun dismissClearLogsConfirmation() {
-        _uiState.value = _uiState.value.copy(showClearLogsConfirmation = false)
-    }
-
-    fun clearLogs() {
-        viewModelScope.launch {
-            clearLogsUseCase()
-            _uiState.value = _uiState.value.copy(
-                showClearLogsConfirmation = false,
-                logsCleared = true
-            )
-        }
-    }
-
-    fun resetLogsClearedFlag() {
-        _uiState.value = _uiState.value.copy(logsCleared = false)
     }
 
     // Network Optimization Settings
