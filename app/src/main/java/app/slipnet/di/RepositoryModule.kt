@@ -1,10 +1,10 @@
 package app.slipnet.di
 
-import app.slipnet.data.repository.ConnectionLogRepositoryImpl
 import app.slipnet.data.repository.ProfileRepositoryImpl
+import app.slipnet.data.repository.ResolverScannerRepositoryImpl
 import app.slipnet.data.repository.VpnRepositoryImpl
-import app.slipnet.domain.repository.ConnectionLogRepository
 import app.slipnet.domain.repository.ProfileRepository
+import app.slipnet.domain.repository.ResolverScannerRepository
 import app.slipnet.domain.repository.VpnRepository
 import dagger.Binds
 import dagger.Module
@@ -24,13 +24,13 @@ abstract class RepositoryModule {
 
     @Binds
     @Singleton
-    abstract fun bindConnectionLogRepository(
-        connectionLogRepositoryImpl: ConnectionLogRepositoryImpl
-    ): ConnectionLogRepository
-
-    @Binds
-    @Singleton
     abstract fun bindVpnRepository(
         vpnRepositoryImpl: VpnRepositoryImpl
     ): VpnRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindResolverScannerRepository(
+        resolverScannerRepositoryImpl: ResolverScannerRepositoryImpl
+    ): ResolverScannerRepository
 }

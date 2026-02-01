@@ -2,7 +2,6 @@ package app.slipnet.di
 
 import android.content.Context
 import androidx.room.Room
-import app.slipnet.data.local.database.ConnectionLogDao
 import app.slipnet.data.local.database.ProfileDao
 import app.slipnet.data.local.database.SlipNetDatabase
 import dagger.Module
@@ -34,11 +33,5 @@ object DatabaseModule {
     @Singleton
     fun provideProfileDao(database: SlipNetDatabase): ProfileDao {
         return database.profileDao()
-    }
-
-    @Provides
-    @Singleton
-    fun provideConnectionLogDao(database: SlipNetDatabase): ConnectionLogDao {
-        return database.connectionLogDao()
     }
 }

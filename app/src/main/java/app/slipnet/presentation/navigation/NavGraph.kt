@@ -12,6 +12,7 @@ import androidx.navigation.navArgument
 import app.slipnet.presentation.home.HomeScreen
 import app.slipnet.presentation.profiles.EditProfileScreen
 import app.slipnet.presentation.profiles.ProfileListScreen
+import app.slipnet.presentation.scanner.DnsScannerScreen
 import app.slipnet.presentation.settings.SettingsScreen
 
 @Composable
@@ -53,12 +54,19 @@ fun NavGraph(
             )
         }
 
-        composable(NavRoutes.AddProfile.route) {
+        composable(NavRoutes.AddProfile.route) { backStackEntry ->
+            val selectedResolvers = backStackEntry.savedStateHandle
+                .get<String>("selected_resolvers")
+
             EditProfileScreen(
                 profileId = null,
                 onNavigateBack = {
                     navController.popBackStack()
-                }
+                },
+                onNavigateToScanner = {
+                    navController.navigate(NavRoutes.DnsScanner.createRoute())
+                },
+                selectedResolvers = selectedResolvers
             )
         }
 
@@ -69,11 +77,18 @@ fun NavGraph(
             )
         ) { backStackEntry ->
             val profileId = backStackEntry.arguments?.getLong("profileId")
+            val selectedResolvers = backStackEntry.savedStateHandle
+                .get<String>("selected_resolvers")
+
             EditProfileScreen(
                 profileId = profileId,
                 onNavigateBack = {
                     navController.popBackStack()
-                }
+                },
+                onNavigateToScanner = {
+                    navController.navigate(NavRoutes.DnsScanner.createRoute(profileId))
+                },
+                selectedResolvers = selectedResolvers
             )
         }
 
@@ -81,6 +96,31 @@ fun NavGraph(
             SettingsScreen(
                 onNavigateBack = {
                     navController.popBackStack()
+                },
+                onNavigateToScanner = {
+                    navController.navigate(NavRoutes.DnsScanner.createRoute())
+                }
+            )
+        }
+
+        composable(
+            route = NavRoutes.DnsScanner.route,
+            arguments = listOf(
+                navArgument("profileId") {
+                    type = NavType.LongType
+                    defaultValue = -1L
+                }
+            )
+        ) { backStackEntry ->
+            val profileId = backStackEntry.arguments?.getLong("profileId")?.takeIf { it != -1L }
+            DnsScannerScreen(
+                profileId = profileId,
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onResolversSelected = { resolvers ->
+                    // Pass selected resolvers back through saved state
+                    navController.previousBackStackEntry?.savedStateHandle?.set("selected_resolvers", resolvers)
                 }
             )
         }

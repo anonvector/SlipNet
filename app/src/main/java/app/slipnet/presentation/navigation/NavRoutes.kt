@@ -8,4 +8,13 @@ sealed class NavRoutes(val route: String) {
         fun createRoute(profileId: Long) = "edit_profile/$profileId"
     }
     data object Settings : NavRoutes("settings")
+    data object DnsScanner : NavRoutes("dns_scanner?profileId={profileId}") {
+        fun createRoute(profileId: Long? = null): String {
+            return if (profileId != null) {
+                "dns_scanner?profileId=$profileId"
+            } else {
+                "dns_scanner"
+            }
+        }
+    }
 }
