@@ -10,7 +10,12 @@ A modern Android VPN client built with Jetpack Compose and Kotlin, featuring DNS
 - **Quick Settings Tile**: Toggle VPN connection directly from the notification shade
 - **Auto-connect on Boot**: Optionally reconnect VPN when device starts
 - **Dark Mode**: Full support for system-wide dark theme
-- **Connection Logging**: Track connection history and events
+
+## Server Setup
+
+To use this client, you need a compatible server. Please set up your server using the **socks mode** of the following deployment script:
+
+[**slipstream-rust-deploy**](https://github.com/AliRezaBeigy/slipstream-rust-deploy)
 
 ## Screenshots
 
