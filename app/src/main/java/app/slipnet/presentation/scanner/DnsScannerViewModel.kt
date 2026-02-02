@@ -26,18 +26,17 @@ data class DnsScannerUiState(
     val selectedResolvers: Set<String> = emptySet(),
     val isLoadingList: Boolean = false,
     val error: String? = null,
-    val showFilterWorking: Boolean = false,
     val listSource: ListSource = ListSource.DEFAULT
 ) {
     companion object {
-        const val MAX_SELECTED_RESOLVERS = 10
+        const val MAX_SELECTED_RESOLVERS = 1
     }
 
     val isSelectionLimitReached: Boolean
         get() = selectedResolvers.size >= MAX_SELECTED_RESOLVERS
 
     val selectionLimitMessage: String
-        get() = "Maximum $MAX_SELECTED_RESOLVERS resolvers can be selected"
+        get() = "Only one resolver can be selected"
 }
 
 enum class ListSource {
@@ -51,7 +50,7 @@ class DnsScannerViewModel @Inject constructor(
     private val scannerRepository: ResolverScannerRepository
 ) : ViewModel() {
 
-    private val profileId: Long? = savedStateHandle.get<Long>("profileId")
+    private val profileId: Long? = savedStateHandle.get<Long>("profileId")?.takeIf { it != -1L }
 
     private val _uiState = MutableStateFlow(DnsScannerUiState(profileId = profileId))
     val uiState: StateFlow<DnsScannerUiState> = _uiState.asStateFlow()
@@ -111,47 +110,15 @@ class DnsScannerViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(concurrency = concurrency)
     }
 
-    fun toggleFilterWorking() {
-        _uiState.value = _uiState.value.copy(
-            showFilterWorking = !_uiState.value.showFilterWorking
-        )
-    }
-
     fun toggleResolverSelection(host: String) {
-        val current = _uiState.value.selectedResolvers.toMutableSet()
+        val current = _uiState.value.selectedResolvers
         if (current.contains(host)) {
-            current.remove(host)
-            _uiState.value = _uiState.value.copy(selectedResolvers = current)
+            // Deselect if already selected
+            _uiState.value = _uiState.value.copy(selectedResolvers = emptySet())
         } else {
-            // Check if limit is reached before adding
-            if (current.size >= DnsScannerUiState.MAX_SELECTED_RESOLVERS) {
-                _uiState.value = _uiState.value.copy(
-                    error = "Maximum ${DnsScannerUiState.MAX_SELECTED_RESOLVERS} resolvers can be selected. Deselect some to add more."
-                )
-                return
-            }
-            current.add(host)
-            _uiState.value = _uiState.value.copy(selectedResolvers = current)
+            // Replace selection with new resolver (only 1 allowed)
+            _uiState.value = _uiState.value.copy(selectedResolvers = setOf(host))
         }
-    }
-
-    fun selectAllWorking() {
-        val workingResolvers = _uiState.value.scannerState.results
-            .filter { it.status == ResolverStatus.WORKING }
-            .map { it.host }
-            .take(DnsScannerUiState.MAX_SELECTED_RESOLVERS) // Limit to max
-            .toSet()
-
-        val message = if (_uiState.value.scannerState.workingCount > DnsScannerUiState.MAX_SELECTED_RESOLVERS) {
-            "Selected first ${DnsScannerUiState.MAX_SELECTED_RESOLVERS} working resolvers (limit reached)"
-        } else {
-            null
-        }
-
-        _uiState.value = _uiState.value.copy(
-            selectedResolvers = workingResolvers,
-            error = message
-        )
     }
 
     fun clearSelection() {

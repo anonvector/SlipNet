@@ -22,6 +22,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,6 +53,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
@@ -120,12 +126,14 @@ private val ErrorRed = Color(0xFFE53935)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DnsScannerScreen(
-    profileId: Long?,
+    profileId: Long? = null,
     onNavigateBack: () -> Unit,
     onResolversSelected: (String) -> Unit,
     viewModel: DnsScannerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    // Always enable selection - Apply will work when navigating back to profile
+    val canApply = true
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     var showScanDialog by remember { mutableStateOf(false) }
@@ -234,11 +242,10 @@ fun DnsScannerScreen(
     if (showScanDialog) {
         ScanResultsDialog(
             uiState = uiState,
+            canApply = canApply,
             onDismiss = { showScanDialog = false },
             onStopScan = { viewModel.stopScan() },
-            onToggleFilter = { viewModel.toggleFilterWorking() },
             onToggleSelection = { viewModel.toggleResolverSelection(it) },
-            onSelectAllWorking = { viewModel.selectAllWorking() },
             onClearSelection = { viewModel.clearSelection() },
             onApplySelection = {
                 onResolversSelected(viewModel.getSelectedResolversString())
@@ -592,11 +599,10 @@ private fun ActionSection(
 @Composable
 private fun ScanResultsDialog(
     uiState: DnsScannerUiState,
+    canApply: Boolean,
     onDismiss: () -> Unit,
     onStopScan: () -> Unit,
-    onToggleFilter: () -> Unit,
     onToggleSelection: (String) -> Unit,
-    onSelectAllWorking: () -> Unit,
     onClearSelection: () -> Unit,
     onApplySelection: () -> Unit,
     onClearError: () -> Unit = {}
@@ -620,9 +626,8 @@ private fun ScanResultsDialog(
             dismissOnClickOutside = false
         )
     ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
+        Box(
+            modifier = Modifier.fillMaxSize()
         ) {
             Scaffold(
                 snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -631,18 +636,10 @@ private fun ScanResultsDialog(
                         isScanning = uiState.scannerState.isScanning,
                         scannedCount = uiState.scannerState.scannedCount,
                         totalCount = uiState.scannerState.totalCount,
-                        hasSelection = uiState.selectedResolvers.isNotEmpty(),
+                        hasSelection = canApply && uiState.selectedResolvers.isNotEmpty(),
                         onDismiss = onDismiss,
                         onApplySelection = onApplySelection
                     )
-                },
-                bottomBar = {
-                    if (uiState.selectedResolvers.isNotEmpty()) {
-                        SelectionBottomBar(
-                            selectedCount = uiState.selectedResolvers.size,
-                            onApplySelection = onApplySelection
-                        )
-                    }
                 }
             ) { paddingValues ->
                 Column(
@@ -662,27 +659,21 @@ private fun ScanResultsDialog(
                         )
                     }
 
-                    // Filter Controls
-                    FilterControls(
-                        showFilterWorking = uiState.showFilterWorking,
-                        selectedCount = uiState.selectedResolvers.size,
-                        maxSelection = DnsScannerUiState.MAX_SELECTED_RESOLVERS,
-                        isLimitReached = uiState.isSelectionLimitReached,
-                        workingCount = uiState.scannerState.workingCount,
-                        onToggleFilter = onToggleFilter,
-                        onSelectAllWorking = onSelectAllWorking,
-                        onClearSelection = onClearSelection
-                    )
+                    // Selection Controls (only when can apply to profile)
+                    if (canApply) {
+                        SelectionControls(
+                            selectedCount = uiState.selectedResolvers.size,
+                            onClearSelection = onClearSelection
+                        )
+                    }
 
-                    // Results List
-                    val filteredResults = if (uiState.showFilterWorking) {
-                        uiState.scannerState.results.filter { it.status == ResolverStatus.WORKING }
-                    } else {
-                        uiState.scannerState.results
+                    // Results List - always show working only
+                    val filteredResults = uiState.scannerState.results.filter {
+                        it.status == ResolverStatus.WORKING
                     }
 
                     if (filteredResults.isEmpty() && !uiState.scannerState.isScanning) {
-                        EmptyResultsState(showFilterWorking = uiState.showFilterWorking)
+                        EmptyResultsState()
                     } else {
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
@@ -694,18 +685,15 @@ private fun ScanResultsDialog(
                                 ResolverResultItem(
                                     result = result,
                                     isSelected = isSelected,
-                                    isSelectionDisabled = uiState.isSelectionLimitReached && !isSelected,
-                                    onToggleSelection = { onToggleSelection(result.host) }
+                                    showSelection = canApply,
+                                    onToggleSelection = if (canApply) {{ onToggleSelection(result.host) }} else null
                                 )
-                            }
-
-                            item {
-                                Spacer(modifier = Modifier.height(80.dp))
                             }
                         }
                     }
                 }
             }
+
         }
     }
 }
@@ -875,159 +863,53 @@ private fun StatChip(
 }
 
 @Composable
-private fun FilterControls(
-    showFilterWorking: Boolean,
+private fun SelectionControls(
     selectedCount: Int,
-    maxSelection: Int,
-    isLimitReached: Boolean,
-    workingCount: Int,
-    onToggleFilter: () -> Unit,
-    onSelectAllWorking: () -> Unit,
     onClearSelection: () -> Unit
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                FilterChip(
-                    selected = showFilterWorking,
-                    onClick = onToggleFilter,
-                    label = { Text("Working only") },
-                    leadingIcon = if (showFilterWorking) {
-                        {
-                            Icon(
-                                Icons.Default.Check,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    } else null
-                )
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                // Selection counter
-                Box(
+    if (selectedCount > 0) {
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 1.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column {
+                Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            if (isLimitReached)
-                                ErrorRed.copy(alpha = 0.1f)
-                            else
-                                MaterialTheme.colorScheme.primaryContainer
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "1 selected",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
                         )
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        text = "$selectedCount / $maxSelection",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (isLimitReached) ErrorRed else MaterialTheme.colorScheme.primary
-                    )
-                }
+                    }
 
-                TextButton(
-                    onClick = onSelectAllWorking,
-                    enabled = workingCount > 0 && !isLimitReached
-                ) {
-                    Text("Select All")
-                }
+                    Spacer(modifier = Modifier.weight(1f))
 
-                if (selectedCount > 0) {
                     TextButton(onClick = onClearSelection) {
                         Text("Clear")
                     }
                 }
-            }
 
-            AnimatedVisibility(visible = isLimitReached) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(ErrorRed.copy(alpha = 0.1f))
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Default.Info,
-                        contentDescription = null,
-                        tint = ErrorRed,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = "Selection limit reached. Deselect some to add more.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = ErrorRed
-                    )
-                }
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-        }
-    }
-}
-
-@Composable
-private fun SelectionBottomBar(
-    selectedCount: Int,
-    onApplySelection: () -> Unit
-) {
-    Surface(
-        color = MaterialTheme.colorScheme.primaryContainer,
-        tonalElevation = 8.dp,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = "$selectedCount resolver(s) selected",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-            Button(
-                onClick = onApplySelection,
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    Icons.Default.Check,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("Apply", fontWeight = FontWeight.SemiBold)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             }
         }
     }
 }
 
 @Composable
-private fun EmptyResultsState(showFilterWorking: Boolean) {
+private fun EmptyResultsState() {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1046,22 +928,19 @@ private fun EmptyResultsState(showFilterWorking: Boolean) {
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    if (showFilterWorking) Icons.Default.FilterList else Icons.Default.Search,
+                    Icons.Default.SearchOff,
                     contentDescription = null,
                     modifier = Modifier.size(36.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Text(
-                text = if (showFilterWorking) "No working resolvers" else "No results yet",
+                text = "No working resolvers found",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                text = if (showFilterWorking)
-                    "Try adjusting the filter or running a new scan"
-                else
-                    "Start a scan to find working resolvers",
+                text = "Try running a new scan or importing a different list",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                 textAlign = TextAlign.Center
@@ -1074,33 +953,33 @@ private fun EmptyResultsState(showFilterWorking: Boolean) {
 private fun ResolverResultItem(
     result: ResolverScanResult,
     isSelected: Boolean,
-    isSelectionDisabled: Boolean = false,
-    onToggleSelection: () -> Unit
+    showSelection: Boolean = true,
+    onToggleSelection: (() -> Unit)? = null
 ) {
-    val canInteract = result.status == ResolverStatus.WORKING && (isSelected || !isSelectionDisabled)
+    val canInteract = showSelection && result.status == ResolverStatus.WORKING && onToggleSelection != null
 
     val backgroundColor by animateColorAsState(
         targetValue = when {
-            isSelected -> MaterialTheme.colorScheme.primaryContainer
+            isSelected && showSelection -> MaterialTheme.colorScheme.primaryContainer
             else -> MaterialTheme.colorScheme.surface
         },
         label = "backgroundColor"
     )
 
-    val alpha by animateFloatAsState(
-        targetValue = if (isSelectionDisabled && !isSelected && result.status == ResolverStatus.WORKING) 0.5f else 1f,
-        label = "alpha"
-    )
-
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .alpha(alpha)
-            .clickable(enabled = canInteract, onClick = onToggleSelection),
+            .then(
+                if (canInteract && onToggleSelection != null) {
+                    Modifier.clickable(onClick = onToggleSelection)
+                } else {
+                    Modifier
+                }
+            ),
         colors = CardDefaults.cardColors(containerColor = backgroundColor),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(
-            defaultElevation = if (isSelected) 2.dp else 0.dp
+            defaultElevation = if (isSelected && showSelection) 2.dp else 0.dp
         )
     ) {
         Row(
@@ -1149,12 +1028,11 @@ private fun ResolverResultItem(
                 }
             }
 
-            // Checkbox (only for working resolvers)
-            if (result.status == ResolverStatus.WORKING) {
+            // Checkbox (only for working resolvers when selection is enabled)
+            if (showSelection && result.status == ResolverStatus.WORKING && onToggleSelection != null) {
                 Checkbox(
                     checked = isSelected,
-                    onCheckedChange = { onToggleSelection() },
-                    enabled = canInteract
+                    onCheckedChange = { onToggleSelection() }
                 )
             }
         }
