@@ -192,7 +192,7 @@ fun SettingsScreen(
 
             // App Info
             Text(
-                text = "SlipNet VPN v1.1.1",
+                text = "SlipNet VPN v1.1.2",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.align(Alignment.CenterHorizontally)
