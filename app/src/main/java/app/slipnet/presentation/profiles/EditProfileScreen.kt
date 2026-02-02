@@ -155,13 +155,13 @@ fun EditProfileScreen(
                 OutlinedTextField(
                     value = uiState.resolvers,
                     onValueChange = { viewModel.updateResolvers(it) },
-                    label = { Text("DNS Resolvers") },
-                    placeholder = { Text("1.1.1.1:53,8.8.8.8:53") },
+                    label = { Text("DNS Resolver") },
+                    placeholder = { Text("1.1.1.1:53") },
                     isError = uiState.resolversError != null,
                     supportingText = {
                         Text(
                             uiState.resolversError
-                                ?: "Comma-separated list of host:port pairs"
+                                ?: "DNS server address (IP:port)"
                         )
                     },
                     singleLine = true,
