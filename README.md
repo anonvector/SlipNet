@@ -157,3 +157,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - [slipstream-rust](https://github.com/Mygod/slipstream-rust) - Rust QUIC tunneling library
+- [Stream-Gate](https://github.com/free-mba/Stream-Gate) - DNS tunnel scanning method
