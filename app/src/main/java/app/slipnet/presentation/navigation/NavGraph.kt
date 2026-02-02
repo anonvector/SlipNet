@@ -4,6 +4,7 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -13,6 +14,7 @@ import app.slipnet.presentation.home.HomeScreen
 import app.slipnet.presentation.profiles.EditProfileScreen
 import app.slipnet.presentation.profiles.ProfileListScreen
 import app.slipnet.presentation.scanner.DnsScannerScreen
+import app.slipnet.presentation.scanner.ScanResultsScreen
 import app.slipnet.presentation.settings.SettingsScreen
 
 @Composable
@@ -118,8 +120,36 @@ fun NavGraph(
                 onNavigateBack = {
                     navController.popBackStack()
                 },
+                onNavigateToResults = {
+                    navController.navigate(NavRoutes.ScanResults.createRoute(profileId))
+                },
                 onResolversSelected = { resolvers ->
                     // Pass selected resolvers back through saved state
+                    navController.previousBackStackEntry?.savedStateHandle?.set("selected_resolvers", resolvers)
+                }
+            )
+        }
+
+        composable(
+            route = NavRoutes.ScanResults.route,
+            arguments = listOf(
+                navArgument("profileId") {
+                    type = NavType.LongType
+                    defaultValue = -1L
+                }
+            )
+        ) { backStackEntry ->
+            val profileId = backStackEntry.arguments?.getLong("profileId")?.takeIf { it != -1L }
+            // Get the parent (DnsScanner) back stack entry to share ViewModel
+            val parentEntry = navController.getBackStackEntry(NavRoutes.DnsScanner.route)
+            ScanResultsScreen(
+                profileId = profileId,
+                parentBackStackEntry = parentEntry,
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onResolversSelected = { resolvers ->
+                    // Pass selected resolvers back through saved state and pop to scanner
                     navController.previousBackStackEntry?.savedStateHandle?.set("selected_resolvers", resolvers)
                 }
             )

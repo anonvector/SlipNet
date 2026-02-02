@@ -17,4 +17,13 @@ sealed class NavRoutes(val route: String) {
             }
         }
     }
+    data object ScanResults : NavRoutes("scan_results?profileId={profileId}") {
+        fun createRoute(profileId: Long? = null): String {
+            return if (profileId != null) {
+                "scan_results?profileId=$profileId"
+            } else {
+                "scan_results"
+            }
+        }
+    }
 }

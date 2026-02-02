@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.slipnet.domain.model.ResolverScanResult
 import app.slipnet.domain.model.ResolverStatus
+import app.slipnet.domain.model.ScanMode
 import app.slipnet.domain.model.ScannerState
 import app.slipnet.domain.repository.ResolverScannerRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -21,6 +22,7 @@ data class DnsScannerUiState(
     val testDomain: String = "google.com",
     val timeoutMs: String = "3000",
     val concurrency: String = "50",
+    val scanMode: ScanMode = ScanMode.SIMPLE,
     val resolverList: List<String> = emptyList(),
     val scannerState: ScannerState = ScannerState(),
     val selectedResolvers: Set<String> = emptySet(),
@@ -110,6 +112,10 @@ class DnsScannerViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(concurrency = concurrency)
     }
 
+    fun updateScanMode(scanMode: ScanMode) {
+        _uiState.value = _uiState.value.copy(scanMode = scanMode)
+    }
+
     fun toggleResolverSelection(host: String) {
         val current = _uiState.value.selectedResolvers
         if (current.contains(host)) {
@@ -171,7 +177,8 @@ class DnsScannerViewModel @Inject constructor(
                 hosts = state.resolverList,
                 testDomain = state.testDomain,
                 timeoutMs = timeout,
-                concurrency = concurrency
+                concurrency = concurrency,
+                scanMode = state.scanMode
             ).collect { result ->
                 resultsMap[result.host] = result
                 scannedCount++
