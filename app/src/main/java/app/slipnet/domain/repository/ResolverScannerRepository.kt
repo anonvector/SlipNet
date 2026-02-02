@@ -1,6 +1,7 @@
 package app.slipnet.domain.repository
 
 import app.slipnet.domain.model.ResolverScanResult
+import app.slipnet.domain.model.ScanMode
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -23,23 +24,27 @@ interface ResolverScannerRepository {
      * @param port The DNS port (default 53)
      * @param testDomain The domain to test resolution for
      * @param timeoutMs Timeout in milliseconds
+     * @param scanMode The scanning mode (SIMPLE or DNS_TUNNEL)
      */
     suspend fun scanResolver(
         host: String,
         port: Int = 53,
         testDomain: String,
-        timeoutMs: Long = 3000
+        timeoutMs: Long = 3000,
+        scanMode: ScanMode = ScanMode.SIMPLE
     ): ResolverScanResult
 
     /**
      * Scan multiple resolvers concurrently
      * Emits results as they complete
+     * @param scanMode The scanning mode (SIMPLE or DNS_TUNNEL)
      */
     fun scanResolvers(
         hosts: List<String>,
         port: Int = 53,
         testDomain: String,
         timeoutMs: Long = 3000,
-        concurrency: Int = 50
+        concurrency: Int = 50,
+        scanMode: ScanMode = ScanMode.SIMPLE
     ): Flow<ResolverScanResult>
 }

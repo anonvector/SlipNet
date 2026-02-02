@@ -1,21 +1,31 @@
 package app.slipnet.presentation.profiles
 
 import android.app.Activity
+import android.content.Intent
 import android.net.VpnService
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -57,6 +67,9 @@ fun ProfileListScreen(
 
     var profileToDelete by remember { mutableStateOf<ServerProfile?>(null) }
     var pendingConnectProfile by remember { mutableStateOf<ServerProfile?>(null) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var importText by remember { mutableStateOf("") }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -65,6 +78,35 @@ fun ProfileListScreen(
             pendingConnectProfile?.let { viewModel.connectToProfile(it) }
         }
         pendingConnectProfile = null
+    }
+
+    val importFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let {
+            try {
+                context.contentResolver.openInputStream(it)?.use { inputStream ->
+                    val json = inputStream.bufferedReader().readText()
+                    viewModel.parseImportConfig(json)
+                }
+            } catch (e: Exception) {
+                viewModel.clearError()
+            }
+        }
+    }
+
+    // Handle export - launch share sheet
+    LaunchedEffect(uiState.exportedJson) {
+        uiState.exportedJson?.let { json ->
+            val sendIntent = Intent().apply {
+                action = Intent.ACTION_SEND
+                putExtra(Intent.EXTRA_TEXT, json)
+                type = "text/plain"
+            }
+            val shareIntent = Intent.createChooser(sendIntent, "Export Profile")
+            context.startActivity(shareIntent)
+            viewModel.clearExportedJson()
+        }
     }
 
     LaunchedEffect(uiState.error) {
@@ -81,6 +123,33 @@ fun ProfileListScreen(
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    Box {
+                        IconButton(onClick = { showOverflowMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                        }
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Export All Profiles") },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    viewModel.exportAllProfiles()
+                                },
+                                enabled = uiState.profiles.isNotEmpty()
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Import Profiles") },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    showImportDialog = true
+                                }
+                            )
+                        }
                     }
                 }
             )
@@ -143,7 +212,8 @@ fun ProfileListScreen(
                                     }
                                 },
                                 onEditClick = { onNavigateToEditProfile(profile.id) },
-                                onDeleteClick = { profileToDelete = profile }
+                                onDeleteClick = { profileToDelete = profile },
+                                onExportClick = { viewModel.exportProfile(profile) }
                             )
                         }
                     }
@@ -170,6 +240,127 @@ fun ProfileListScreen(
             },
             dismissButton = {
                 TextButton(onClick = { profileToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Import preview dialog
+    uiState.importPreview?.let { preview ->
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelImport() },
+            title = { Text("Import Profiles") },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "${preview.profiles.size} profile(s) found:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    preview.profiles.forEach { profile ->
+                        Text(
+                            text = "• ${profile.name}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (preview.warnings.isNotEmpty()) {
+                        Text(
+                            text = "Warnings:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                        preview.warnings.forEach { warning ->
+                            Text(
+                                text = "• $warning",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmImport() }) {
+                    Text("Import")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelImport() }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Import input dialog
+    if (showImportDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showImportDialog = false
+                importText = ""
+            },
+            title = { Text("Import Profiles") },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Paste the config below:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedTextField(
+                        value = importText,
+                        onValueChange = { importText = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(120.dp),
+                        placeholder = { Text("slipnet://...") },
+                        singleLine = false,
+                        maxLines = 5
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        TextButton(
+                            onClick = {
+                                importFileLauncher.launch(arrayOf("text/plain", "*/*"))
+                                showImportDialog = false
+                                importText = ""
+                            }
+                        ) {
+                            Text("Import from File")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (importText.isNotBlank()) {
+                            viewModel.parseImportConfig(importText)
+                            showImportDialog = false
+                            importText = ""
+                        }
+                    },
+                    enabled = importText.isNotBlank()
+                ) {
+                    Text("Import")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showImportDialog = false
+                        importText = ""
+                    }
+                ) {
                     Text("Cancel")
                 }
             }
