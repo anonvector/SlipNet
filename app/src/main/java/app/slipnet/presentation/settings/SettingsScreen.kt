@@ -1,5 +1,6 @@
 package app.slipnet.presentation.settings
 
+import app.slipnet.BuildConfig
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -192,7 +193,7 @@ fun SettingsScreen(
 
             // App Info
             Text(
-                text = "SlipNet VPN v1.1.2",
+                text = "SlipNet VPN v${BuildConfig.VERSION_NAME}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.align(Alignment.CenterHorizontally)
