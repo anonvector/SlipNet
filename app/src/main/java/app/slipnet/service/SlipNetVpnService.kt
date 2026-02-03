@@ -27,8 +27,6 @@ class SlipNetVpnService : VpnService() {
         private const val VPN_ADDRESS = "10.255.255.1"
         private const val VPN_ROUTE = "0.0.0.0"
         private const val DEFAULT_DNS = "8.8.8.8"
-        // Note: IPv6 routing disabled because dante proxy doesn't support IPv6 addresses
-        // Apps will fall back to IPv4 when IPv6 is not routed through VPN
     }
 
     @Inject
@@ -113,7 +111,6 @@ class SlipNetVpnService : VpnService() {
         return Builder()
             .setSession("Slipstream VPN")
             .setMtu(VPN_MTU)
-            // IPv4 only - dante proxy doesn't support IPv6 addresses
             .addAddress(VPN_ADDRESS, 32)
             .addRoute(VPN_ROUTE, 0)
             .addDnsServer(dnsServer)

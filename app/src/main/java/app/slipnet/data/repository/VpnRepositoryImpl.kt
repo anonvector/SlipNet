@@ -2,14 +2,12 @@ package app.slipnet.data.repository
 
 import android.os.ParcelFileDescriptor
 import android.util.Log
-import app.slipnet.data.local.datastore.BufferSize
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
 import app.slipnet.domain.repository.VpnRepository
-import app.slipnet.tunnel.KotlinTunnelConfig
-import app.slipnet.tunnel.KotlinTunnelManager
+import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.ResolverConfig
 import app.slipnet.tunnel.SlipstreamBridge
 import kotlinx.coroutines.CoroutineScope
@@ -41,7 +39,8 @@ class VpnRepositoryImpl @Inject constructor(
     override val trafficStats: StateFlow<TrafficStats> = _trafficStats.asStateFlow()
 
     private var connectedProfile: ServerProfile? = null
-    private var tunnelManager: KotlinTunnelManager? = null
+    private var currentTunFd: ParcelFileDescriptor? = null
+    private var tunnelStartException: Exception? = null
 
     override suspend fun connect(profile: ServerProfile): Result<Unit> {
         if (_connectionState.value is ConnectionState.Connected ||
@@ -61,15 +60,11 @@ class VpnRepositoryImpl @Inject constructor(
         vpnProtect: ((java.net.DatagramSocket) -> Boolean)? = null
     ): Result<Unit> {
         connectedProfile = profile
+        currentTunFd = pfd
 
-        // Read network optimization settings from preferences
-        val dnsTimeout = runBlocking { preferencesDataStore.dnsTimeout.first() }
-        val connectionTimeout = runBlocking { preferencesDataStore.connectionTimeout.first() }
-        val bufferSize = runBlocking { preferencesDataStore.bufferSize.first() }
-        val connectionPoolSize = runBlocking { preferencesDataStore.connectionPoolSize.first() }
         val debugLogging = runBlocking { preferencesDataStore.debugLogging.first() }
 
-        // Convert profile to tunnel config
+        // Convert profile to resolver config
         val resolvers = profile.resolvers.map { resolver ->
             ResolverConfig(
                 host = resolver.host,
@@ -81,46 +76,57 @@ class VpnRepositoryImpl @Inject constructor(
         // Use first resolver from profile as DNS server, fallback to 8.8.8.8
         val dnsServer = profile.resolvers.firstOrNull()?.host ?: "8.8.8.8"
 
-        val config = KotlinTunnelConfig(
-            domain = profile.domain,
-            resolvers = resolvers,
-            slipstreamPort = profile.tcpListenPort,
-            slipstreamHost = profile.tcpListenHost,
-            dnsServer = dnsServer,
-            congestionControl = profile.congestionControl.value,
-            keepAliveInterval = profile.keepAliveInterval,
-            gsoEnabled = profile.gsoEnabled,
-            dnsTimeout = dnsTimeout,
-            connectionTimeout = connectionTimeout,
-            bufferSize = bufferSize.bytes,
-            connectionPoolSize = connectionPoolSize,
-            verboseLogging = debugLogging
-        )
+        // Start the tunnel in a background coroutine
+        scope.launch(Dispatchers.IO) {
+            try {
+                // Step 1: Start the Slipstream DNS tunnel (SOCKS5 proxy)
+                val socksPort = profile.tcpListenPort
+                val success = startSlipstreamClient(profile.domain, resolvers, profile, debugLogging)
 
-        // Create and start the Kotlin tunnel manager
-        tunnelManager = KotlinTunnelManager(
-            config = config,
-            tunFd = pfd,
-            onSlipstreamStart = { domain, resolverList ->
-                startSlipstreamClient(domain, resolverList, profile, debugLogging)
-            },
-            onSlipstreamStop = {
-                SlipstreamBridge.stopClient()
-            },
-            vpnProtect = vpnProtect
-        )
+                if (!success) {
+                    val error = tunnelStartException?.message ?: "Failed to start tunnel"
+                    _connectionState.value = ConnectionState.Error(error)
+                    connectedProfile = null
+                    Log.e(TAG, "Failed to start tunnel: $error")
+                    return@launch
+                }
 
-        // Start the tunnel
-        scope.launch {
-            val result = tunnelManager?.start()
-            if (result?.isSuccess == true) {
-                _connectionState.value = ConnectionState.Connected(profile)
-                Log.i(TAG, "Tunnel started successfully")
-            } else {
-                val error = result?.exceptionOrNull()?.message ?: "Unknown error"
-                _connectionState.value = ConnectionState.Error(error)
+                // Give the SOCKS5 proxy time to start
+                Thread.sleep(500)
+
+                // Step 2: Start hev-socks5-tunnel (tun2socks)
+                // This routes TUN traffic through the SOCKS5 proxy
+                Log.i(TAG, "========================================")
+                Log.i(TAG, "Starting hev-socks5-tunnel")
+                Log.i(TAG, "  SOCKS5 proxy: 127.0.0.1:$socksPort")
+                Log.i(TAG, "  DNS server: $dnsServer")
+                Log.i(TAG, "========================================")
+
+                val hevResult = HevSocks5Tunnel.start(
+                    tunFd = pfd,
+                    socksAddress = "127.0.0.1",
+                    socksPort = socksPort,
+                    dnsAddress = dnsServer,
+                    mtu = 1500,
+                    ipv4Address = "10.255.255.1"
+                )
+
+                if (hevResult.isSuccess) {
+                    _connectionState.value = ConnectionState.Connected(profile)
+                    Log.i(TAG, "Tunnel started successfully")
+                } else {
+                    val error = hevResult.exceptionOrNull()?.message ?: "Failed to start tun2socks"
+                    _connectionState.value = ConnectionState.Error(error)
+                    connectedProfile = null
+                    // Stop the SOCKS5 proxy since tun2socks failed
+                    SlipstreamBridge.stopClient()
+                    Log.e(TAG, "Failed to start tunnel: $error")
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception starting tunnel", e)
+                _connectionState.value = ConnectionState.Error(e.message ?: "Unknown error")
                 connectedProfile = null
-                Log.e(TAG, "Failed to start tunnel: $error")
             }
         }
 
@@ -133,6 +139,7 @@ class VpnRepositoryImpl @Inject constructor(
         profile: ServerProfile,
         debugLogging: Boolean
     ): Boolean {
+        tunnelStartException = null
         val result = SlipstreamBridge.startClient(
             domain = domain,
             resolvers = resolvers,
@@ -144,6 +151,11 @@ class VpnRepositoryImpl @Inject constructor(
             debugPoll = debugLogging,
             debugStreams = debugLogging
         )
+        if (result.isFailure) {
+            val exception = result.exceptionOrNull()
+            tunnelStartException = Exception("DNS tunnel failed: ${exception?.message ?: "Unknown error"}", exception)
+            Log.e(TAG, "Failed to start Slipstream client", exception)
+        }
         return result.isSuccess
     }
 
@@ -155,8 +167,13 @@ class VpnRepositoryImpl @Inject constructor(
         _connectionState.value = ConnectionState.Disconnecting
 
         try {
-            tunnelManager?.stop()
-            tunnelManager = null
+            // Stop hev-socks5-tunnel first
+            HevSocks5Tunnel.stop()
+
+            // Then stop the Slipstream client
+            SlipstreamBridge.stopClient()
+
+            currentTunFd = null
             _connectionState.value = ConnectionState.Disconnected
             connectedProfile = null
             Log.i(TAG, "Tunnel stopped successfully")
@@ -185,14 +202,13 @@ class VpnRepositoryImpl @Inject constructor(
     }
 
     fun refreshTrafficStats() {
-        val manager = tunnelManager
-        if (manager != null) {
-            val stats = manager.getStats()
+        val stats = HevSocks5Tunnel.getStats()
+        if (stats != null) {
             _trafficStats.value = TrafficStats(
-                bytesSent = stats.bytesSent,
-                bytesReceived = stats.bytesReceived,
-                packetsSent = stats.packetsSent,
-                packetsReceived = stats.packetsReceived
+                bytesSent = stats.txBytes,
+                bytesReceived = stats.rxBytes,
+                packetsSent = stats.txPackets,
+                packetsReceived = stats.rxPackets
             )
         }
     }

@@ -29,9 +29,9 @@ class ProfileMapper @Inject constructor(
             authoritativeMode = entity.authoritativeMode,
             keepAliveInterval = entity.keepAliveInterval,
             congestionControl = CongestionControl.fromValue(entity.congestionControl),
+            gsoEnabled = entity.gsoEnabled,
             tcpListenPort = entity.tcpListenPort,
             tcpListenHost = entity.tcpListenHost,
-            gsoEnabled = entity.gsoEnabled,
             isActive = entity.isActive,
             createdAt = entity.createdAt,
             updatedAt = entity.updatedAt
@@ -49,9 +49,9 @@ class ProfileMapper @Inject constructor(
             authoritativeMode = profile.authoritativeMode,
             keepAliveInterval = profile.keepAliveInterval,
             congestionControl = profile.congestionControl.value,
+            gsoEnabled = profile.gsoEnabled,
             tcpListenPort = profile.tcpListenPort,
             tcpListenHost = profile.tcpListenHost,
-            gsoEnabled = profile.gsoEnabled,
             isActive = profile.isActive,
             createdAt = profile.createdAt,
             updatedAt = profile.updatedAt

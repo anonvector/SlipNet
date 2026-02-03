@@ -30,7 +30,10 @@ data class KotlinTunnelConfig(
     val connectionTimeout: Int = 30000,
     val bufferSize: Int = 262144, // 256KB default
     val connectionPoolSize: Int = 10,
-    val verboseLogging: Boolean = false
+    val verboseLogging: Boolean = false,
+    // DNS forwarding through SSH (for SSH-only mode)
+    // When > 0, DNS queries are sent via TCP to this local port (SSH port-forwarded)
+    val dnsForwardPort: Int = 0
 )
 
 data class ResolverConfig(
@@ -134,7 +137,9 @@ class KotlinTunnelManager(
             // Start slipstream client (via JNI callback)
             val started = onSlipstreamStart(config.domain, config.resolvers)
             if (!started) {
-                Log.w(TAG, "Slipstream client may not have started cleanly, continuing anyway")
+                Log.e(TAG, "Tunnel client failed to start")
+                isRunning.set(false)
+                throw Exception("Tunnel client failed to start")
             }
 
             // Wait for slipstream to be ready
@@ -313,10 +318,16 @@ class KotlinTunnelManager(
         val dstAddress = ipPacket.dstAddress
         val srcAddress = ipPacket.srcAddress
 
-        // Forward DNS query to real DNS server (outside VPN) - run inline to reduce coroutine overhead
+        // Forward DNS query - use TCP through SSH if dnsForwardPort is set, otherwise direct UDP
         scope.launch(Dispatchers.IO) {
             try {
-                val dnsResponse = forwardDnsQuery(udpPayload, config.dnsServer, 53)
+                val dnsResponse = if (config.dnsForwardPort > 0) {
+                    // Route DNS through SSH tunnel via TCP (DNS-over-TCP)
+                    forwardDnsQueryViaTcp(udpPayload, "127.0.0.1", config.dnsForwardPort)
+                } else {
+                    // Direct UDP to DNS server (outside VPN)
+                    forwardDnsQuery(udpPayload, config.dnsServer, 53)
+                }
                 if (dnsResponse != null) {
                     val responsePacket = buildUdpResponsePacket(
                         srcAddr = dstAddress,
@@ -938,6 +949,80 @@ class KotlinTunnelManager(
             } catch (e: Exception) {
                 Log.e(TAG, "DNS query failed: ${e.message}")
                 null
+            }
+        }
+    }
+
+    /**
+     * Forward DNS query via TCP (DNS-over-TCP).
+     * Used when DNS needs to go through SSH tunnel (port forwarding).
+     * TCP DNS uses a 2-byte length prefix before the DNS message.
+     */
+    private suspend fun forwardDnsQueryViaTcp(query: ByteArray, host: String, port: Int): ByteArray? {
+        return withContext(Dispatchers.IO) {
+            var socket: Socket? = null
+            try {
+                socket = Socket()
+                socket.soTimeout = config.dnsTimeout
+                socket.connect(InetSocketAddress(host, port), config.dnsTimeout)
+
+                val output = socket.getOutputStream()
+                val input = socket.getInputStream()
+
+                // DNS-over-TCP: 2-byte length prefix + DNS message
+                val lengthPrefix = ByteArray(2)
+                lengthPrefix[0] = ((query.size shr 8) and 0xFF).toByte()
+                lengthPrefix[1] = (query.size and 0xFF).toByte()
+
+                output.write(lengthPrefix)
+                output.write(query)
+                output.flush()
+
+                if (verboseLogging) Log.d(TAG, "DNS-over-TCP: sent ${query.size} bytes to $host:$port")
+
+                // Read response length prefix
+                val responseLengthBytes = ByteArray(2)
+                var bytesRead = 0
+                while (bytesRead < 2) {
+                    val read = input.read(responseLengthBytes, bytesRead, 2 - bytesRead)
+                    if (read == -1) {
+                        Log.e(TAG, "DNS-over-TCP: connection closed while reading length")
+                        return@withContext null
+                    }
+                    bytesRead += read
+                }
+
+                val responseLength = ((responseLengthBytes[0].toInt() and 0xFF) shl 8) or
+                        (responseLengthBytes[1].toInt() and 0xFF)
+
+                if (responseLength <= 0 || responseLength > 65535) {
+                    Log.e(TAG, "DNS-over-TCP: invalid response length: $responseLength")
+                    return@withContext null
+                }
+
+                // Read response body
+                val responseBuffer = ByteArray(responseLength)
+                bytesRead = 0
+                while (bytesRead < responseLength) {
+                    val read = input.read(responseBuffer, bytesRead, responseLength - bytesRead)
+                    if (read == -1) {
+                        Log.e(TAG, "DNS-over-TCP: connection closed while reading response")
+                        return@withContext null
+                    }
+                    bytesRead += read
+                }
+
+                if (verboseLogging) Log.i(TAG, "DNS-over-TCP: received $responseLength bytes from $host:$port")
+                responseBuffer
+
+            } catch (e: java.net.SocketTimeoutException) {
+                Log.e(TAG, "DNS-over-TCP: query timed out to $host:$port")
+                null
+            } catch (e: Exception) {
+                Log.e(TAG, "DNS-over-TCP: query failed: ${e.message}")
+                null
+            } finally {
+                try { socket?.close() } catch (e: Exception) {}
             }
         }
     }

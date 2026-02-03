@@ -48,6 +48,10 @@ keystore.properties
 .externalNativeBuild
 .cxx/
 
+# NDK build artifacts
+app/src/main/cpp/libs/
+app/src/main/cpp/obj/
+
 # Google Services (e.g. APIs or Firebase)
 google-services.json
 

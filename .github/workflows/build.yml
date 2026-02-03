@@ -91,9 +91,6 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon
-
       - name: Decode Keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -119,20 +116,12 @@ jobs:
 
       - name: Build Release APK
         run: ./gradlew assembleRelease --no-daemon
-        continue-on-error: true
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/*.apk
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
           path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: ignore
 
   release:
     needs: build
@@ -142,18 +131,11 @@ jobs:
       contents: write
 
     steps:
-      - name: Download Debug APK
-        uses: actions/download-artifact@v4
-        with:
-          name: app-debug
-          path: ./artifacts
-
       - name: Download Release APK
         uses: actions/download-artifact@v4
         with:
           name: app-release
           path: ./artifacts
-        continue-on-error: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
