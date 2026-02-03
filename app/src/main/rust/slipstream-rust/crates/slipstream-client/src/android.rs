@@ -9,17 +9,46 @@ use jni::JNIEnv;
 use slipstream_core::{parse_host_port_parts, AddressKind};
 use slipstream_ffi::{ClientConfig, ResolverMode, ResolverSpec};
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::oneshot;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::run_client;
+
+/// Global JavaVM pointer for socket protection from any thread
+static JAVA_VM: AtomicPtr<jni::sys::JavaVM> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Global reference to SlipstreamBridge class (cached to avoid classloader issues)
+static BRIDGE_CLASS: OnceLock<jni::objects::GlobalRef> = OnceLock::new();
 
 /// JNI_OnLoad is called when the native library is loaded.
 /// This ensures the JNI symbols are exported and not stripped by the linker.
 #[no_mangle]
-pub extern "C" fn JNI_OnLoad(_vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
+pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
+    // Store the JavaVM pointer for later use in socket protection
+    JAVA_VM.store(vm, Ordering::SeqCst);
+
+    // Cache the SlipstreamBridge class reference using the app's classloader
+    // This must be done here because native threads can't find app classes
+    let vm_wrapper = match unsafe { jni::JavaVM::from_raw(vm) } {
+        Ok(v) => v,
+        Err(_) => return JNI_VERSION_1_6,
+    };
+
+    if let Ok(mut env) = vm_wrapper.get_env() {
+        if let Ok(class) = env.find_class("app/slipnet/tunnel/SlipstreamBridge") {
+            if let Ok(global_ref) = env.new_global_ref(class) {
+                let _ = BRIDGE_CLASS.set(global_ref);
+                info!("JNI_OnLoad: SlipstreamBridge class cached successfully");
+            }
+        }
+    }
+
+    // Don't drop the JavaVM wrapper - we don't own it
+    std::mem::forget(vm_wrapper);
+
+    info!("JNI_OnLoad: JavaVM stored for socket protection");
     JNI_VERSION_1_6
 }
 
@@ -29,6 +58,7 @@ static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 
 struct ClientHandle {
     shutdown_tx: Option<oneshot::Sender<()>>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 fn get_client_state() -> &'static Mutex<Option<ClientHandle>> {
@@ -61,26 +91,103 @@ fn get_string(env: &mut JNIEnv, obj: &JString) -> Result<String, jni::errors::Er
     Ok(jstr.into())
 }
 
-/// Helper to protect a socket via JNI callback to Kotlin
-#[allow(dead_code)]
-fn protect_socket(env: &mut JNIEnv, fd: i32) -> bool {
-    // Find the SlipstreamBridge class and call protectSocket
-    let class = match env.find_class("app/slipnet/tunnel/SlipstreamBridge") {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to find SlipstreamBridge class: {:?}", e);
+/// Protect a socket from the VPN by calling back to Kotlin.
+/// This can be called from any thread as it attaches to the JVM if needed.
+///
+/// Returns true if the socket was successfully protected.
+pub fn protect_socket(fd: i32) -> bool {
+    let vm_ptr = JAVA_VM.load(Ordering::SeqCst);
+    if vm_ptr.is_null() {
+        error!("Cannot protect socket: JavaVM not stored");
+        return false;
+    }
+
+    // Get the cached class reference
+    let bridge_class = match BRIDGE_CLASS.get() {
+        Some(c) => c,
+        None => {
+            error!("Cannot protect socket: SlipstreamBridge class not cached");
             return false;
         }
     };
 
-    match env.call_static_method(class, "protectSocket", "(I)Z", &[jni::objects::JValue::Int(fd)])
-    {
-        Ok(result) => result.z().unwrap_or(false),
+    // SAFETY: We stored a valid JavaVM pointer in JNI_OnLoad
+    let vm = match unsafe { jni::JavaVM::from_raw(vm_ptr) } {
+        Ok(vm) => vm,
+        Err(e) => {
+            error!("Failed to create JavaVM from raw pointer: {:?}", e);
+            return false;
+        }
+    };
+
+    // Attach this thread to the JVM as a daemon thread
+    // This is safe to call even if already attached
+    let mut env = match vm.attach_current_thread_as_daemon() {
+        Ok(env) => env,
+        Err(e) => {
+            error!("Failed to attach thread to JVM: {:?}", e);
+            // Don't drop the JavaVM, we don't own it
+            std::mem::forget(vm);
+            return false;
+        }
+    };
+
+    // Clear any pending exception first
+    if env.exception_check().unwrap_or(false) {
+        warn!("Clearing pending Java exception before protectSocket call");
+        let _ = env.exception_clear();
+    }
+
+    // Use the cached class reference (works from any thread)
+    // Convert GlobalRef to JClass - safe because we created it from a JClass in JNI_OnLoad
+    let class_obj: &jni::objects::JObject = bridge_class.as_ref();
+    // SAFETY: We know this JObject is actually a JClass because we created it from find_class
+    let class_ref: jni::objects::JClass = unsafe {
+        jni::objects::JClass::from_raw(class_obj.as_raw())
+    };
+    let result = env.call_static_method(
+        class_ref,
+        "protectSocket",
+        "(I)Z",
+        &[jni::objects::JValue::Int(fd)],
+    );
+
+    // Check for and log any Java exception
+    if env.exception_check().unwrap_or(false) {
+        error!("Java exception occurred during protectSocket call:");
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+    }
+
+    // Extract the result before dropping env
+    let protected = match result {
+        Ok(jvalue) => {
+            match jvalue.z() {
+                Ok(p) => {
+                    if p {
+                        debug!("Protected socket fd={}", fd);
+                    } else {
+                        warn!("Failed to protect socket fd={} (VpnService returned false)", fd);
+                    }
+                    p
+                }
+                Err(e) => {
+                    error!("Failed to convert protectSocket result to boolean: {:?}", e);
+                    false
+                }
+            }
+        }
         Err(e) => {
             error!("Failed to call protectSocket: {:?}", e);
             false
         }
-    }
+    };
+
+    // Don't drop the JavaVM - we don't own it
+    drop(env);
+    std::mem::forget(vm);
+
+    protected
 }
 
 /// Start the slipstream client.
@@ -280,14 +387,6 @@ pub unsafe extern "C" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSli
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    // Store the handle
-    {
-        let mut state = get_client_state().lock().unwrap();
-        *state = Some(ClientHandle {
-            shutdown_tx: Some(shutdown_tx),
-        });
-    }
-
     IS_RUNNING.store(true, Ordering::SeqCst);
 
     // Spawn the client in a separate thread
@@ -296,7 +395,7 @@ pub unsafe extern "C" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSli
     let congestion_control_owned = congestion_control_str.clone();
     let resolvers_owned = resolvers.clone();
 
-    std::thread::spawn(move || {
+    let thread_handle = std::thread::spawn(move || {
         let config = ClientConfig {
             tcp_listen_host: &listen_host_owned,
             tcp_listen_port: listen_port_u16,
@@ -340,6 +439,15 @@ pub unsafe extern "C" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSli
         info!("Client thread exited");
     });
 
+    // Store the handle after spawning the thread
+    {
+        let mut state = get_client_state().lock().unwrap();
+        *state = Some(ClientHandle {
+            shutdown_tx: Some(shutdown_tx),
+            thread_handle: Some(thread_handle),
+        });
+    }
+
     // Give the client a moment to start
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -362,13 +470,45 @@ pub unsafe extern "C" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStopSlip
     init_android_logging();
     info!("nativeStopSlipstreamClient called");
 
-    let mut state = get_client_state().lock().unwrap();
-    if let Some(handle) = state.take() {
-        if let Some(tx) = handle.shutdown_tx {
+    let handle = {
+        let mut state = get_client_state().lock().unwrap();
+        state.take()
+    };
+
+    if let Some(mut handle) = handle {
+        // Send shutdown signal
+        if let Some(tx) = handle.shutdown_tx.take() {
             let _ = tx.send(());
+            info!("Client stop signal sent");
         }
+
+        // Wait for the thread to finish (with timeout)
+        if let Some(thread_handle) = handle.thread_handle.take() {
+            info!("Waiting for client thread to exit...");
+            // Wait up to 3 seconds for the thread to exit
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(3);
+
+            loop {
+                if !IS_RUNNING.load(Ordering::SeqCst) {
+                    break;
+                }
+                if start.elapsed() > timeout {
+                    warn!("Timeout waiting for client thread to exit");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            // Try to join the thread (non-blocking if it already exited)
+            match thread_handle.join() {
+                Ok(()) => info!("Client thread joined successfully"),
+                Err(_) => warn!("Client thread panicked"),
+            }
+        }
+
         IS_RUNNING.store(false, Ordering::SeqCst);
-        info!("Client stop signal sent");
+        info!("Client stopped");
     } else {
         warn!("No client running to stop");
     }

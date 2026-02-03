@@ -23,9 +23,9 @@ data class EditProfileUiState(
     val authoritativeMode: Boolean = false,
     val keepAliveInterval: String = "200",
     val congestionControl: CongestionControl = CongestionControl.BBR,
+    val gsoEnabled: Boolean = false,
     val tcpListenPort: String = "10800",
     val tcpListenHost: String = "127.0.0.1",
-    val gsoEnabled: Boolean = false,
     val isLoading: Boolean = false,
     val isSaving: Boolean = false,
     val saveSuccess: Boolean = false,
@@ -67,9 +67,9 @@ class EditProfileViewModel @Inject constructor(
                     authoritativeMode = profile.authoritativeMode,
                     keepAliveInterval = profile.keepAliveInterval.toString(),
                     congestionControl = profile.congestionControl,
+                    gsoEnabled = profile.gsoEnabled,
                     tcpListenPort = profile.tcpListenPort.toString(),
                     tcpListenHost = profile.tcpListenHost,
-                    gsoEnabled = profile.gsoEnabled,
                     isLoading = false
                 )
             } else {
@@ -156,9 +156,9 @@ class EditProfileViewModel @Inject constructor(
                     authoritativeMode = state.authoritativeMode,
                     keepAliveInterval = keepAlive,
                     congestionControl = state.congestionControl,
+                    gsoEnabled = state.gsoEnabled,
                     tcpListenPort = listenPort,
-                    tcpListenHost = state.tcpListenHost.ifBlank { "127.0.0.1" },
-                    gsoEnabled = state.gsoEnabled
+                    tcpListenHost = state.tcpListenHost.ifBlank { "127.0.0.1" }
                 )
 
                 saveProfileUseCase(profile)

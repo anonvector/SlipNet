@@ -2,7 +2,10 @@ use crate::error::ClientError;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 use tokio::net::{lookup_host, TcpListener as TokioTcpListener, UdpSocket as TokioUdpSocket};
-use tracing::warn;
+use tracing::{info, warn};
+
+#[cfg(target_os = "android")]
+use std::os::unix::io::AsRawFd;
 
 pub(crate) fn compute_mtu(domain_len: usize) -> Result<u32, ClientError> {
     if domain_len >= 240 {
@@ -89,6 +92,18 @@ fn bind_udp_socket_addr(addr: SocketAddr) -> Result<TokioUdpSocket, ClientError>
     }
     let sock_addr = SockAddr::from(addr);
     socket.bind(&sock_addr).map_err(map_io)?;
+
+    // On Android, protect the socket from VPN routing so DNS queries
+    // go directly to the resolver instead of looping through the VPN
+    #[cfg(target_os = "android")]
+    {
+        let fd = socket.as_raw_fd();
+        info!("Protecting UDP socket fd={} from VPN routing", fd);
+        if !crate::android::protect_socket(fd) {
+            warn!("Failed to protect UDP socket fd={}, DNS queries may not work", fd);
+        }
+    }
+
     socket.set_nonblocking(true).map_err(map_io)?;
     let std_socket: std::net::UdpSocket = socket.into();
     TokioUdpSocket::from_std(std_socket).map_err(map_io)

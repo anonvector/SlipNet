@@ -77,7 +77,7 @@ object SlipstreamBridge {
         domain: String,
         resolvers: List<ResolverConfig>,
         congestionControl: String = "bbr",
-        keepAliveInterval: Int = 400,
+        keepAliveInterval: Int = 200,
         tcpListenPort: Int = DEFAULT_SLIPSTREAM_PORT,
         tcpListenHost: String = DEFAULT_LISTEN_HOST,
         gsoEnabled: Boolean = false,

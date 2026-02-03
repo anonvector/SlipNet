@@ -3,14 +3,14 @@ package app.slipnet.domain.model
 data class ServerProfile(
     val id: Long = 0,
     val name: String,
-    val domain: String,
-    val resolvers: List<DnsResolver>,
+    val domain: String = "",
+    val resolvers: List<DnsResolver> = emptyList(),
     val authoritativeMode: Boolean = false,
     val keepAliveInterval: Int = 200,
     val congestionControl: CongestionControl = CongestionControl.BBR,
+    val gsoEnabled: Boolean = false,
     val tcpListenPort: Int = 10800,
     val tcpListenHost: String = "127.0.0.1",
-    val gsoEnabled: Boolean = false,
     val isActive: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
