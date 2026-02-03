@@ -17,6 +17,8 @@ out/
 # Gradle files
 .gradle/
 build/
+# But keep Rust build helper modules (these are source files, not build output)
+!app/src/main/rust/slipstream-rust/crates/slipstream-ffi/build/
 
 # Local configuration file (sdk path, etc)
 local.properties
