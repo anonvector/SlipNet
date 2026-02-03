@@ -99,7 +99,7 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > app/release-keystore.jks
+            echo "$KEYSTORE_BASE64" | base64 -d > slipnet-release.keystore
             echo "KEYSTORE_DECODED=true" >> $GITHUB_ENV
           fi
 
@@ -111,7 +111,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           cat > keystore.properties << EOF
-          storeFile=app/release-keystore.jks
+          storeFile=../slipnet-release.keystore
           storePassword=$KEYSTORE_PASSWORD
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
