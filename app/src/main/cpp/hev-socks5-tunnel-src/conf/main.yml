@@ -1,0 +1,73 @@
+# Main configuration for hev-socks5-tunnel
+
+tunnel:
+  # Interface name
+  name: tun0
+  # Interface MTU
+  mtu: 8500
+  # Multi-queue
+  multi-queue: false
+  # IPv4 address
+  ipv4: 198.18.0.1
+  # IPv6 address
+  ipv6: 'fc00::1'
+  # Post up script
+# post-up-script: up.sh
+  # Pre down script
+# pre-down-script: down.sh
+
+socks5:
+  # Socks5 server port
+  port: 1080
+  # Socks5 server address (ipv4/ipv6)
+  address: 127.0.0.1
+  # Socks5 UDP relay mode (tcp|udp)
+  udp: 'udp'
+  # Override the UDP address provided by the Socks5 server (ipv4/ipv6)
+# udp-address: ''
+  # Socks5 handshake using pipeline mode
+# pipeline: false
+  # Socks5 server username
+# username: 'username'
+  # Socks5 server password
+# password: 'password'
+  # Socket mark
+# mark: 0
+
+#mapdns:
+  # Mapped DNS address
+# address: 198.18.0.2
+  # Mapped DNS port
+# port: 53
+  # Mapped IP network base
+# network: 100.64.0.0
+  # Mapped IP network mask
+# netmask: 255.192.0.0
+  # Mapped DNS cache size
+# cache-size: 10000
+
+#misc:
+  # task stack size (bytes)
+# task-stack-size: 86016
+  # tcp buffer size (bytes)
+# tcp-buffer-size: 65536
+  # udp socket recv buffer (SO_RCVBUF) size (bytes)
+# udp-recv-buffer-size: 524288
+  # number of udp buffers in splice, 1500 bytes per buffer.
+# udp-copy-buffer-nums: 10
+  # maximum session count (0: unlimited)
+# max-session-count: 0
+  # connect timeout (ms)
+# connect-timeout: 10000
+  # TCP read-write timeout (ms)
+# tcp-read-write-timeout: 300000
+  # UDP read-write timeout (ms)
+# udp-read-write-timeout: 60000
+  # stdout, stderr or file-path
+# log-file: stderr
+  # debug, info, warn or error
+# log-level: warn
+  # If present, run as a daemon with this pid file
+# pid-file: /run/hev-socks5-tunnel.pid
+  # If present, set rlimit nofile; else use default value
+# limit-nofile: 65535
