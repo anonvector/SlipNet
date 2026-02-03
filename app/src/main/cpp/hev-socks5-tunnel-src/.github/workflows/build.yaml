@@ -1,0 +1,408 @@
+name: "Build"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+jobs:
+  source:
+    name: Source
+    runs-on: ubuntu-latest
+    env:
+      BRANCH_NAME: ${{ github.base_ref || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      - name: Gen Source
+        run: |
+          REV_ID=$(git rev-parse --short HEAD)
+          mkdir -p hev-socks5-tunnel-${{ env.BRANCH_NAME }}
+          git ls-files --recurse-submodules | tar c -O -T- | tar x -C hev-socks5-tunnel-${{ env.BRANCH_NAME }}
+          echo ${REV_ID} > hev-socks5-tunnel-${{ env.BRANCH_NAME }}/.rev-id
+          tar cJf hev-socks5-tunnel-${{ env.BRANCH_NAME }}.tar.xz hev-socks5-tunnel-${{ env.BRANCH_NAME }}
+      - name: Upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: hev-socks5-tunnel-${{ env.BRANCH_NAME }}.tar.xz
+          path: hev-socks5-tunnel-${{ env.BRANCH_NAME }}.tar.xz
+          if-no-files-found: error
+          retention-days: 1
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: arm64
+            tool: aarch64-unknown-linux-musl
+          - name: arm32
+            tool: arm-unknown-linux-musleabi
+          - name: arm32hf
+            tool: arm-unknown-linux-musleabihf
+          - name: arm32v7
+            tool: armv7-unknown-linux-musleabi
+          - name: arm32v7hf
+            tool: armv7-unknown-linux-musleabihf
+          - name: i586
+            tool: i586-unknown-linux-musl
+          - name: i686
+            tool: i686-unknown-linux-musl
+          - name: loong64
+            tool: loongarch64-unknown-linux-musl
+          - name: m68k
+            tool: m68k-unknown-linux-musl
+          - name: microblazeel
+            tool: microblazeel-xilinx-linux-musl
+          - name: microblaze
+            tool: microblaze-xilinx-linux-musl
+          - name: mips64el
+            tool: mips64el-unknown-linux-musl
+          - name: mips64
+            tool: mips64-unknown-linux-musl
+          - name: mips32el
+            tool: mipsel-unknown-linux-musl
+          - name: mips32elsf
+            tool: mipsel-unknown-linux-muslsf
+          - name: mips32
+            tool: mips-unknown-linux-musl
+          - name: mips32sf
+            tool: mips-unknown-linux-muslsf
+          - name: or1k
+            tool: or1k-unknown-linux-musl
+          - name: powerpc64le
+            tool: powerpc64le-unknown-linux-musl
+          - name: powerpc64
+            tool: powerpc64-unknown-linux-musl
+          - name: powerpcle
+            tool: powerpcle-unknown-linux-musl
+          - name: powerpc
+            tool: powerpc-unknown-linux-musl
+          - name: riscv32
+            tool: riscv32-unknown-linux-musl
+          - name: riscv64
+            tool: riscv64-unknown-linux-musl
+          - name: s390x
+            tool: s390x-ibm-linux-musl
+          - name: sh4
+            tool: sh4-multilib-linux-musl
+          - name: x86_64
+            tool: x86_64-unknown-linux-musl
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      - name: Build ${{ matrix.name }}
+        run: |
+          sudo mkdir -p /opt/x-tools
+          wget https://github.com/cross-tools/musl-cross/releases/download/20250929/${{ matrix.tool }}.tar.xz
+          sudo tar xf ${{ matrix.tool }}.tar.xz -C /opt/x-tools
+          make CROSS_PREFIX=/opt/x-tools/${{ matrix.tool }}/bin/${{ matrix.tool }}- CFLAGS=${{ matrix.env.CFLAGS }} ENABLE_STATIC=1 -j`nproc`
+          cp bin/hev-socks5-tunnel hev-socks5-tunnel-linux-${{ matrix.name }}
+      - name: Upload ${{ matrix.name }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hev-socks5-tunnel-linux-${{ matrix.name }}
+          path: hev-socks5-tunnel-linux-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 1
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - name: arm64
+            flags: -arch arm64 -mmacosx-version-min=11.0
+          - name: x86_64
+            flags: -arch x86_64 -mmacosx-version-min=10.6
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      - name: Build ${{ matrix.name }}
+        run: |
+          make CC=clang CFLAGS="${{ matrix.flags }}" LFLAGS="${{ matrix.flags }}" -j $(sysctl -n hw.logicalcpu)
+          cp bin/hev-socks5-tunnel hev-socks5-tunnel-darwin-${{ matrix.name }}
+      - name: Upload ${{ matrix.name }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hev-socks5-tunnel-darwin-${{ matrix.name }}
+          path: hev-socks5-tunnel-darwin-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 1
+
+  freebsd:
+    name: FreeBSD
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      - name: Build
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y gmake gcc
+          run: |
+            gmake
+            cp bin/hev-socks5-tunnel hev-socks5-tunnel-freebsd-x86_64
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: hev-socks5-tunnel-freebsd-x86_64
+          path: hev-socks5-tunnel-freebsd-x86_64
+          if-no-files-found: error
+          retention-days: 1
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          location: D:\msys2
+          update: true
+          install: >-
+            gcc
+            git
+            make
+            wget
+            zip
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          export MSYS=winsymlinks:native
+          git clone --depth=1 --recursive file://`pwd` work; cd work
+          make -j`nproc`
+          mkdir hev-socks5-tunnel
+          cp bin/hev-socks5-tunnel* hev-socks5-tunnel
+          cp third-part/wintun/bin/wintun.dll hev-socks5-tunnel
+          wget -P hev-socks5-tunnel https://github.com/heiher/msys2/releases/latest/download/msys-2.0.dll
+          zip -r ../hev-socks5-tunnel-win64.zip hev-socks5-tunnel
+      - name: Upload ${{ matrix.name }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hev-socks5-tunnel-win64.zip
+          path: hev-socks5-tunnel-win64.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs:
+      - source
+      - linux
+      - macos
+      - freebsd
+      - windows
+    if: github.event_name == 'release'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: "hev-*"
+          merge-multiple: true
+      - name: Upload artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for i in release/hev-*; do
+            gh release upload ${{ github.event.release.tag_name }} $i
+          done
+
+  apple:
+    name: Apple
+    runs-on: macos-latest
+    if: github.event_name != 'release'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      - name: Build
+        run: |
+          ./build-apple.sh
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    if: github.event_name != 'release'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      - name: Prepare
+        run: |
+          wget https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+          unzip android-ndk-r27d-linux.zip
+          ln -sf . jni
+      - name: Build
+        run: |
+          ./android-ndk-r27d/ndk-build
+
+  llvm:
+    name: LLVM
+    runs-on: ubuntu-latest
+    if: github.event_name != 'release'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      - name: Prepare
+        run: |
+          sudo apt install -y clang
+      - name: Build
+        run: |
+          make CC=clang ENABLE_STATIC=1 -j`nproc`
+
+  docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/386
+          - linux/arm64/v8
+          - linux/arm/v7
+          - linux/arm/v6
+          - linux/riscv64
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      - name: Prepare QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Prepare Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Prepare Repo Name
+        id: repo
+        run: |
+          echo "repository=${GITHUB_REPOSITORY@L}" >> $GITHUB_OUTPUT
+      - name: Prepare Digest
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+      - name: Login GitHub Packages Docker Image Repository
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and Push Docker Image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          outputs: type=image,name=ghcr.io/${{ steps.repo.outputs.repository }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+      - name: Export Digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - name: Upload Digest
+        uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-merge:
+    name: Merge Docker Image Tags
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    needs:
+      - docker
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Download Digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+      - name: Prepare Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Prepare Repo Name
+        id: repo
+        run: |
+          echo "repository=${GITHUB_REPOSITORY@L}" >> $GITHUB_OUTPUT
+      - name: Login GitHub Packages Docker Image Repository
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Format Docker Image Meta
+        uses: docker/metadata-action@v5
+        id: docker_meta
+        with:
+          images: ghcr.io/${{ steps.repo.outputs.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=nightly,enable={{is_default_branch}}
+      - name: Create Manifest List and Push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ steps.repo.outputs.repository }}@sha256:%s ' *)
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ghcr.io/${{ steps.repo.outputs.repository }}:${{ steps.docker_meta.outputs.version }}
