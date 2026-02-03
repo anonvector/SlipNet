@@ -14,6 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
+val appVersionName = "1.3.0"
+val appVersionCode = 8
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -74,8 +76,8 @@ android {
         applicationId = "app.slipnet"
         minSdk = minSdkVersion
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.3.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -101,6 +103,16 @@ android {
         buildConfig = true
     }
 
+    applicationVariants.all {
+        outputs.all {
+            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            val abiFilter = output.getFilter("ABI")
+            val abi = abiFilter ?: "universal"
+            val newName = "SlipNet-v${appVersionName}-${buildType.name}-${abi}.apk"
+            output.outputFileName = newName
+        }
+    }
+
     splits {
         abi {
             isEnable = true
@@ -118,14 +130,6 @@ android {
         }
     }
 
-    applicationVariants.all {
-        val variant = this
-        outputs.all {
-            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
-            val abi = output.filters.find { it.filterType == "ABI" }?.identifier ?: "universal"
-            output.outputFileName = "SlipNet-${abi}-${variant.buildType.name}.apk"
-        }
-    }
 }
 
 kotlin {
