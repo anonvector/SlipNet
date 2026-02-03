@@ -1,0 +1,19 @@
+module HevTaskSystem {
+    umbrella header "hev-circular-buffer.h"
+    umbrella header "hev-memory-allocator.h"
+    umbrella header "hev-object-atomic.h"
+    umbrella header "hev-object.h"
+    umbrella header "hev-task-call.h"
+    umbrella header "hev-task-channel.h"
+    umbrella header "hev-task-channel-select.h"
+    umbrella header "hev-task-cond.h"
+    umbrella header "hev-task-dns.h"
+    umbrella header "hev-task.h"
+    umbrella header "hev-task-io.h"
+    umbrella header "hev-task-io-pipe.h"
+    umbrella header "hev-task-io-poll.h"
+    umbrella header "hev-task-io-socket.h"
+    umbrella header "hev-task-mutex.h"
+    umbrella header "hev-task-system.h"
+    export *
+}
