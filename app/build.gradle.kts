@@ -74,8 +74,8 @@ android {
         applicationId = "app.slipnet"
         minSdk = minSdkVersion
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.2.2"
+        versionCode = 8
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -110,6 +110,13 @@ android {
     }
     ndkVersion = "29.0.14206865"
     packagingOptions.jniLibs.useLegacyPackaging = true
+
+    // Build hev-socks5-tunnel with ndk-build
+    externalNativeBuild {
+        ndkBuild {
+            path = file("src/main/cpp/Android.mk")
+        }
+    }
 
     applicationVariants.all {
         val variant = this
@@ -403,6 +410,9 @@ dependencies {
 
     // JSON serialization for Room converters
     implementation("com.google.code.gson:gson:2.10.1")
+
+    // SSH tunneling library
+    implementation("com.jcraft:jsch:0.1.55")
 
     // Core
     implementation("androidx.core:core-ktx:1.12.0")
