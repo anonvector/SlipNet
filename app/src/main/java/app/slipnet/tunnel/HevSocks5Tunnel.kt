@@ -76,6 +76,7 @@ object HevSocks5Tunnel {
             Log.i(TAG, "  DNS: $dnsAddress")
         }
         Log.i(TAG, "========================================")
+        Log.d(TAG, "Config:\n$config")
 
         return try {
             val fd = tunFd.fd
@@ -174,12 +175,13 @@ object HevSocks5Tunnel {
         }
 
         sb.appendLine()
+
         sb.appendLine("misc:")
         sb.appendLine("  task-stack-size: 32768")  // 32KB - sufficient for tun2socks, reduces memory
-        sb.appendLine("  connect-timeout: 5000")   // 5s - faster failure detection
-        sb.appendLine("  tcp-read-write-timeout: 120000")  // 2min - detect dead connections faster
-        sb.appendLine("  udp-read-write-timeout: 30000")   // 30s - faster UDP timeout
-        sb.appendLine("  log-level: info")
+        sb.appendLine("  connect-timeout: 5000")   // 5s connection timeout
+        sb.appendLine("  tcp-read-write-timeout: 120000")  // 2min TCP timeout
+        sb.appendLine("  udp-read-write-timeout: 60000")   // 60s UDP timeout (increased for DNS)
+        sb.appendLine("  log-level: debug")
 
         return sb.toString()
     }

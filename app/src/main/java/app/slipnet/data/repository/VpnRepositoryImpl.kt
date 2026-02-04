@@ -13,6 +13,7 @@ import app.slipnet.tunnel.SlipstreamBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -54,6 +55,83 @@ class VpnRepositoryImpl @Inject constructor(
         return Result.success(Unit)
     }
 
+    /**
+     * Start the Slipstream SOCKS5 proxy. Call this BEFORE establishing the VPN interface.
+     * This ensures the proxy is ready to handle traffic when the VPN starts routing.
+     */
+    suspend fun startSlipstreamProxy(profile: ServerProfile): Result<Unit> {
+        connectedProfile = profile
+        val debugLogging = preferencesDataStore.debugLogging.first()
+
+        // Convert profile to resolver config
+        val resolvers = profile.resolvers.map { resolver ->
+            ResolverConfig(
+                host = resolver.host,
+                port = resolver.port,
+                authoritative = resolver.authoritative
+            )
+        }
+
+        val success = startSlipstreamClient(profile.domain, resolvers, profile, debugLogging)
+
+        return if (success) {
+            // Small delay to ensure SOCKS5 listener is ready
+            delay(100)
+            Log.i(TAG, "Slipstream SOCKS5 proxy started successfully")
+            Result.success(Unit)
+        } else {
+            val error = tunnelStartException?.message ?: "Failed to start Slipstream proxy"
+            connectedProfile = null
+            Log.e(TAG, "Failed to start Slipstream proxy: $error")
+            Result.failure(Exception(error))
+        }
+    }
+
+    /**
+     * Start hev-socks5-tunnel after the VPN interface is established.
+     * Call this AFTER startSlipstreamProxy() succeeds and VPN interface is established.
+     */
+    suspend fun startTun2Socks(
+        profile: ServerProfile,
+        pfd: ParcelFileDescriptor
+    ): Result<Unit> {
+        currentTunFd = pfd
+
+        // Use first resolver from profile as DNS server, fallback to 8.8.8.8
+        val dnsServer = profile.resolvers.firstOrNull()?.host ?: "8.8.8.8"
+        val socksPort = profile.tcpListenPort
+
+        Log.i(TAG, "========================================")
+        Log.i(TAG, "Starting hev-socks5-tunnel")
+        Log.i(TAG, "  SOCKS5 proxy: 127.0.0.1:$socksPort")
+        Log.i(TAG, "  DNS server: $dnsServer")
+        Log.i(TAG, "========================================")
+
+        val hevResult = HevSocks5Tunnel.start(
+            tunFd = pfd,
+            socksAddress = "127.0.0.1",
+            socksPort = socksPort,
+            dnsAddress = dnsServer,
+            mtu = 1500,
+            ipv4Address = "10.255.255.1"
+        )
+
+        return if (hevResult.isSuccess) {
+            _connectionState.value = ConnectionState.Connected(profile)
+            Log.i(TAG, "Tunnel started successfully")
+            Result.success(Unit)
+        } else {
+            val error = hevResult.exceptionOrNull()?.message ?: "Failed to start tun2socks"
+            _connectionState.value = ConnectionState.Error(error)
+            connectedProfile = null
+            // Stop the SOCKS5 proxy since tun2socks failed
+            SlipstreamBridge.stopClient()
+            Log.e(TAG, "Failed to start tun2socks: $error")
+            Result.failure(Exception(error))
+        }
+    }
+
+    @Deprecated("Use startSlipstreamProxy() and startTun2Socks() instead for proper startup ordering")
     fun startWithFd(
         profile: ServerProfile,
         pfd: ParcelFileDescriptor,

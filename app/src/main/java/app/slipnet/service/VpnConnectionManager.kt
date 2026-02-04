@@ -2,7 +2,6 @@ package app.slipnet.service
 
 import android.content.Context
 import android.content.Intent
-import android.os.ParcelFileDescriptor
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.repository.VpnRepositoryImpl
 import app.slipnet.domain.model.ConnectionState
@@ -73,20 +72,14 @@ class VpnConnectionManager @Inject constructor(
         context.startService(intent)
     }
 
-    fun onVpnEstablished(pfd: ParcelFileDescriptor, vpnProtect: ((java.net.DatagramSocket) -> Boolean)?) {
+    fun onVpnEstablished() {
         val profile = pendingProfile ?: return
 
+        // Tunnels are already started by SlipNetVpnService before calling this method.
+        // Just do bookkeeping here - save the profile as last connected.
         scope.launch {
-            val result = vpnRepository.startWithFd(profile, pfd, vpnProtect)
-            if (result.isSuccess) {
-                _connectionState.value = ConnectionState.Connected(profile)
-                preferencesDataStore.setLastConnectedProfileId(profile.id)
-                profileRepository.setActiveProfile(profile.id)
-            } else {
-                _connectionState.value = ConnectionState.Error(
-                    result.exceptionOrNull()?.message ?: "Unknown error"
-                )
-            }
+            preferencesDataStore.setLastConnectedProfileId(profile.id)
+            profileRepository.setActiveProfile(profile.id)
         }
     }
 
