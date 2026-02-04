@@ -74,33 +74,55 @@ class SlipNetVpnService : VpnService() {
             val notification = notificationHelper.createVpnNotification(ConnectionState.Connecting)
             startForeground(NotificationHelper.VPN_NOTIFICATION_ID, notification)
 
-            // Establish VPN interface
             try {
-                // Set VpnService reference for socket protection BEFORE starting tunnel
+                // Step 1: Set VpnService reference for socket protection BEFORE starting tunnel
                 SlipstreamBridge.setVpnService(this@SlipNetVpnService)
 
-                // Use DNS from profile or fallback to default
-                val dnsServer = profile.resolvers.firstOrNull()?.host ?: DEFAULT_DNS
-                vpnInterface = establishVpnInterface(dnsServer)
-
-                if (vpnInterface == null) {
-                    connectionManager.onVpnError("Failed to establish VPN interface")
+                // Step 2: Start Slipstream SOCKS5 proxy FIRST, before establishing VPN interface
+                // This ensures the proxy is ready when traffic starts flowing
+                val proxyResult = vpnRepository.startSlipstreamProxy(profile)
+                if (proxyResult.isFailure) {
+                    connectionManager.onVpnError(proxyResult.exceptionOrNull()?.message ?: "Failed to start proxy")
                     SlipstreamBridge.setVpnService(null)
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                     return@launch
                 }
 
-                // Notify connection manager that VPN is established (pass the ParcelFileDescriptor and protect callback)
-                connectionManager.onVpnEstablished(vpnInterface!!) { socket ->
-                    protect(socket)
+                // Step 3: Now establish VPN interface - traffic will start routing through it
+                val dnsServer = profile.resolvers.firstOrNull()?.host ?: DEFAULT_DNS
+                vpnInterface = establishVpnInterface(dnsServer)
+
+                if (vpnInterface == null) {
+                    connectionManager.onVpnError("Failed to establish VPN interface")
+                    SlipstreamBridge.stopClient()
+                    SlipstreamBridge.setVpnService(null)
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return@launch
                 }
+
+                // Step 4: Start tun2socks to route TUN traffic through the SOCKS5 proxy
+                val tun2socksResult = vpnRepository.startTun2Socks(profile, vpnInterface!!)
+                if (tun2socksResult.isFailure) {
+                    connectionManager.onVpnError(tun2socksResult.exceptionOrNull()?.message ?: "Failed to start tunnel")
+                    vpnInterface?.close()
+                    vpnInterface = null
+                    SlipstreamBridge.setVpnService(null)
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return@launch
+                }
+
+                // Notify connection manager for bookkeeping (profile preferences, etc.)
+                connectionManager.onVpnEstablished()
 
                 // Update notification to connected state
                 observeConnectionState()
 
             } catch (e: Exception) {
                 connectionManager.onVpnError(e.message ?: "Unknown error")
+                SlipstreamBridge.setVpnService(null)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
