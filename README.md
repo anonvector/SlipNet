@@ -1,5 +1,9 @@
 # SlipNet
 
+<p align="center">
+  <img src="imgs/icon.png" alt="SlipNet Logo" width="200">
+</p>
+
 A modern Android VPN client built with Jetpack Compose and Kotlin, featuring DNS-over-QUIC tunneling powered by a Rust backend.
 
 ## Features
