@@ -10,6 +10,7 @@ A fast, modern Android VPN client built with Jetpack Compose and Kotlin, featuri
 
 - **Modern UI**: Built entirely with Jetpack Compose and Material 3 design
 - **DNS-over-QUIC**: Secure DNS tunneling using the QUIC protocol
+- **DNS Server Scanning**: Automatically discover and test compatible DNS servers
 - **Multiple Profiles**: Create and manage multiple server configurations
 - **Quick Settings Tile**: Toggle VPN connection directly from the notification shade
 - **Auto-connect on Boot**: Optionally reconnect VPN when device starts
