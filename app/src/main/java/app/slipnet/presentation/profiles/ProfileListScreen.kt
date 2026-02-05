@@ -157,7 +157,8 @@ fun ProfileListScreen(
         floatingActionButton = {
             FloatingActionButton(
                 onClick = onNavigateToAddProfile,
-                containerColor = MaterialTheme.colorScheme.primary
+                containerColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 16.dp, end = 8.dp)
             ) {
                 Icon(Icons.Default.Add, contentDescription = "Add Profile")
             }

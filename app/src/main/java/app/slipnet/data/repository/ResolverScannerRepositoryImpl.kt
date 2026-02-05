@@ -1,11 +1,13 @@
 package app.slipnet.data.repository
 
-import app.slipnet.data.scanner.DefaultResolvers
+import android.content.Context
+import app.slipnet.R
 import app.slipnet.domain.model.DnsTunnelTestResult
 import app.slipnet.domain.model.ResolverScanResult
 import app.slipnet.domain.model.ResolverStatus
 import app.slipnet.domain.model.ScanMode
 import app.slipnet.domain.repository.ResolverScannerRepository
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -21,10 +23,31 @@ import javax.inject.Singleton
 import kotlin.random.Random
 
 @Singleton
-class ResolverScannerRepositoryImpl @Inject constructor() : ResolverScannerRepository {
+class ResolverScannerRepositoryImpl @Inject constructor(
+    @ApplicationContext private val context: Context
+) : ResolverScannerRepository {
+
+    private var cachedResolvers: List<String>? = null
 
     override fun getDefaultResolvers(): List<String> {
-        return DefaultResolvers.list
+        // Return cached list if available
+        cachedResolvers?.let { return it }
+
+        // Load from raw resource file (famous DNS servers are at the top of the file)
+        val resolvers = try {
+            context.resources.openRawResource(R.raw.resolvers).bufferedReader().useLines { lines ->
+                lines
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() && !it.startsWith("#") && isValidIpAddress(it) }
+                    .toList()
+            }
+        } catch (e: Exception) {
+            // Fallback to basic public DNS if resource loading fails
+            listOf("8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1")
+        }
+
+        cachedResolvers = resolvers
+        return resolvers
     }
 
     override fun parseResolverList(content: String): List<String> {

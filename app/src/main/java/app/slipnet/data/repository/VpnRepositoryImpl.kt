@@ -6,7 +6,9 @@ import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
+import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.repository.VpnRepository
+import app.slipnet.tunnel.DnsttBridge
 import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.ResolverConfig
 import app.slipnet.tunnel.SlipstreamBridge
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -42,6 +45,7 @@ class VpnRepositoryImpl @Inject constructor(
     private var connectedProfile: ServerProfile? = null
     private var currentTunFd: ParcelFileDescriptor? = null
     private var tunnelStartException: Exception? = null
+    private var currentTunnelType: TunnelType? = null
 
     override suspend fun connect(profile: ServerProfile): Result<Unit> {
         if (_connectionState.value is ConnectionState.Connected ||
@@ -75,9 +79,9 @@ class VpnRepositoryImpl @Inject constructor(
         val success = startSlipstreamClient(profile.domain, resolvers, profile, debugLogging)
 
         return if (success) {
-            // Small delay to ensure SOCKS5 listener is ready
-            delay(100)
             Log.i(TAG, "Slipstream SOCKS5 proxy started successfully")
+            currentTunnelType = TunnelType.SLIPSTREAM
+            // Note: Caller should verify proxy is ready by checking the port
             Result.success(Unit)
         } else {
             val error = tunnelStartException?.message ?: "Failed to start Slipstream proxy"
@@ -88,8 +92,42 @@ class VpnRepositoryImpl @Inject constructor(
     }
 
     /**
+     * Start the DNSTT SOCKS5 proxy. Call this AFTER establishing the VPN interface.
+     * The VPN must be established first with addDisallowedApplication so DNSTT's
+     * DNS queries bypass the VPN.
+     */
+    suspend fun startDnsttProxy(profile: ServerProfile): Result<Unit> = withContext(Dispatchers.IO) {
+        connectedProfile = profile
+
+        // Get DNS server from first resolver, or use default
+        val dnsServer = profile.resolvers.firstOrNull()?.let { "${it.host}:${it.port}" } ?: "8.8.8.8:53"
+
+        val result = DnsttBridge.startClient(
+            dnsServer = dnsServer,
+            tunnelDomain = profile.domain,
+            publicKey = profile.dnsttPublicKey,
+            listenPort = profile.tcpListenPort,
+            listenHost = profile.tcpListenHost
+        )
+
+        if (result.isSuccess) {
+            Log.i(TAG, "DNSTT SOCKS5 proxy started successfully")
+            currentTunnelType = TunnelType.DNSTT
+            Result.success(Unit)
+        } else {
+            val error = result.exceptionOrNull()?.message ?: "Failed to start DNSTT proxy"
+            connectedProfile = null
+            Log.e(TAG, "Failed to start DNSTT proxy: $error")
+            Result.failure(Exception(error))
+        }
+    }
+
+    /**
      * Start hev-socks5-tunnel after the VPN interface is established.
      * Call this AFTER startSlipstreamProxy() succeeds and VPN interface is established.
+     *
+     * DNS resolution works through the VPN's configured DNS servers (via VpnService.addDnsServer())
+     * combined with hev-socks5-tunnel's UDP-over-TCP mode that tunnels DNS queries through SOCKS5.
      */
     suspend fun startTun2Socks(
         profile: ServerProfile,
@@ -97,21 +135,25 @@ class VpnRepositoryImpl @Inject constructor(
     ): Result<Unit> {
         currentTunFd = pfd
 
-        // Use first resolver from profile as DNS server, fallback to 8.8.8.8
-        val dnsServer = profile.resolvers.firstOrNull()?.host ?: "8.8.8.8"
         val socksPort = profile.tcpListenPort
+        // Enable UDP tunneling for both tunnel types
+        // Server uses Dante SOCKS5 proxy which supports UDP relay
+        val enableUdpTunneling = true
 
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting hev-socks5-tunnel")
         Log.i(TAG, "  SOCKS5 proxy: 127.0.0.1:$socksPort")
-        Log.i(TAG, "  DNS server: $dnsServer")
+        Log.i(TAG, "  SOCKS auth: ${if (!profile.socksUsername.isNullOrBlank()) "enabled" else "disabled"}")
+        Log.i(TAG, "  UDP tunneling: $enableUdpTunneling (tunnel type: ${profile.tunnelType})")
         Log.i(TAG, "========================================")
 
         val hevResult = HevSocks5Tunnel.start(
             tunFd = pfd,
             socksAddress = "127.0.0.1",
             socksPort = socksPort,
-            dnsAddress = dnsServer,
+            socksUsername = profile.socksUsername,
+            socksPassword = profile.socksPassword,
+            enableUdpTunneling = enableUdpTunneling,
             mtu = 1500,
             ipv4Address = "10.255.255.1"
         )
@@ -125,10 +167,33 @@ class VpnRepositoryImpl @Inject constructor(
             _connectionState.value = ConnectionState.Error(error)
             connectedProfile = null
             // Stop the SOCKS5 proxy since tun2socks failed
-            SlipstreamBridge.stopClient()
+            stopCurrentProxy()
             Log.e(TAG, "Failed to start tun2socks: $error")
             Result.failure(Exception(error))
         }
+    }
+
+    /**
+     * Stop the currently running proxy (Slipstream or DNSTT).
+     */
+    private fun stopCurrentProxy() {
+        when (currentTunnelType) {
+            TunnelType.SLIPSTREAM -> {
+                Log.d(TAG, "Stopping Slipstream proxy")
+                SlipstreamBridge.stopClient()
+            }
+            TunnelType.DNSTT -> {
+                Log.d(TAG, "Stopping DNSTT proxy")
+                DnsttBridge.stopClient()
+            }
+            null -> {
+                // Try to stop both just in case
+                Log.d(TAG, "No tunnel type set, stopping both proxies")
+                SlipstreamBridge.stopClient()
+                DnsttBridge.stopClient()
+            }
+        }
+        currentTunnelType = null
     }
 
     @Deprecated("Use startSlipstreamProxy() and startTun2Socks() instead for proper startup ordering")
@@ -150,9 +215,6 @@ class VpnRepositoryImpl @Inject constructor(
                 authoritative = resolver.authoritative
             )
         }
-
-        // Use first resolver from profile as DNS server, fallback to 8.8.8.8
-        val dnsServer = profile.resolvers.firstOrNull()?.host ?: "8.8.8.8"
 
         // Start the tunnel in a background coroutine
         scope.launch(Dispatchers.IO) {
@@ -177,14 +239,15 @@ class VpnRepositoryImpl @Inject constructor(
                 Log.i(TAG, "========================================")
                 Log.i(TAG, "Starting hev-socks5-tunnel")
                 Log.i(TAG, "  SOCKS5 proxy: 127.0.0.1:$socksPort")
-                Log.i(TAG, "  DNS server: $dnsServer")
+                Log.i(TAG, "  SOCKS auth: ${if (!profile.socksUsername.isNullOrBlank()) "enabled" else "disabled"}")
                 Log.i(TAG, "========================================")
 
                 val hevResult = HevSocks5Tunnel.start(
                     tunFd = pfd,
                     socksAddress = "127.0.0.1",
                     socksPort = socksPort,
-                    dnsAddress = dnsServer,
+                    socksUsername = profile.socksUsername,
+                    socksPassword = profile.socksPassword,
                     mtu = 1500,
                     ipv4Address = "10.255.255.1"
                 )
@@ -248,8 +311,8 @@ class VpnRepositoryImpl @Inject constructor(
             // Stop hev-socks5-tunnel first
             HevSocks5Tunnel.stop()
 
-            // Then stop the Slipstream client
-            SlipstreamBridge.stopClient()
+            // Then stop the current proxy (Slipstream or DNSTT)
+            stopCurrentProxy()
 
             currentTunFd = null
             _connectionState.value = ConnectionState.Disconnected

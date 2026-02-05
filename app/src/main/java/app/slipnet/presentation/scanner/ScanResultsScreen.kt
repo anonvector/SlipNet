@@ -143,7 +143,6 @@ fun ScanResultsScreen(
                         TextButton(
                             onClick = {
                                 onResolversSelected(viewModel.getSelectedResolversString())
-                                onNavigateBack()
                             }
                         ) {
                             Text("Apply", fontWeight = FontWeight.SemiBold)

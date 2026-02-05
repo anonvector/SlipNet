@@ -36,6 +36,12 @@ data class ProfileEntity(
     @ColumnInfo(name = "tcp_listen_host")
     val tcpListenHost: String = "127.0.0.1",
 
+    @ColumnInfo(name = "socks_username", defaultValue = "")
+    val socksUsername: String = "",
+
+    @ColumnInfo(name = "socks_password", defaultValue = "")
+    val socksPassword: String = "",
+
     @ColumnInfo(name = "is_active")
     val isActive: Boolean = false,
 
@@ -43,5 +49,13 @@ data class ProfileEntity(
     val createdAt: Long,
 
     @ColumnInfo(name = "updated_at")
-    val updatedAt: Long
+    val updatedAt: Long,
+
+    // Tunnel type: "slipstream" or "dnstt"
+    @ColumnInfo(name = "tunnel_type", defaultValue = "slipstream")
+    val tunnelType: String = "slipstream",
+
+    // DNSTT-specific: Noise protocol public key (hex encoded)
+    @ColumnInfo(name = "dnstt_public_key", defaultValue = "")
+    val dnsttPublicKey: String = ""
 )

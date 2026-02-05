@@ -4,12 +4,23 @@
   <img src="imgs/icon.png" alt="SlipNet Logo" width="200">
 </p>
 
-A fast, modern Android VPN client built with Jetpack Compose and Kotlin, featuring high-performance DNS-over-QUIC tunneling powered by Slipstream.
+A fast, modern Android VPN client built with Jetpack Compose and Kotlin, featuring DNS tunneling with support for multiple protocols.
+
+## Tunnel Types
+
+SlipNet supports two tunnel types:
+
+| Tunnel Type | Protocol | Status | Description |
+|-------------|----------|--------|-------------|
+| **DNSTT** | KCP + Noise | **Recommended** | Stable and reliable DNS tunneling |
+| **Slipstream** | QUIC | Experimental | High-performance but less stable |
+
+**Note:** DNSTT is the default and recommended tunnel type for most users.
 
 ## Features
 
 - **Modern UI**: Built entirely with Jetpack Compose and Material 3 design
-- **DNS-over-QUIC**: Secure DNS tunneling using the QUIC protocol
+- **Multiple Tunnel Types**: Choose between DNSTT (recommended) or Slipstream (experimental)
 - **DNS Server Scanning**: Automatically discover and test compatible DNS servers
 - **Multiple Profiles**: Create and manage multiple server configurations
 - **Quick Settings Tile**: Toggle VPN connection directly from the notification shade
@@ -141,9 +152,18 @@ SlipNet follows Clean Architecture principles with three main layers:
 Each server profile contains:
 
 - **Name**: Display name for the profile
+- **Tunnel Type**: DNSTT (recommended) or Slipstream (experimental)
 - **Domain**: Server domain for DNS tunneling
-- **Resolvers**: List of DNS resolver configurations
-- **Congestion Control**: QUIC congestion control algorithm (cubic, reno, bbr)
+- **Resolvers**: DNS resolver configurations
+
+#### DNSTT-specific settings:
+- **Public Key**: Server's Noise protocol public key (hex format)
+
+#### Slipstream-specific settings:
+- **Congestion Control**: QUIC congestion control algorithm (BBR, DCUBIC)
+- **Keep-Alive Interval**: QUIC keep-alive interval in milliseconds
+- **Authoritative Mode**: Use authoritative DNS resolution
+- **GSO**: Generic Segmentation Offload for better performance
 
 ## Contributing
 

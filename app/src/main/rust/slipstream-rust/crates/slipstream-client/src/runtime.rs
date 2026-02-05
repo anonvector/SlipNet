@@ -6,6 +6,31 @@ use self::path::{
     loop_burst_total, path_poll_burst_max,
 };
 use self::setup::{bind_tcp_listener, bind_udp_socket, compute_mtu, map_io};
+
+// Android-specific imports for state signaling
+#[cfg(target_os = "android")]
+use crate::android::{
+    exceeded_max_failures, record_connection_failure, reset_quic_ready, should_shutdown,
+    signal_listener_ready, signal_quic_ready,
+};
+
+// No-op implementations for non-Android platforms
+#[cfg(not(target_os = "android"))]
+fn should_shutdown() -> bool {
+    false
+}
+#[cfg(not(target_os = "android"))]
+fn signal_listener_ready() {}
+#[cfg(not(target_os = "android"))]
+fn signal_quic_ready() {}
+#[cfg(not(target_os = "android"))]
+fn reset_quic_ready() {}
+#[cfg(not(target_os = "android"))]
+fn record_connection_failure() {}
+#[cfg(not(target_os = "android"))]
+fn exceeded_max_failures() -> bool {
+    false
+}
 use crate::dns::{
     add_paths, expire_inflight_polls, handle_dns_response, maybe_report_debug,
     refresh_resolver_path, resolve_resolvers, resolver_mode_to_c, send_poll_queries,
@@ -107,6 +132,9 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
     };
     acceptor.spawn(listener, command_tx.clone());
     info!("Listening on TCP port {} (host {})", tcp_port, bound_host);
+
+    // Signal to Android that the TCP listener is ready
+    signal_listener_ready();
 
     let alpn = CString::new(SLIPSTREAM_ALPN)
         .map_err(|_| ClientError::new("ALPN contains an unexpected null byte"))?;
@@ -230,8 +258,15 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
         let mut zero_send_loops = 0u64;
         let mut zero_send_with_streams = 0u64;
         let mut last_flow_block_log_at = 0u64;
+        let mut quic_ready_signaled = false;
 
         loop {
+            // Check for shutdown signal from Android
+            if should_shutdown() {
+                info!("Shutdown signal received, exiting");
+                return Ok(0);
+            }
+
             let current_time = unsafe { picoquic_current_time() };
             drain_commands(cnx, state_ptr, &mut command_rx);
             drain_stream_data(cnx, state_ptr);
@@ -242,6 +277,12 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
 
             let ready = unsafe { (*state_ptr).is_ready() };
             if ready {
+                // Signal QUIC ready to Android (only once per connection)
+                if !quic_ready_signaled {
+                    signal_quic_ready();
+                    quic_ready_signaled = true;
+                }
+
                 unsafe {
                     (*state_ptr).update_acceptor_limit(cnx);
                 }
@@ -599,6 +640,20 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
             picoquic_close(cnx, 0);
         }
 
+        // Track connection failures - if we never became ready, count as failure
+        if !quic_ready_signaled {
+            record_connection_failure();
+            if exceeded_max_failures() {
+                error!("Exceeded max consecutive connection failures, giving up");
+                return Err(ClientError::new(
+                    "Connection failed repeatedly - check network and server availability",
+                ));
+            }
+        }
+
+        // Reset QUIC ready state for reconnection
+        reset_quic_ready();
+
         unsafe {
             (*state_ptr).reset_for_reconnect();
         }
@@ -606,6 +661,13 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
         if dropped > 0 {
             warn!("Dropped {} queued commands while reconnecting", dropped);
         }
+
+        // Check for shutdown before reconnecting
+        if should_shutdown() {
+            info!("Shutdown signal received during reconnect, exiting");
+            return Ok(0);
+        }
+
         warn!(
             "Connection closed; reconnecting in {}ms",
             reconnect_delay.as_millis()
@@ -613,6 +675,11 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
         // Sleep in small chunks and drop commands that arrive while disconnected.
         let mut remaining_sleep = reconnect_delay;
         while remaining_sleep > Duration::ZERO {
+            // Check shutdown during sleep
+            if should_shutdown() {
+                info!("Shutdown signal received during reconnect sleep, exiting");
+                return Ok(0);
+            }
             let chunk = remaining_sleep.min(Duration::from_millis(100));
             sleep(chunk).await;
             remaining_sleep -= chunk;

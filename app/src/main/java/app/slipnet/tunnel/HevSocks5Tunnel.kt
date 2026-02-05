@@ -32,7 +32,8 @@ object HevSocks5Tunnel {
      * @param socksPort SOCKS5 server port
      * @param socksUsername SOCKS5 username (optional)
      * @param socksPassword SOCKS5 password (optional)
-     * @param dnsAddress DNS server address (optional, for UDP DNS)
+     * @param enableUdpTunneling If true, tunnel UDP over TCP SOCKS5 (needed for DNSTT).
+     *                           If false, UDP is not tunneled (Slipstream uses DnsForwarder instead).
      * @param mtu MTU size
      * @param ipv4Address IPv4 address for TUN interface
      * @return Result indicating success or failure
@@ -43,7 +44,7 @@ object HevSocks5Tunnel {
         socksPort: Int,
         socksUsername: String? = null,
         socksPassword: String? = null,
-        dnsAddress: String? = null,
+        enableUdpTunneling: Boolean = false,
         mtu: Int = 1500,
         ipv4Address: String = "10.255.255.1"
     ): Result<Unit> {
@@ -62,7 +63,7 @@ object HevSocks5Tunnel {
             socksPort = socksPort,
             socksUsername = socksUsername,
             socksPassword = socksPassword,
-            dnsAddress = dnsAddress,
+            enableUdpTunneling = enableUdpTunneling,
             mtu = mtu,
             ipv4Address = ipv4Address
         )
@@ -72,9 +73,6 @@ object HevSocks5Tunnel {
         Log.i(TAG, "  SOCKS5: $socksAddress:$socksPort")
         Log.i(TAG, "  MTU: $mtu")
         Log.i(TAG, "  IPv4: $ipv4Address")
-        if (dnsAddress != null) {
-            Log.i(TAG, "  DNS: $dnsAddress")
-        }
         Log.i(TAG, "========================================")
         Log.d(TAG, "Config:\n$config")
 
@@ -96,6 +94,7 @@ object HevSocks5Tunnel {
 
     /**
      * Stop the tunnel.
+     * Blocks until the tunnel has stopped or timeout is reached.
      */
     fun stop() {
         if (!isLibraryLoaded) {
@@ -105,7 +104,26 @@ object HevSocks5Tunnel {
         Log.i(TAG, "Stopping tunnel...")
         try {
             nativeStop()
-            Log.i(TAG, "Tunnel stopped")
+
+            // Wait for the tunnel to actually stop (up to 3 seconds)
+            val maxWaitMs = 3000
+            val checkIntervalMs = 100L
+            var waitedMs = 0
+
+            while (waitedMs < maxWaitMs) {
+                if (!isRunning()) {
+                    Log.i(TAG, "Tunnel stopped after ${waitedMs}ms")
+                    return
+                }
+                Thread.sleep(checkIntervalMs)
+                waitedMs += checkIntervalMs.toInt()
+            }
+
+            if (isRunning()) {
+                Log.w(TAG, "Tunnel may still be running after ${maxWaitMs}ms")
+            } else {
+                Log.i(TAG, "Tunnel stopped")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping tunnel", e)
         }
@@ -150,7 +168,7 @@ object HevSocks5Tunnel {
         socksPort: Int,
         socksUsername: String?,
         socksPassword: String?,
-        dnsAddress: String?,
+        enableUdpTunneling: Boolean,
         mtu: Int,
         ipv4Address: String
     ): String {
@@ -164,10 +182,12 @@ object HevSocks5Tunnel {
         sb.appendLine("socks5:")
         sb.appendLine("  address: $socksAddress")
         sb.appendLine("  port: $socksPort")
-        // Use 'tcp' mode to tunnel UDP over TCP through SOCKS5
-        // This is required because Slipstream is a TCP-only SOCKS5 proxy
-        // and doesn't support SOCKS5 UDP association (RFC 1928)
-        sb.appendLine("  udp: 'tcp'")
+        // UDP tunneling:
+        // - DNSTT: Enable UDP tunneling via 'tcp' mode (DNSTT supports proper SOCKS5)
+        // - Slipstream: Disable UDP tunneling (server uses simplified protocol, DNS handled by DnsForwarder)
+        if (enableUdpTunneling) {
+            sb.appendLine("  udp: 'tcp'")
+        }
 
         if (!socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()) {
             sb.appendLine("  username: '$socksUsername'")
@@ -178,10 +198,10 @@ object HevSocks5Tunnel {
 
         sb.appendLine("misc:")
         sb.appendLine("  task-stack-size: 32768")  // 32KB - sufficient for tun2socks, reduces memory
-        sb.appendLine("  connect-timeout: 5000")   // 5s connection timeout
+        sb.appendLine("  connect-timeout: 8000")   // 8s connection timeout
         sb.appendLine("  tcp-read-write-timeout: 120000")  // 2min TCP timeout
-        sb.appendLine("  udp-read-write-timeout: 60000")   // 60s UDP timeout (increased for DNS)
-        sb.appendLine("  log-level: debug")
+        sb.appendLine("  udp-read-write-timeout: 60000")   // 60s UDP timeout (for DNS queries)
+        sb.appendLine("  log-level: warning")  // Use 'debug' for troubleshooting
 
         return sb.toString()
     }

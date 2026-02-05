@@ -2,6 +2,7 @@ package app.slipnet.data.export
 
 import android.util.Base64
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.TunnelType
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -11,8 +12,8 @@ import javax.inject.Singleton
  * Single profile format: slipnet://[base64-encoded-profile]
  * Multiple profiles: one URI per line
  *
- * Encoded profile format (pipe-delimited):
- * v1|mode|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso
+ * Encoded profile format v2 (pipe-delimited):
+ * v2|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -21,8 +22,9 @@ class ConfigExporter @Inject constructor() {
 
     companion object {
         const val SCHEME = "slipnet://"
-        const val VERSION = "1"
+        const val VERSION = "2"
         const val MODE_SLIPSTREAM = "ss"
+        const val MODE_DNSTT = "dnstt"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -41,9 +43,14 @@ class ConfigExporter @Inject constructor() {
             "${resolver.host}${RESOLVER_PART_DELIMITER}${resolver.port}${RESOLVER_PART_DELIMITER}${if (resolver.authoritative) "1" else "0"}"
         }
 
+        val tunnelTypeStr = when (profile.tunnelType) {
+            TunnelType.SLIPSTREAM -> MODE_SLIPSTREAM
+            TunnelType.DNSTT -> MODE_DNSTT
+        }
+
         val data = listOf(
             VERSION,
-            MODE_SLIPSTREAM,
+            tunnelTypeStr,
             profile.name,
             profile.domain,
             resolversStr,
@@ -52,7 +59,10 @@ class ConfigExporter @Inject constructor() {
             profile.congestionControl.value,
             profile.tcpListenPort.toString(),
             profile.tcpListenHost,
-            if (profile.gsoEnabled) "1" else "0"
+            if (profile.gsoEnabled) "1" else "0",
+            profile.dnsttPublicKey,
+            profile.socksUsername ?: "",
+            profile.socksPassword ?: ""
         ).joinToString(FIELD_DELIMITER)
 
         val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)

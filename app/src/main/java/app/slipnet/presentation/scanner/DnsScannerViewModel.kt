@@ -22,7 +22,7 @@ data class DnsScannerUiState(
     val testDomain: String = "google.com",
     val timeoutMs: String = "3000",
     val concurrency: String = "50",
-    val scanMode: ScanMode = ScanMode.SIMPLE,
+    val scanMode: ScanMode = ScanMode.DNS_TUNNEL,
     val resolverList: List<String> = emptyList(),
     val scannerState: ScannerState = ScannerState(),
     val selectedResolvers: Set<String> = emptySet(),
