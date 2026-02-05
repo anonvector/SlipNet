@@ -79,14 +79,7 @@ class KotlinTunnelManager(
     // Pending connections (waiting for tunnel to establish)
     private val pendingConnections = ConcurrentHashMap<Long, PendingTunnelConnection>()
 
-    // UDP relay connections for SOCKS5 UDP ASSOCIATE
-    private val udpRelayConnections = ConcurrentHashMap<String, UdpRelayConnection>()
-    private var udpRelayIdCounter = AtomicLong(0)
-
-    // Flag to track if UDP ASSOCIATE is supported (will fallback to direct if not)
-    private var udpAssociateSupported = AtomicBoolean(true)
-
-    // Direct UDP sessions (used as fallback when UDP ASSOCIATE not supported)
+    // Direct UDP sessions (for UDP traffic that bypasses the tunnel)
     private val directUdpSessions = ConcurrentHashMap<String, DirectUdpSession>()
 
     // Connection pool for faster connection establishment
@@ -178,10 +171,6 @@ class KotlinTunnelManager(
 
         // Clear pending connections
         pendingConnections.clear()
-
-        // Close UDP relay connections
-        udpRelayConnections.values.forEach { it.close() }
-        udpRelayConnections.clear()
 
         // Close direct UDP sessions
         directUdpSessions.values.forEach { it.close() }
@@ -371,8 +360,7 @@ class KotlinTunnelManager(
 
     /**
      * Handle non-DNS UDP packets.
-     * Note: SOCKS5 UDP ASSOCIATE doesn't work through the slipstream DNS tunnel,
-     * so we use direct UDP forwarding via protected sockets for most UDP.
+     * Uses direct UDP forwarding via protected sockets.
      * EXCEPTION: UDP port 443 (QUIC/HTTP3) is BLOCKED so apps fall back to TCP,
      * which goes through the tunnel and hides the user's IP.
      */
@@ -426,7 +414,7 @@ class KotlinTunnelManager(
     }
 
     /**
-     * Handle UDP directly (fallback when SOCKS5 UDP ASSOCIATE is not supported)
+     * Handle UDP directly via protected sockets (bypasses tunnel)
      */
     private suspend fun handleDirectUdp(
         sessionKey: String,
@@ -467,7 +455,7 @@ class KotlinTunnelManager(
     }
 
     /**
-     * Direct UDP session for fallback when SOCKS5 UDP ASSOCIATE is not available
+     * Direct UDP session for UDP traffic that bypasses the tunnel
      */
     private inner class DirectUdpSession(
         val sessionKey: String,
@@ -530,386 +518,6 @@ class KotlinTunnelManager(
             try { socket.close() } catch (e: Exception) {}
             directUdpSessions.remove(sessionKey)
             if (verboseLogging) Log.d(TAG, "Direct UDP session closed: $sessionKey")
-        }
-    }
-
-    /**
-     * Get or create a UDP relay connection for the given session
-     */
-    private suspend fun getOrCreateUdpRelay(
-        sessionKey: String,
-        clientAddr: InetAddress,
-        clientPort: Int,
-        ipVersion: Int
-    ): UdpRelayConnection? {
-        // Check if relay already exists
-        udpRelayConnections[sessionKey]?.let { return it }
-
-        return withContext(Dispatchers.IO) {
-            try {
-                val relayId = udpRelayIdCounter.incrementAndGet()
-                if (verboseLogging) Log.i(TAG, "[UDP-$relayId] Creating SOCKS5 UDP relay for $sessionKey")
-
-                // Connect to slipstream SOCKS5 proxy
-                val controlSocket = Socket()
-                controlSocket.connect(InetSocketAddress("127.0.0.1", config.slipstreamPort), 30000)
-
-                // Perform SOCKS5 UDP ASSOCIATE handshake
-                val relayInfo = performSocks5UdpAssociate(controlSocket, relayId)
-                if (relayInfo == null) {
-                    controlSocket.close()
-                    Log.e(TAG, "[UDP-$relayId] SOCKS5 UDP ASSOCIATE failed")
-                    return@withContext null
-                }
-
-                if (verboseLogging) Log.i(TAG, "[UDP-$relayId] SOCKS5 UDP relay established at ${relayInfo.first}:${relayInfo.second}")
-
-                // Create UDP socket for communicating with the relay
-                val udpSocket = DatagramSocket()
-                // Protect UDP socket from VPN routing loop
-                vpnProtect?.invoke(udpSocket)
-
-                val relay = UdpRelayConnection(
-                    id = relayId,
-                    sessionKey = sessionKey,
-                    controlSocket = controlSocket,
-                    udpSocket = udpSocket,
-                    relayAddress = relayInfo.first,
-                    relayPort = relayInfo.second,
-                    clientAddr = clientAddr,
-                    clientPort = clientPort,
-                    ipVersion = ipVersion,
-                    onPacketReceived = { srcAddr, srcPort, data ->
-                        // Build response packet and send to TUN
-                        scope.launch {
-                            val responsePacket = buildUdpResponsePacket(
-                                srcAddr = srcAddr,
-                                srcPort = srcPort,
-                                dstAddr = clientAddr,
-                                dstPort = clientPort,
-                                payload = data,
-                                isIpv4 = ipVersion == 4
-                            )
-                            if (responsePacket != null) {
-                                sendToTun(responsePacket)
-                            }
-                        }
-                    },
-                    onClosed = {
-                        udpRelayConnections.remove(sessionKey)
-                        if (verboseLogging) Log.d(TAG, "[UDP-$relayId] Relay closed and removed")
-                    },
-                    onRelayFailed = {
-                        // Mark UDP ASSOCIATE as not working and close this relay
-                        Log.w(TAG, "[UDP-$relayId] Relay failed, disabling UDP ASSOCIATE globally")
-                        udpAssociateSupported.set(false)
-                        udpRelayConnections.remove(sessionKey)
-                    }
-                )
-
-                udpRelayConnections[sessionKey] = relay
-
-                // Start receiving packets from the relay
-                relay.startReceiver(scope)
-
-                relay
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to create UDP relay: ${e.message}")
-                null
-            }
-        }
-    }
-
-    /**
-     * Perform SOCKS5 UDP ASSOCIATE handshake
-     * Returns Pair(relayAddress, relayPort) or null on failure
-     */
-    private fun performSocks5UdpAssociate(socket: Socket, relayId: Long): Pair<InetAddress, Int>? {
-        try {
-            val input = socket.getInputStream()
-            val output = socket.getOutputStream()
-            socket.soTimeout = 45000 // 45 seconds for DNS tunneling
-
-            // Step 1: Send greeting
-            val greeting = byteArrayOf(0x05, 0x01, 0x00)
-            output.write(greeting)
-            output.flush()
-            if (verboseLogging) Log.d(TAG, "[UDP-$relayId] SOCKS5: Sent greeting")
-
-            // Step 2: Read auth response
-            val authResponse = ByteArray(2)
-            var bytesRead = 0
-            while (bytesRead < 2) {
-                val read = input.read(authResponse, bytesRead, 2 - bytesRead)
-                if (read == -1) return null
-                bytesRead += read
-            }
-            if (authResponse[0] != 0x05.toByte() || authResponse[1] != 0x00.toByte()) {
-                Log.e(TAG, "[UDP-$relayId] SOCKS5: Auth failed")
-                return null
-            }
-            if (verboseLogging) Log.d(TAG, "[UDP-$relayId] SOCKS5: Auth successful")
-
-            // Step 3: Send UDP ASSOCIATE request (command 0x03)
-            // We use 0.0.0.0:0 to indicate we'll send from any address
-            val udpAssociateRequest = byteArrayOf(
-                0x05, // Version
-                0x03, // UDP ASSOCIATE command
-                0x00, // Reserved
-                0x01, // Address type: IPv4
-                0x00, 0x00, 0x00, 0x00, // 0.0.0.0
-                0x00, 0x00 // Port 0
-            )
-            output.write(udpAssociateRequest)
-            output.flush()
-            if (verboseLogging) Log.d(TAG, "[UDP-$relayId] SOCKS5: Sent UDP ASSOCIATE request")
-
-            // Step 4: Read response
-            val responseHeader = ByteArray(4)
-            bytesRead = 0
-            while (bytesRead < 4) {
-                val read = input.read(responseHeader, bytesRead, 4 - bytesRead)
-                if (read == -1) return null
-                bytesRead += read
-            }
-
-            if (responseHeader[0] != 0x05.toByte()) {
-                Log.e(TAG, "[UDP-$relayId] SOCKS5: Invalid version")
-                return null
-            }
-
-            val replyCode = responseHeader[1].toInt() and 0xFF
-            if (replyCode != 0x00) {
-                Log.e(TAG, "[UDP-$relayId] SOCKS5: UDP ASSOCIATE failed with code $replyCode")
-                return null
-            }
-
-            // Read bound address
-            val addrType = responseHeader[3].toInt() and 0xFF
-            val (address, port) = when (addrType) {
-                0x01 -> { // IPv4
-                    val addrBytes = ByteArray(4)
-                    bytesRead = 0
-                    while (bytesRead < 4) {
-                        val read = input.read(addrBytes, bytesRead, 4 - bytesRead)
-                        if (read == -1) return null
-                        bytesRead += read
-                    }
-                    val portBytes = ByteArray(2)
-                    bytesRead = 0
-                    while (bytesRead < 2) {
-                        val read = input.read(portBytes, bytesRead, 2 - bytesRead)
-                        if (read == -1) return null
-                        bytesRead += read
-                    }
-                    val port = ((portBytes[0].toInt() and 0xFF) shl 8) or (portBytes[1].toInt() and 0xFF)
-                    Pair(InetAddress.getByAddress(addrBytes), port)
-                }
-                0x04 -> { // IPv6
-                    val addrBytes = ByteArray(16)
-                    bytesRead = 0
-                    while (bytesRead < 16) {
-                        val read = input.read(addrBytes, bytesRead, 16 - bytesRead)
-                        if (read == -1) return null
-                        bytesRead += read
-                    }
-                    val portBytes = ByteArray(2)
-                    bytesRead = 0
-                    while (bytesRead < 2) {
-                        val read = input.read(portBytes, bytesRead, 2 - bytesRead)
-                        if (read == -1) return null
-                        bytesRead += read
-                    }
-                    val port = ((portBytes[0].toInt() and 0xFF) shl 8) or (portBytes[1].toInt() and 0xFF)
-                    Pair(InetAddress.getByAddress(addrBytes), port)
-                }
-                else -> {
-                    Log.e(TAG, "[UDP-$relayId] SOCKS5: Unknown address type $addrType")
-                    return null
-                }
-            }
-
-            // Validate relay port
-            if (port == 0) {
-                Log.e(TAG, "[UDP-$relayId] SOCKS5: UDP ASSOCIATE returned port 0 - server doesn't support UDP relay")
-                return null
-            }
-
-            // If the relay address is 0.0.0.0, use the SOCKS5 server address
-            val relayAddr = if (address.hostAddress == "0.0.0.0" || address.hostAddress == "127.0.0.1") {
-                // The relay returned localhost or 0.0.0.0 - this won't work through a tunnel
-                // The server is likely returning its local bind address, not a reachable address
-                Log.w(TAG, "[UDP-$relayId] SOCKS5: Relay returned local address ${address.hostAddress}:$port")
-                // Try using the socket's remote address (slipstream localhost), but this likely won't work
-                socket.inetAddress
-            } else {
-                address
-            }
-
-            if (verboseLogging) Log.i(TAG, "[UDP-$relayId] SOCKS5: UDP ASSOCIATE successful, relay at ${relayAddr.hostAddress}:$port (original: ${address.hostAddress})")
-            socket.soTimeout = 0 // Reset timeout
-
-            return Pair(relayAddr, port)
-        } catch (e: Exception) {
-            Log.e(TAG, "[UDP-$relayId] SOCKS5 UDP ASSOCIATE error: ${e.message}")
-            return null
-        }
-    }
-
-    /**
-     * UDP Relay Connection for SOCKS5 UDP ASSOCIATE
-     */
-    private inner class UdpRelayConnection(
-        val id: Long,
-        val sessionKey: String,
-        private val controlSocket: Socket,
-        private val udpSocket: DatagramSocket,
-        private val relayAddress: InetAddress,
-        private val relayPort: Int,
-        private val clientAddr: InetAddress,
-        private val clientPort: Int,
-        private val ipVersion: Int,
-        private val onPacketReceived: (InetAddress, Int, ByteArray) -> Unit,
-        private val onClosed: () -> Unit,
-        private val onRelayFailed: () -> Unit
-    ) {
-        private var receiverJob: Job? = null
-        private val isClosed = AtomicBoolean(false)
-        private val packetsSent = AtomicLong(0)
-        private val packetsReceived = AtomicLong(0)
-        private val lastSendTime = AtomicLong(0)
-
-        /**
-         * Send a UDP packet through the relay
-         */
-        fun sendPacket(dstAddr: InetAddress, dstPort: Int, data: ByteArray) {
-            if (isClosed.get()) return
-
-            try {
-                // Build SOCKS5 UDP request header
-                // +----+------+------+----------+----------+----------+
-                // |RSV | FRAG | ATYP | DST.ADDR | DST.PORT |   DATA   |
-                // +----+------+------+----------+----------+----------+
-                val addrBytes = dstAddr.address
-                val isIpv4 = addrBytes.size == 4
-
-                val headerSize = 4 + addrBytes.size + 2
-                val packet = ByteArray(headerSize + data.size)
-
-                packet[0] = 0x00 // RSV
-                packet[1] = 0x00 // RSV
-                packet[2] = 0x00 // FRAG (no fragmentation)
-                packet[3] = if (isIpv4) 0x01 else 0x04 // ATYP
-
-                System.arraycopy(addrBytes, 0, packet, 4, addrBytes.size)
-
-                val portOffset = 4 + addrBytes.size
-                packet[portOffset] = ((dstPort shr 8) and 0xFF).toByte()
-                packet[portOffset + 1] = (dstPort and 0xFF).toByte()
-
-                System.arraycopy(data, 0, packet, headerSize, data.size)
-
-                val datagramPacket = DatagramPacket(packet, packet.size, relayAddress, relayPort)
-                udpSocket.send(datagramPacket)
-
-                packetsSent.incrementAndGet()
-                lastSendTime.set(System.currentTimeMillis())
-
-                if (verboseLogging) Log.d(TAG, "[UDP-$id] Sent ${data.size} bytes to ${dstAddr.hostAddress}:$dstPort via relay (${relayAddress.hostAddress}:$relayPort)")
-            } catch (e: Exception) {
-                Log.e(TAG, "[UDP-$id] Send failed: ${e.message}")
-            }
-        }
-
-        /**
-         * Start receiving packets from the relay
-         */
-        fun startReceiver(scope: CoroutineScope) {
-            receiverJob = scope.launch(Dispatchers.IO) {
-                val buffer = ByteArray(65535)
-                val packet = DatagramPacket(buffer, buffer.size)
-
-                // Use 5 second timeout to detect unresponsive relays
-                udpSocket.soTimeout = 5000
-                var consecutiveTimeouts = 0
-                val maxTimeoutsBeforeFallback = 3
-
-                if (verboseLogging) Log.i(TAG, "[UDP-$id] Receiver started, waiting for packets from relay ${relayAddress.hostAddress}:$relayPort")
-
-                while (isActive && !isClosed.get()) {
-                    try {
-                        udpSocket.receive(packet)
-                        consecutiveTimeouts = 0 // Reset on successful receive
-
-                        // Parse SOCKS5 UDP response header
-                        if (packet.length < 10) {
-                            Log.w(TAG, "[UDP-$id] Received packet too small: ${packet.length} bytes")
-                            continue
-                        }
-
-                        val data = packet.data
-                        // Skip RSV (2 bytes) and FRAG (1 byte)
-                        val addrType = data[3].toInt() and 0xFF
-
-                        val (srcAddr, srcPort, headerLen) = when (addrType) {
-                            0x01 -> { // IPv4
-                                val addr = InetAddress.getByAddress(data.copyOfRange(4, 8))
-                                val port = ((data[8].toInt() and 0xFF) shl 8) or (data[9].toInt() and 0xFF)
-                                Triple(addr, port, 10)
-                            }
-                            0x04 -> { // IPv6
-                                val addr = InetAddress.getByAddress(data.copyOfRange(4, 20))
-                                val port = ((data[20].toInt() and 0xFF) shl 8) or (data[21].toInt() and 0xFF)
-                                Triple(addr, port, 22)
-                            }
-                            else -> {
-                                Log.w(TAG, "[UDP-$id] Unknown address type in response: $addrType")
-                                continue
-                            }
-                        }
-
-                        val payload = data.copyOfRange(headerLen, packet.length)
-                        packetsReceived.incrementAndGet()
-                        if (verboseLogging) Log.i(TAG, "[UDP-$id] Received ${payload.size} bytes from ${srcAddr.hostAddress}:$srcPort (total received: ${packetsReceived.get()})")
-
-                        onPacketReceived(srcAddr, srcPort, payload)
-                    } catch (e: java.net.SocketTimeoutException) {
-                        consecutiveTimeouts++
-                        val sent = packetsSent.get()
-                        val received = packetsReceived.get()
-
-                        // If we've sent packets but received none, relay might not be working
-                        if (sent > 0 && received == 0L && consecutiveTimeouts >= maxTimeoutsBeforeFallback) {
-                            Log.w(TAG, "[UDP-$id] No responses received after $sent packets sent and $consecutiveTimeouts timeouts - relay appears non-functional")
-                            onRelayFailed()
-                            break
-                        }
-
-                        if (consecutiveTimeouts % 6 == 0) { // Log every 30 seconds
-                            if (verboseLogging) Log.d(TAG, "[UDP-$id] Waiting for relay responses (sent=$sent, received=$received, timeouts=$consecutiveTimeouts)")
-                        }
-                    } catch (e: Exception) {
-                        if (!isClosed.get()) {
-                            Log.e(TAG, "[UDP-$id] Receive error: ${e.message}")
-                        }
-                        break
-                    }
-                }
-
-                if (!isClosed.get()) {
-                    close()
-                }
-            }
-        }
-
-        fun close() {
-            if (isClosed.getAndSet(true)) return
-
-            if (verboseLogging) Log.d(TAG, "[UDP-$id] Closing relay (sent=${packetsSent.get()}, received=${packetsReceived.get()})")
-            receiverJob?.cancel()
-            try { udpSocket.close() } catch (e: Exception) {}
-            try { controlSocket.close() } catch (e: Exception) {}
-            onClosed()
         }
     }
 

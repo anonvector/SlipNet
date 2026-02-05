@@ -3,6 +3,7 @@ package app.slipnet.presentation.navigation
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
@@ -141,7 +142,8 @@ fun NavGraph(
         ) { backStackEntry ->
             val profileId = backStackEntry.arguments?.getLong("profileId")?.takeIf { it != -1L }
             // Get the parent (DnsScanner) back stack entry to share ViewModel
-            val parentEntry = navController.getBackStackEntry(NavRoutes.DnsScanner.route)
+            // Use remember to cache it so it doesn't crash during recomposition after navigation
+            val parentEntry = remember { navController.getBackStackEntry(NavRoutes.DnsScanner.route) }
             ScanResultsScreen(
                 profileId = profileId,
                 parentBackStackEntry = parentEntry,
@@ -149,8 +151,15 @@ fun NavGraph(
                     navController.popBackStack()
                 },
                 onResolversSelected = { resolvers ->
-                    // Pass selected resolvers back through saved state and pop to scanner
-                    navController.previousBackStackEntry?.savedStateHandle?.set("selected_resolvers", resolvers)
+                    // Find the profile screen (EditProfile or AddProfile) and set the data there
+                    val profileRoute = if (profileId != null) {
+                        NavRoutes.EditProfile.createRoute(profileId)
+                    } else {
+                        NavRoutes.AddProfile.route
+                    }
+                    navController.getBackStackEntry(profileRoute).savedStateHandle["selected_resolvers"] = resolvers
+                    // Pop back directly to the profile screen, skipping DnsScanner
+                    navController.popBackStack(profileRoute, inclusive = false)
                 }
             )
         }

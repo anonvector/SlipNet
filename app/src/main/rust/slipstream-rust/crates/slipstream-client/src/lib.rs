@@ -1,19 +1,18 @@
 //! Slipstream DNS tunnel client library.
 //!
-//! This crate provides the core functionality for running a slipstream client
-//! that tunnels TCP traffic through DNS queries.
+//! This module provides the core functionality for the slipstream DNS tunnel client,
+//! including Android JNI bindings for mobile deployment.
 
-mod dns;
-mod error;
-mod pacing;
-mod pinning;
+pub mod dns;
+pub mod error;
+pub mod pacing;
+pub mod pinning;
 pub mod runtime;
-mod streams;
+pub mod streams;
 
-// Note: android module is always compiled for the cdylib target
-// The cfg attribute is removed to ensure JNI symbols are exported
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(target_os = "android")]
 pub mod android;
 
+// Re-export key types for library users
 pub use error::ClientError;
 pub use runtime::run_client;

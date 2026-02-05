@@ -44,9 +44,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.CongestionControl
+import app.slipnet.domain.model.TunnelType
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -141,17 +144,46 @@ fun EditProfileScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                // Tunnel Type
+                TunnelTypeDropdown(
+                    selected = uiState.tunnelType,
+                    onSelect = { viewModel.updateTunnelType(it) }
+                )
+
                 // Domain
                 OutlinedTextField(
                     value = uiState.domain,
                     onValueChange = { viewModel.updateDomain(it) },
                     label = { Text("Domain") },
-                    placeholder = { Text("vpn.example.com") },
+                    placeholder = { Text(if (uiState.tunnelType == TunnelType.DNSTT) "t.example.com" else "vpn.example.com") },
                     isError = uiState.domainError != null,
-                    supportingText = uiState.domainError?.let { { Text(it) } },
+                    supportingText = {
+                        Text(
+                            uiState.domainError ?: when (uiState.tunnelType) {
+                                TunnelType.DNSTT -> "DNSTT tunnel domain"
+                                TunnelType.SLIPSTREAM -> "Slipstream tunnel domain"
+                            }
+                        )
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                // DNSTT Public Key (only shown for DNSTT)
+                if (uiState.tunnelType == TunnelType.DNSTT) {
+                    OutlinedTextField(
+                        value = uiState.dnsttPublicKey,
+                        onValueChange = { viewModel.updateDnsttPublicKey(it) },
+                        label = { Text("Public Key") },
+                        placeholder = { Text("Server's Noise public key (hex)") },
+                        isError = uiState.dnsttPublicKeyError != null,
+                        supportingText = {
+                            Text(uiState.dnsttPublicKeyError ?: "Server's Noise protocol public key in hex format")
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
 
                 // Resolvers
                 OutlinedTextField(
@@ -161,10 +193,7 @@ fun EditProfileScreen(
                     placeholder = { Text("1.1.1.1:53") },
                     isError = uiState.resolversError != null,
                     supportingText = {
-                        Text(
-                            uiState.resolversError
-                                ?: "DNS server address (IP:port)"
-                        )
+                        Text(uiState.resolversError ?: "DNS server address (IP:port)")
                     },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -182,25 +211,84 @@ fun EditProfileScreen(
                     }
                 }
 
-                // Keep-Alive Interval
-                OutlinedTextField(
-                    value = uiState.keepAliveInterval,
-                    onValueChange = { viewModel.updateKeepAliveInterval(it) },
-                    label = { Text("Keep-Alive Interval (ms)") },
-                    placeholder = { Text("200") },
-                    supportingText = { Text("QUIC keep-alive interval in milliseconds") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                // Slipstream-specific settings (only shown for Slipstream tunnel type)
+                if (uiState.tunnelType == TunnelType.SLIPSTREAM) {
+                    // Keep-Alive Interval
+                    OutlinedTextField(
+                        value = uiState.keepAliveInterval,
+                        onValueChange = { viewModel.updateKeepAliveInterval(it) },
+                        label = { Text("Keep-Alive Interval (ms)") },
+                        placeholder = { Text("200") },
+                        supportingText = { Text("QUIC keep-alive interval in milliseconds") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Congestion Control
+                    CongestionControlDropdown(
+                        selected = uiState.congestionControl,
+                        onSelect = { viewModel.updateCongestionControl(it) }
+                    )
+
+                    // Authoritative Mode
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Authoritative Mode",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "Use authoritative DNS resolution (--authoritative)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = uiState.authoritativeMode,
+                            onCheckedChange = { viewModel.updateAuthoritativeMode(it) }
+                        )
+                    }
+
+                    // GSO Mode
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "GSO (Generic Segmentation Offload)",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "Enable GSO for better performance (--gso)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = uiState.gsoEnabled,
+                            onCheckedChange = { viewModel.updateGsoEnabled(it) }
+                        )
+                    }
+                }
+
+                // SOCKS5 Authentication Section
+                Text(
+                    text = "SOCKS5 Authentication",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(top = 8.dp)
                 )
 
-                // Congestion Control
-                CongestionControlDropdown(
-                    selected = uiState.congestionControl,
-                    onSelect = { viewModel.updateCongestionControl(it) }
-                )
-
-                // Authoritative Mode
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -210,47 +298,106 @@ fun EditProfileScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Authoritative Mode",
+                            text = "Enable Authentication",
                             style = MaterialTheme.typography.bodyLarge
                         )
                         Text(
-                            text = "Use authoritative DNS resolution (--authoritative)",
+                            text = "Use username/password for SOCKS5 proxy",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Switch(
-                        checked = uiState.authoritativeMode,
-                        onCheckedChange = { viewModel.updateAuthoritativeMode(it) }
+                        checked = uiState.socksAuthEnabled,
+                        onCheckedChange = { viewModel.updateSocksAuthEnabled(it) }
                     )
                 }
 
-                // GSO Mode
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "GSO (Generic Segmentation Offload)",
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                        Text(
-                            text = "Enable GSO for better performance (--gso)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = uiState.gsoEnabled,
-                        onCheckedChange = { viewModel.updateGsoEnabled(it) }
+                // Username and Password fields (shown when auth is enabled)
+                if (uiState.socksAuthEnabled) {
+                    OutlinedTextField(
+                        value = uiState.socksUsername,
+                        onValueChange = { viewModel.updateSocksUsername(it) },
+                        label = { Text("Username") },
+                        placeholder = { Text("Enter SOCKS username") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    var passwordVisible by remember { mutableStateOf(false) }
+                    OutlinedTextField(
+                        value = uiState.socksPassword,
+                        onValueChange = { viewModel.updateSocksPassword(it) },
+                        label = { Text("Password") },
+                        placeholder = { Text("Enter SOCKS password") },
+                        singleLine = true,
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Text(
+                                    text = if (passwordVisible) "Hide" else "Show",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
 
                 Spacer(modifier = Modifier.height(32.dp))
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TunnelTypeDropdown(
+    selected: TunnelType,
+    onSelect: (TunnelType) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier.fillMaxWidth()
+    ) {
+        OutlinedTextField(
+            value = selected.displayName,
+            onValueChange = { },
+            readOnly = true,
+            label = { Text("Tunnel Type") },
+            supportingText = {
+                Text(
+                    when (selected) {
+                        TunnelType.SLIPSTREAM -> "DNS tunnel using QUIC protocol"
+                        TunnelType.DNSTT -> "DNS tunnel using KCP + Noise protocol"
+                    }
+                )
+            },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor()
+        )
+
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            // Show DNSTT first since it's recommended
+            listOf(TunnelType.DNSTT, TunnelType.SLIPSTREAM).forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.displayName) },
+                    onClick = {
+                        onSelect(option)
+                        expanded = false
+                    }
+                )
             }
         }
     }
@@ -297,3 +444,4 @@ private fun CongestionControlDropdown(
         }
     }
 }
+

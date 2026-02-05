@@ -1,277 +1,352 @@
-//! Android JNI bindings for slipstream client.
+//! Android JNI bindings for the slipstream client.
 //!
-//! This module provides native functions that can be called from Kotlin/Java
-//! to start and stop the slipstream DNS tunnel client.
+//! This module provides the JNI interface for the Android VPN app, including:
+//! - Client lifecycle management (start/stop)
+//! - State flags (running, listener ready, QUIC ready)
+//! - Socket protection via VpnService.protect()
 
-use jni::objects::{JClass, JIntArray, JObjectArray, JString, ReleaseMode};
-use jni::sys::{jboolean, jint, JavaVM, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6};
+use crate::error::ClientError;
+use crate::runtime::run_client;
+use jni::objects::{JBooleanArray, JClass, JIntArray, JObject, JObjectArray, JString, JValue};
+use jni::sys::{jboolean, jbooleanArray, jint, jintArray, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
-use slipstream_core::{parse_host_port_parts, AddressKind};
+use once_cell::sync::OnceCell;
+use slipstream_core::HostPort;
 use slipstream_ffi::{ClientConfig, ResolverMode, ResolverSpec};
-use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::{Mutex, OnceLock};
-use tokio::sync::oneshot;
+use std::os::unix::io::RawFd;
+use std::panic;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::Mutex;
+use std::thread::{self, JoinHandle};
+use tokio::runtime::Builder;
 use tracing::{debug, error, info, warn};
 
-use crate::run_client;
+// ============================================================================
+// Global State
+// ============================================================================
 
-/// Global JavaVM pointer for socket protection from any thread
-static JAVA_VM: AtomicPtr<jni::sys::JavaVM> = AtomicPtr::new(std::ptr::null_mut());
-
-/// Global reference to SlipstreamBridge class (cached to avoid classloader issues)
-static BRIDGE_CLASS: OnceLock<jni::objects::GlobalRef> = OnceLock::new();
-
-/// JNI_OnLoad is called when the native library is loaded.
-/// This ensures the JNI symbols are exported and not stripped by the linker.
-#[no_mangle]
-pub extern "C" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
-    // Store the JavaVM pointer for later use in socket protection
-    JAVA_VM.store(vm, Ordering::SeqCst);
-
-    // Cache the SlipstreamBridge class reference using the app's classloader
-    // This must be done here because native threads can't find app classes
-    let vm_wrapper = match unsafe { jni::JavaVM::from_raw(vm) } {
-        Ok(v) => v,
-        Err(_) => return JNI_VERSION_1_6,
-    };
-
-    if let Ok(mut env) = vm_wrapper.get_env() {
-        if let Ok(class) = env.find_class("app/slipnet/tunnel/SlipstreamBridge") {
-            if let Ok(global_ref) = env.new_global_ref(class) {
-                let _ = BRIDGE_CLASS.set(global_ref);
-                info!("JNI_OnLoad: SlipstreamBridge class cached successfully");
-            }
-        }
-    }
-
-    // Don't drop the JavaVM wrapper - we don't own it
-    std::mem::forget(vm_wrapper);
-
-    info!("JNI_OnLoad: JavaVM stored for socket protection");
-    JNI_VERSION_1_6
-}
-
-/// Global state for the running client
-static CLIENT_STATE: OnceLock<Mutex<Option<ClientHandle>>> = OnceLock::new();
+/// Flag indicating whether the client is running.
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 
-struct ClientHandle {
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    thread_handle: Option<std::thread::JoinHandle<()>>,
+/// Flag indicating whether the TCP listener is ready.
+static IS_LISTENER_READY: AtomicBool = AtomicBool::new(false);
+
+/// Flag indicating whether the QUIC connection is established and ready.
+static IS_QUIC_READY: AtomicBool = AtomicBool::new(false);
+
+/// Flag to signal the client thread to shut down.
+static SHOULD_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Flag indicating the client thread has finished.
+static IS_THREAD_DONE: AtomicBool = AtomicBool::new(true);
+
+/// Count of consecutive connection failures (connections that never became ready).
+static CONSECUTIVE_FAILURES: AtomicI32 = AtomicI32::new(0);
+
+/// Maximum consecutive failures before giving up.
+const MAX_CONSECUTIVE_FAILURES: i32 = 5;
+
+/// Handle to the client thread.
+static CLIENT_THREAD: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
+/// Global JVM reference for callbacks.
+static JAVA_VM: OnceCell<jni::JavaVM> = OnceCell::new();
+
+/// Cached global reference to SlipstreamBridge class.
+/// This is needed because native threads can't find app classes via the system class loader.
+static BRIDGE_CLASS: OnceCell<jni::objects::GlobalRef> = OnceCell::new();
+
+// ============================================================================
+// Public API for Rust code
+// ============================================================================
+
+/// Check if the client should shut down.
+pub fn should_shutdown() -> bool {
+    SHOULD_SHUTDOWN.load(Ordering::SeqCst)
 }
 
-fn get_client_state() -> &'static Mutex<Option<ClientHandle>> {
-    CLIENT_STATE.get_or_init(|| Mutex::new(None))
+/// Signal that the TCP listener is ready.
+pub fn signal_listener_ready() {
+    IS_LISTENER_READY.store(true, Ordering::SeqCst);
+    info!("TCP listener is ready");
 }
 
-/// Initialize Android logging
-fn init_android_logging() {
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::EnvFilter;
-
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("info,slipstream=debug"));
-
-        let android_layer = tracing_android::layer("SlipstreamRust").unwrap();
-
-        let _ = tracing_subscriber::registry()
-            .with(filter)
-            .with(android_layer)
-            .try_init();
-    });
+/// Signal that the QUIC connection is ready.
+pub fn signal_quic_ready() {
+    IS_QUIC_READY.store(true, Ordering::SeqCst);
+    CONSECUTIVE_FAILURES.store(0, Ordering::SeqCst);
+    info!("QUIC connection is ready");
 }
 
-/// Helper to get a Java string as Rust String
-fn get_string(env: &mut JNIEnv, obj: &JString) -> Result<String, jni::errors::Error> {
-    let jstr = env.get_string(obj)?;
-    Ok(jstr.into())
+/// Reset the QUIC ready flag (called on reconnect).
+pub fn reset_quic_ready() {
+    IS_QUIC_READY.store(false, Ordering::SeqCst);
+    debug!("QUIC ready flag reset for reconnection");
 }
 
-/// Protect a socket from the VPN by calling back to Kotlin.
-/// This can be called from any thread as it attaches to the JVM if needed.
-///
-/// Returns true if the socket was successfully protected.
-pub fn protect_socket(fd: i32) -> bool {
-    let vm_ptr = JAVA_VM.load(Ordering::SeqCst);
-    if vm_ptr.is_null() {
-        error!("Cannot protect socket: JavaVM not stored");
-        return false;
-    }
+/// Record a connection failure (connection that never became ready).
+pub fn record_connection_failure() {
+    let failures = CONSECUTIVE_FAILURES.fetch_add(1, Ordering::SeqCst) + 1;
+    warn!("Connection failure recorded, total: {}", failures);
+}
 
-    // Get the cached class reference
-    let bridge_class = match BRIDGE_CLASS.get() {
+/// Check if we've exceeded the maximum consecutive failures.
+pub fn exceeded_max_failures() -> bool {
+    CONSECUTIVE_FAILURES.load(Ordering::SeqCst) >= MAX_CONSECUTIVE_FAILURES
+}
+
+/// Protect a socket file descriptor via VpnService.protect().
+/// This MUST be called for the UDP socket used for DNS queries BEFORE sending any data.
+/// Returns true if protection succeeded, false otherwise.
+pub fn protect_socket(fd: RawFd) -> bool {
+    let jvm = match JAVA_VM.get() {
+        Some(vm) => vm,
+        None => {
+            error!("JavaVM not initialized, cannot protect socket");
+            return false;
+        }
+    };
+
+    let class_ref = match BRIDGE_CLASS.get() {
         Some(c) => c,
         None => {
-            error!("Cannot protect socket: SlipstreamBridge class not cached");
+            error!("SlipstreamBridge class not cached, cannot protect socket");
             return false;
         }
     };
 
-    // SAFETY: We stored a valid JavaVM pointer in JNI_OnLoad
-    let vm = match unsafe { jni::JavaVM::from_raw(vm_ptr) } {
-        Ok(vm) => vm,
-        Err(e) => {
-            error!("Failed to create JavaVM from raw pointer: {:?}", e);
-            return false;
-        }
-    };
-
-    // Attach this thread to the JVM as a daemon thread
-    // This is safe to call even if already attached
-    let mut env = match vm.attach_current_thread_as_daemon() {
+    let mut env = match jvm.attach_current_thread() {
         Ok(env) => env,
         Err(e) => {
-            error!("Failed to attach thread to JVM: {:?}", e);
-            // Don't drop the JavaVM, we don't own it
-            std::mem::forget(vm);
+            error!("Failed to attach to JVM: {:?}", e);
             return false;
         }
     };
 
-    // Clear any pending exception first
-    if env.exception_check().unwrap_or(false) {
-        warn!("Clearing pending Java exception before protectSocket call");
-        let _ = env.exception_clear();
-    }
-
-    // Use the cached class reference (works from any thread)
-    // Convert GlobalRef to JClass - safe because we created it from a JClass in JNI_OnLoad
-    let class_obj: &jni::objects::JObject = bridge_class.as_ref();
-    // SAFETY: We know this JObject is actually a JClass because we created it from find_class
-    let class_ref: jni::objects::JClass = unsafe {
-        jni::objects::JClass::from_raw(class_obj.as_raw())
-    };
+    // Call SlipstreamBridge.protectSocket(fd) using cached class reference
+    // Safety: GlobalRef holds a valid JNI reference, converting to JClass is safe
+    let class = unsafe { JClass::from_raw(class_ref.as_raw()) };
     let result = env.call_static_method(
-        class_ref,
+        class,
         "protectSocket",
         "(I)Z",
-        &[jni::objects::JValue::Int(fd)],
+        &[JValue::Int(fd)],
     );
 
-    // Check for and log any Java exception
-    if env.exception_check().unwrap_or(false) {
-        error!("Java exception occurred during protectSocket call:");
-        let _ = env.exception_describe();
-        let _ = env.exception_clear();
-    }
-
-    // Extract the result before dropping env
-    let protected = match result {
-        Ok(jvalue) => {
-            match jvalue.z() {
-                Ok(p) => {
-                    if p {
-                        debug!("Protected socket fd={}", fd);
-                    } else {
-                        warn!("Failed to protect socket fd={} (VpnService returned false)", fd);
-                    }
-                    p
-                }
-                Err(e) => {
-                    error!("Failed to convert protectSocket result to boolean: {:?}", e);
-                    false
-                }
+    match result {
+        Ok(val) => {
+            let protected = val.z().unwrap_or(false);
+            if protected {
+                debug!("Socket fd={} protected successfully", fd);
+            } else {
+                warn!("Socket fd={} protection returned false", fd);
             }
+            protected
         }
         Err(e) => {
             error!("Failed to call protectSocket: {:?}", e);
+            // Clear any pending exception
+            let _ = env.exception_clear();
             false
         }
-    };
+    }
+}
 
-    // Don't drop the JavaVM - we don't own it
-    drop(env);
-    std::mem::forget(vm);
+// ============================================================================
+// JNI Functions
+// ============================================================================
 
-    protected
+/// Initialize Android logging.
+fn init_android_logging() {
+    #[cfg(target_os = "android")]
+    {
+        use android_logger::Config;
+        use log::LevelFilter;
+
+        let _ = android_logger::init_once(
+            Config::default()
+                .with_max_level(LevelFilter::Debug)
+                .with_tag("SlipstreamRust"),
+        );
+    }
+
+    // Also initialize tracing for the slipstream code
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .without_time()
+        .try_init();
+}
+
+/// JNI_OnLoad - Called when the library is loaded.
+#[no_mangle]
+pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut std::ffi::c_void) -> jint {
+    init_android_logging();
+    info!("slipstream library loaded");
+
+    if JAVA_VM.set(vm).is_err() {
+        error!("Failed to store JavaVM reference");
+        return jni::sys::JNI_ERR;
+    }
+
+    jni::sys::JNI_VERSION_1_6
 }
 
 /// Start the slipstream client.
 ///
 /// # Arguments
-/// * `domain` - The domain for DNS tunneling
-/// * `resolver_hosts` - Array of resolver hostnames (e.g., ["8.8.8.8", "1.1.1.1"])
-/// * `resolver_ports` - Array of resolver ports
-/// * `resolver_authoritative` - Array of booleans indicating if resolver is authoritative
-/// * `listen_port` - TCP port to listen on for SOCKS5 connections
-/// * `listen_host` - TCP host to bind to (e.g., "127.0.0.1" or "::")
-/// * `congestion_control` - Congestion control algorithm ("bbr" or "dcubic")
-/// * `keep_alive_interval` - Keep-alive interval in milliseconds
-/// * `gso_enabled` - Whether to enable GSO (Generic Segmentation Offload)
-/// * `debug_poll` - Enable debug logging for DNS polling
-/// * `debug_streams` - Enable debug logging for streams
+/// - domain: The domain for DNS tunneling
+/// - resolverHosts: Array of resolver hostnames/IPs
+/// - resolverPorts: Array of resolver ports
+/// - resolverAuthoritative: Array of booleans indicating authoritative mode
+/// - listenPort: TCP port to listen on
+/// - listenHost: TCP host to bind to
+/// - congestionControl: Congestion control algorithm ("bbr" or "dcubic")
+/// - keepAliveInterval: Keep-alive interval in ms
+/// - gsoEnabled: Enable Generic Segmentation Offload
+/// - debugPoll: Enable debug logging for DNS polling
+/// - debugStreams: Enable debug logging for streams
 ///
 /// # Returns
-/// * 0 on success
-/// * -1 on invalid domain
-/// * -2 on invalid resolver configuration
-/// * -10 on failed to spawn client thread
-/// * -11 on failed to listen on port
-/// * -100 on other errors
+/// - 0: Success
+/// - -1: Invalid domain
+/// - -2: Invalid resolver configuration
+/// - -10: Failed to spawn client thread
+/// - -11: Failed to listen on port
+/// - -12: Exceeded max connection failures
 #[no_mangle]
-pub unsafe extern "C" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSlipstreamClient(
-    mut env: JNIEnv,
-    _class: JClass,
-    domain: JString,
-    resolver_hosts: JObjectArray,
-    resolver_ports: jni::sys::jintArray,
-    resolver_authoritative: jni::sys::jbooleanArray,
+pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSlipstreamClient<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    domain: JString<'local>,
+    resolver_hosts: JObjectArray<'local>,
+    resolver_ports: jintArray,
+    resolver_authoritative: jbooleanArray,
     listen_port: jint,
-    listen_host: JString,
-    congestion_control: JString,
+    listen_host: JString<'local>,
+    congestion_control: JString<'local>,
     keep_alive_interval: jint,
     gso_enabled: jboolean,
     debug_poll: jboolean,
     debug_streams: jboolean,
 ) -> jint {
-    init_android_logging();
+    // Catch panics to prevent crashes
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        start_client_impl(
+            &mut env,
+            domain,
+            resolver_hosts,
+            resolver_ports,
+            resolver_authoritative,
+            listen_port,
+            listen_host,
+            congestion_control,
+            keep_alive_interval,
+            gso_enabled,
+            debug_poll,
+            debug_streams,
+        )
+    }));
 
+    match result {
+        Ok(code) => code,
+        Err(e) => {
+            error!("Panic in nativeStartSlipstreamClient: {:?}", e);
+            IS_RUNNING.store(false, Ordering::SeqCst);
+            -100
+        }
+    }
+}
+
+fn start_client_impl<'local>(
+    env: &mut JNIEnv<'local>,
+    domain: JString<'local>,
+    resolver_hosts: JObjectArray<'local>,
+    resolver_ports: jintArray,
+    resolver_authoritative: jbooleanArray,
+    listen_port: jint,
+    listen_host: JString<'local>,
+    congestion_control: JString<'local>,
+    keep_alive_interval: jint,
+    gso_enabled: jboolean,
+    debug_poll: jboolean,
+    debug_streams: jboolean,
+) -> jint {
     info!("nativeStartSlipstreamClient called");
 
     // Check if already running
     if IS_RUNNING.load(Ordering::SeqCst) {
         warn!("Client already running");
-        return -10;
+        return 0;
     }
 
-    // Parse domain
-    let domain_str = match get_string(&mut env, &domain) {
-        Ok(s) => s,
+    // Cache the SlipstreamBridge class for callbacks from native threads.
+    // This must be done on the Java thread that has access to the app class loader.
+    if BRIDGE_CLASS.get().is_none() {
+        let class_name = "app/slipnet/tunnel/SlipstreamBridge";
+        match env.find_class(class_name) {
+            Ok(class) => {
+                match env.new_global_ref(class) {
+                    Ok(global_ref) => {
+                        let _ = BRIDGE_CLASS.set(global_ref);
+                        info!("Cached SlipstreamBridge class for callbacks");
+                    }
+                    Err(e) => {
+                        error!("Failed to create global ref for SlipstreamBridge: {:?}", e);
+                        return -3;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to find SlipstreamBridge class: {:?}", e);
+                return -3;
+            }
+        }
+    }
+
+    // Reset state
+    SHOULD_SHUTDOWN.store(false, Ordering::SeqCst);
+    IS_LISTENER_READY.store(false, Ordering::SeqCst);
+    IS_QUIC_READY.store(false, Ordering::SeqCst);
+    IS_THREAD_DONE.store(false, Ordering::SeqCst);
+    CONSECUTIVE_FAILURES.store(0, Ordering::SeqCst);
+
+    // Extract domain
+    let domain_str: String = match env.get_string(&domain) {
+        Ok(s) => s.into(),
         Err(e) => {
             error!("Failed to get domain string: {:?}", e);
             return -1;
         }
     };
 
-    // Parse listen host
-    let listen_host_str = match get_string(&mut env, &listen_host) {
-        Ok(s) => s,
+    if domain_str.is_empty() {
+        error!("Domain is empty");
+        return -1;
+    }
+
+    // Extract listen host
+    let listen_host_str: String = match env.get_string(&listen_host) {
+        Ok(s) => s.into(),
         Err(e) => {
             error!("Failed to get listen host string: {:?}", e);
-            return -1;
+            return -2;
         }
     };
 
-    // Parse congestion control
-    let congestion_control_str = match get_string(&mut env, &congestion_control) {
-        Ok(s) => {
-            if s.is_empty() {
-                None
-            } else {
-                Some(s)
-            }
-        }
+    // Extract congestion control
+    let cc_str: String = match env.get_string(&congestion_control) {
+        Ok(s) => s.into(),
         Err(e) => {
             error!("Failed to get congestion control string: {:?}", e);
-            return -7;
+            return -2;
         }
     };
+    let cc_option = if cc_str.is_empty() { None } else { Some(cc_str) };
 
-    // Parse resolvers
+    // Extract resolver configuration
     let resolver_count = match env.get_array_length(&resolver_hosts) {
         Ok(len) => len as usize,
         Err(e) => {
@@ -280,243 +355,252 @@ pub unsafe extern "C" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSli
         }
     };
 
-    // Get ports array
-    let ports_array = unsafe { JIntArray::from_raw(resolver_ports) };
-    let ports: Vec<i32> = match unsafe { env.get_array_elements(&ports_array, ReleaseMode::NoCopyBack) } {
-        Ok(elements) => {
-            let slice: &[i32] = unsafe { std::slice::from_raw_parts(elements.as_ptr(), resolver_count) };
-            slice.to_vec()
-        }
-        Err(e) => {
-            error!("Failed to get resolver ports: {:?}", e);
-            return -3;
-        }
-    };
+    if resolver_count == 0 {
+        error!("No resolvers provided");
+        return -2;
+    }
 
-    // Get authoritative array - JNI uses u8 for booleans
-    let auth_array = unsafe { jni::objects::JBooleanArray::from_raw(resolver_authoritative) };
-    let authoritative: Vec<bool> = match unsafe { env.get_array_elements(&auth_array, ReleaseMode::NoCopyBack) } {
-        Ok(elements) => {
-            let slice: &[u8] = unsafe { std::slice::from_raw_parts(elements.as_ptr(), resolver_count) };
-            slice.iter().map(|&b| b != 0).collect()
-        }
-        Err(e) => {
-            error!("Failed to get resolver authoritative flags: {:?}", e);
-            return -2;
-        }
-    };
+    // Wrap raw arrays in safe JNI types
+    let resolver_ports_arr = unsafe { JIntArray::from_raw(resolver_ports) };
+    let resolver_auth_arr = unsafe { JBooleanArray::from_raw(resolver_authoritative) };
+
+    // Get ports array using get_array_region which is more portable
+    let mut ports: Vec<i32> = vec![0; resolver_count];
+    if let Err(e) = env.get_int_array_region(&resolver_ports_arr, 0, &mut ports) {
+        error!("Failed to get resolver ports: {:?}", e);
+        return -2;
+    }
+
+    // Get authoritative flags using get_array_region
+    let mut auth_flags: Vec<u8> = vec![0; resolver_count];
+    if let Err(e) = env.get_boolean_array_region(&resolver_auth_arr, 0, &mut auth_flags) {
+        error!("Failed to get authoritative flags: {:?}", e);
+        return -2;
+    }
 
     // Build resolver specs
-    let mut resolvers = Vec::with_capacity(resolver_count);
+    let mut resolvers: Vec<ResolverSpec> = Vec::with_capacity(resolver_count);
     for i in 0..resolver_count {
-        let host_obj = match env.get_object_array_element(&resolver_hosts, i as i32) {
+        // Get host string
+        let host_obj: JObject = match env.get_object_array_element(&resolver_hosts, i as i32) {
             Ok(obj) => obj,
             Err(e) => {
                 error!("Failed to get resolver host at index {}: {:?}", i, e);
-                return -4;
+                return -2;
             }
         };
-
-        let host_str = match get_string(&mut env, &JString::from(host_obj)) {
-            Ok(s) => s,
+        let host_jstr = JString::from(host_obj);
+        let host: String = match env.get_string(&host_jstr) {
+            Ok(s) => s.into(),
             Err(e) => {
                 error!("Failed to convert resolver host at index {}: {:?}", i, e);
-                return -5;
+                return -2;
             }
         };
 
-        let port = ports.get(i).copied().unwrap_or(53) as u16;
-        let is_authoritative = authoritative.get(i).copied().unwrap_or(false);
+        let port = ports[i] as u16;
+        let authoritative = auth_flags[i] != 0;
 
-        // Parse the host:port
-        let host_port = match parse_host_port_parts(&host_str, port, AddressKind::Resolver) {
-            Ok(hp) => hp,
-            Err(e) => {
-                error!("Failed to parse resolver {}:{}: {:?}", host_str, port, e);
-                return -6;
-            }
-        };
-
-        let mode = if is_authoritative {
+        let mode = if authoritative {
             ResolverMode::Authoritative
         } else {
             ResolverMode::Recursive
         };
 
+        // Use V4 as default address family - DNS over UDP typically uses IPv4
         resolvers.push(ResolverSpec {
-            resolver: host_port,
+            resolver: HostPort {
+                host,
+                port,
+                family: slipstream_core::AddressFamily::V4,
+            },
             mode,
         });
-
-        info!(
-            "Resolver {}: {}:{} ({})",
-            i,
-            host_str,
-            port,
-            if is_authoritative {
-                "authoritative"
-            } else {
-                "recursive"
-            }
-        );
     }
 
-    if resolvers.is_empty() {
-        error!("No resolvers configured");
-        return -2;
-    }
-
-    let listen_port_u16 = listen_port as u16;
-    let keep_alive_ms = keep_alive_interval as usize;
-    let gso = gso_enabled != JNI_FALSE;
-    let debug_poll_flag = debug_poll != JNI_FALSE;
-    let debug_streams_flag = debug_streams != JNI_FALSE;
-
-    info!("Starting slipstream client:");
-    info!("  Domain: {}", domain_str);
-    info!("  Listen: {}:{}", listen_host_str, listen_port_u16);
-    info!("  Resolvers: {}", resolvers.len());
     info!(
-        "  Congestion control: {}",
-        congestion_control_str.as_deref().unwrap_or("default")
+        "Starting client: domain={}, resolvers={}, port={}, host={}",
+        domain_str, resolver_count, listen_port, listen_host_str
     );
-    info!("  Keep-alive: {}ms", keep_alive_ms);
-    info!("  GSO: {}", gso);
-    info!("  Debug poll: {}", debug_poll_flag);
-    info!("  Debug streams: {}", debug_streams_flag);
 
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
+    // Mark as running
     IS_RUNNING.store(true, Ordering::SeqCst);
 
-    // Spawn the client in a separate thread
-    let domain_owned = domain_str.clone();
-    let listen_host_owned = listen_host_str.clone();
-    let congestion_control_owned = congestion_control_str.clone();
-    let resolvers_owned = resolvers.clone();
+    // Spawn client thread
+    let listen_port_u16 = listen_port as u16;
+    let keep_alive = keep_alive_interval as usize;
+    let gso = gso_enabled != JNI_FALSE;
+    let dbg_poll = debug_poll != JNI_FALSE;
+    let dbg_streams = debug_streams != JNI_FALSE;
 
-    let thread_handle = std::thread::spawn(move || {
+    let handle = thread::Builder::new()
+        .name("slipstream-client".to_string())
+        .spawn(move || {
+            run_client_thread(
+                domain_str,
+                resolvers,
+                listen_port_u16,
+                listen_host_str,
+                cc_option,
+                keep_alive,
+                gso,
+                dbg_poll,
+                dbg_streams,
+            );
+        });
+
+    match handle {
+        Ok(h) => {
+            let mut guard = CLIENT_THREAD.lock().unwrap();
+            *guard = Some(h);
+            info!("Client thread spawned successfully");
+
+            // Wait for listener to be ready (up to 5 seconds)
+            for _ in 0..50 {
+                if IS_LISTENER_READY.load(Ordering::SeqCst) {
+                    info!("Listener confirmed ready");
+                    return 0;
+                }
+                if !IS_RUNNING.load(Ordering::SeqCst) {
+                    error!("Client stopped before listener ready");
+                    return -11;
+                }
+                thread::sleep(std::time::Duration::from_millis(100));
+            }
+
+            if IS_LISTENER_READY.load(Ordering::SeqCst) {
+                0
+            } else {
+                error!("Timeout waiting for listener");
+                // Don't stop - the listener might still come up
+                0
+            }
+        }
+        Err(e) => {
+            error!("Failed to spawn client thread: {:?}", e);
+            IS_RUNNING.store(false, Ordering::SeqCst);
+            -10
+        }
+    }
+}
+
+fn run_client_thread(
+    domain: String,
+    resolvers: Vec<ResolverSpec>,
+    listen_port: u16,
+    listen_host: String,
+    congestion_control: Option<String>,
+    keep_alive_interval: usize,
+    gso: bool,
+    debug_poll: bool,
+    debug_streams: bool,
+) {
+    info!("Client thread started");
+
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         let config = ClientConfig {
-            tcp_listen_host: &listen_host_owned,
-            tcp_listen_port: listen_port_u16,
-            resolvers: &resolvers_owned,
-            domain: &domain_owned,
-            cert: None, // Certificate pinning disabled on Android
-            congestion_control: congestion_control_owned.as_deref(),
+            tcp_listen_host: &listen_host,
+            tcp_listen_port: listen_port,
+            resolvers: &resolvers,
+            domain: &domain,
+            cert: None, // TODO: Support certificate pinning from Android
+            congestion_control: congestion_control.as_deref(),
             gso,
-            keep_alive_interval: keep_alive_ms,
-            debug_poll: debug_poll_flag,
-            debug_streams: debug_streams_flag,
+            keep_alive_interval,
+            debug_poll,
+            debug_streams,
         };
 
-        let rt = tokio::runtime::Builder::new_current_thread()
+        // Build tokio runtime
+        let runtime = match Builder::new_current_thread()
             .enable_io()
             .enable_time()
             .build()
-            .expect("Failed to create tokio runtime");
-
-        rt.block_on(async {
-            tokio::select! {
-                result = run_client(&config) => {
-                    match result {
-                        Ok(code) => {
-                            info!("Client exited with code: {}", code);
-                        }
-                        Err(e) => {
-                            error!("Client error: {:?}", e);
-                        }
-                    }
-                }
-                _ = async {
-                    let _ = shutdown_rx.await;
-                } => {
-                    info!("Client shutdown requested");
-                }
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                error!("Failed to build tokio runtime: {:?}", e);
+                return;
             }
-        });
+        };
 
-        IS_RUNNING.store(false, Ordering::SeqCst);
-        info!("Client thread exited");
-    });
+        // Run the client
+        match runtime.block_on(run_client_with_protection(&config)) {
+            Ok(code) => {
+                info!("Client exited with code: {}", code);
+            }
+            Err(e) => {
+                error!("Client error: {:?}", e);
+            }
+        }
+    }));
 
-    // Store the handle after spawning the thread
-    {
-        let mut state = get_client_state().lock().unwrap();
-        *state = Some(ClientHandle {
-            shutdown_tx: Some(shutdown_tx),
-            thread_handle: Some(thread_handle),
-        });
+    if let Err(e) = result {
+        error!("Panic in client thread: {:?}", e);
     }
 
-    // Give the client a moment to start
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Cleanup
+    IS_RUNNING.store(false, Ordering::SeqCst);
+    IS_LISTENER_READY.store(false, Ordering::SeqCst);
+    IS_QUIC_READY.store(false, Ordering::SeqCst);
+    IS_THREAD_DONE.store(true, Ordering::SeqCst);
 
-    // Check if still running (it might have failed immediately)
-    if !IS_RUNNING.load(Ordering::SeqCst) {
-        error!("Client failed to start");
-        return -11;
-    }
+    info!("Client thread finished");
+}
 
-    info!("Client started successfully");
-    0
+/// Run the client with socket protection.
+/// This wraps run_client and ensures the UDP socket is protected.
+async fn run_client_with_protection(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
+    // The socket protection happens inside the modified bind_udp_socket function
+    // which calls protect_socket() after creating the socket.
+    run_client(config).await
 }
 
 /// Stop the slipstream client.
 #[no_mangle]
-pub unsafe extern "C" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStopSlipstreamClient(
+pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStopSlipstreamClient(
     _env: JNIEnv,
     _class: JClass,
 ) {
-    init_android_logging();
     info!("nativeStopSlipstreamClient called");
 
-    let handle = {
-        let mut state = get_client_state().lock().unwrap();
-        state.take()
-    };
+    // Signal shutdown
+    SHOULD_SHUTDOWN.store(true, Ordering::SeqCst);
 
-    if let Some(mut handle) = handle {
-        // Send shutdown signal
-        if let Some(tx) = handle.shutdown_tx.take() {
-            let _ = tx.send(());
-            info!("Client stop signal sent");
-        }
-
-        // Wait for the thread to finish (with timeout)
-        if let Some(thread_handle) = handle.thread_handle.take() {
-            info!("Waiting for client thread to exit...");
-            // Wait up to 3 seconds for the thread to exit
-            let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_secs(3);
-
-            loop {
-                if !IS_RUNNING.load(Ordering::SeqCst) {
-                    break;
-                }
-                if start.elapsed() > timeout {
-                    warn!("Timeout waiting for client thread to exit");
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-
-            // Try to join the thread (non-blocking if it already exited)
-            match thread_handle.join() {
-                Ok(()) => info!("Client thread joined successfully"),
-                Err(_) => warn!("Client thread panicked"),
-            }
-        }
-
-        IS_RUNNING.store(false, Ordering::SeqCst);
-        info!("Client stopped");
-    } else {
-        warn!("No client running to stop");
+    // Give the client thread time to exit gracefully
+    let mut waited = 0;
+    while !IS_THREAD_DONE.load(Ordering::SeqCst) && waited < 3000 {
+        thread::sleep(std::time::Duration::from_millis(100));
+        waited += 100;
     }
+
+    if !IS_THREAD_DONE.load(Ordering::SeqCst) {
+        warn!("Client thread did not exit within timeout, abandoning");
+        // Abandon the thread handle to avoid blocking
+        let mut guard = CLIENT_THREAD.lock().unwrap();
+        if let Some(handle) = guard.take() {
+            std::mem::forget(handle);
+        }
+    } else {
+        // Join the thread if it exited
+        let mut guard = CLIENT_THREAD.lock().unwrap();
+        if let Some(handle) = guard.take() {
+            let _ = handle.join();
+        }
+    }
+
+    // Reset state
+    IS_RUNNING.store(false, Ordering::SeqCst);
+    IS_LISTENER_READY.store(false, Ordering::SeqCst);
+    IS_QUIC_READY.store(false, Ordering::SeqCst);
+    SHOULD_SHUTDOWN.store(false, Ordering::SeqCst);
+
+    info!("Client stopped");
 }
 
-/// Check if the slipstream client is running.
+/// Check if the client is running.
 #[no_mangle]
-pub unsafe extern "C" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeIsClientRunning(
+pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeIsClientRunning(
     _env: JNIEnv,
     _class: JClass,
 ) -> jboolean {
@@ -524,5 +608,68 @@ pub unsafe extern "C" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeIsClient
         JNI_TRUE
     } else {
         JNI_FALSE
+    }
+}
+
+/// Check if the QUIC connection is ready.
+#[no_mangle]
+pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeIsQuicReady(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    if IS_QUIC_READY.load(Ordering::SeqCst) {
+        JNI_TRUE
+    } else {
+        JNI_FALSE
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_state_flags() {
+        // Initial state
+        assert!(!IS_RUNNING.load(Ordering::SeqCst));
+        assert!(!IS_LISTENER_READY.load(Ordering::SeqCst));
+        assert!(!IS_QUIC_READY.load(Ordering::SeqCst));
+
+        // Set flags
+        IS_RUNNING.store(true, Ordering::SeqCst);
+        signal_listener_ready();
+        signal_quic_ready();
+
+        assert!(IS_RUNNING.load(Ordering::SeqCst));
+        assert!(IS_LISTENER_READY.load(Ordering::SeqCst));
+        assert!(IS_QUIC_READY.load(Ordering::SeqCst));
+
+        // Reset
+        reset_quic_ready();
+        assert!(!IS_QUIC_READY.load(Ordering::SeqCst));
+
+        // Cleanup
+        IS_RUNNING.store(false, Ordering::SeqCst);
+        IS_LISTENER_READY.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn test_failure_tracking() {
+        CONSECUTIVE_FAILURES.store(0, Ordering::SeqCst);
+
+        assert!(!exceeded_max_failures());
+
+        for _ in 0..MAX_CONSECUTIVE_FAILURES {
+            record_connection_failure();
+        }
+
+        assert!(exceeded_max_failures());
+
+        // Reset
+        CONSECUTIVE_FAILURES.store(0, Ordering::SeqCst);
     }
 }

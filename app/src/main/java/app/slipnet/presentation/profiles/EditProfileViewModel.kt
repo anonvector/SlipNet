@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.usecase.GetProfileByIdUseCase
 import app.slipnet.domain.usecase.SaveProfileUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -26,6 +27,14 @@ data class EditProfileUiState(
     val gsoEnabled: Boolean = false,
     val tcpListenPort: String = "10800",
     val tcpListenHost: String = "127.0.0.1",
+    val socksAuthEnabled: Boolean = false,
+    val socksUsername: String = "",
+    val socksPassword: String = "",
+    // Tunnel type selection (DNSTT is recommended)
+    val tunnelType: TunnelType = TunnelType.DNSTT,
+    // DNSTT-specific fields
+    val dnsttPublicKey: String = "",
+    val dnsttPublicKeyError: String? = null,
     val isLoading: Boolean = false,
     val isSaving: Boolean = false,
     val saveSuccess: Boolean = false,
@@ -70,6 +79,11 @@ class EditProfileViewModel @Inject constructor(
                     gsoEnabled = profile.gsoEnabled,
                     tcpListenPort = profile.tcpListenPort.toString(),
                     tcpListenHost = profile.tcpListenHost,
+                    socksAuthEnabled = !profile.socksUsername.isNullOrBlank(),
+                    socksUsername = profile.socksUsername ?: "",
+                    socksPassword = profile.socksPassword ?: "",
+                    tunnelType = profile.tunnelType,
+                    dnsttPublicKey = profile.dnsttPublicKey,
                     isLoading = false
                 )
             } else {
@@ -90,7 +104,13 @@ class EditProfileViewModel @Inject constructor(
     }
 
     fun updateResolvers(resolvers: String) {
-        _uiState.value = _uiState.value.copy(resolvers = resolvers, resolversError = null)
+        // Validate in real-time but only show error if user has typed something
+        val error = if (resolvers.isNotBlank()) {
+            validateResolvers(resolvers)
+        } else {
+            null
+        }
+        _uiState.value = _uiState.value.copy(resolvers = resolvers, resolversError = error)
     }
 
     fun updateAuthoritativeMode(enabled: Boolean) {
@@ -117,6 +137,37 @@ class EditProfileViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(gsoEnabled = enabled)
     }
 
+    fun updateSocksAuthEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(
+            socksAuthEnabled = enabled,
+            // Clear credentials when disabled
+            socksUsername = if (enabled) _uiState.value.socksUsername else "",
+            socksPassword = if (enabled) _uiState.value.socksPassword else ""
+        )
+    }
+
+    fun updateSocksUsername(username: String) {
+        _uiState.value = _uiState.value.copy(socksUsername = username)
+    }
+
+    fun updateSocksPassword(password: String) {
+        _uiState.value = _uiState.value.copy(socksPassword = password)
+    }
+
+    fun updateTunnelType(tunnelType: TunnelType) {
+        _uiState.value = _uiState.value.copy(tunnelType = tunnelType)
+    }
+
+    fun updateDnsttPublicKey(publicKey: String) {
+        // Validate in real-time but only show error if user has typed something
+        val error = if (publicKey.isNotBlank()) {
+            validateDnsttPublicKey(publicKey)
+        } else {
+            null
+        }
+        _uiState.value = _uiState.value.copy(dnsttPublicKey = publicKey, dnsttPublicKeyError = error)
+    }
+
     fun save() {
         val state = _uiState.value
 
@@ -133,9 +184,25 @@ class EditProfileViewModel @Inject constructor(
             hasError = true
         }
 
+        // Resolver validation
         if (state.resolvers.isBlank()) {
             _uiState.value = _uiState.value.copy(resolversError = "At least one resolver is required")
             hasError = true
+        } else {
+            val resolversError = validateResolvers(state.resolvers)
+            if (resolversError != null) {
+                _uiState.value = _uiState.value.copy(resolversError = resolversError)
+                hasError = true
+            }
+        }
+
+        // DNSTT-specific validation
+        if (state.tunnelType == TunnelType.DNSTT) {
+            val publicKeyError = validateDnsttPublicKey(state.dnsttPublicKey)
+            if (publicKeyError != null) {
+                _uiState.value = _uiState.value.copy(dnsttPublicKeyError = publicKeyError)
+                hasError = true
+            }
         }
 
         if (hasError) return
@@ -158,7 +225,11 @@ class EditProfileViewModel @Inject constructor(
                     congestionControl = state.congestionControl,
                     gsoEnabled = state.gsoEnabled,
                     tcpListenPort = listenPort,
-                    tcpListenHost = state.tcpListenHost.ifBlank { "127.0.0.1" }
+                    tcpListenHost = state.tcpListenHost.ifBlank { "127.0.0.1" },
+                    socksUsername = if (state.socksAuthEnabled && state.socksUsername.isNotBlank()) state.socksUsername else null,
+                    socksPassword = if (state.socksAuthEnabled && state.socksPassword.isNotBlank()) state.socksPassword else null,
+                    tunnelType = state.tunnelType,
+                    dnsttPublicKey = state.dnsttPublicKey.trim()
                 )
 
                 saveProfileUseCase(profile)
@@ -187,6 +258,206 @@ class EditProfileViewModel @Inject constructor(
                     authoritative = authoritativeMode
                 )
             }
+    }
+
+    /**
+     * Validates DNSTT public key format.
+     * Noise protocol uses Curve25519 keys which are 32 bytes (64 hex characters).
+     * @return error message if invalid, null if valid
+     */
+    private fun validateDnsttPublicKey(publicKey: String): String? {
+        val trimmed = publicKey.trim()
+
+        if (trimmed.isBlank()) {
+            return "Public key is required for DNSTT"
+        }
+
+        // Check length: 32 bytes = 64 hex characters
+        if (trimmed.length != 64) {
+            return "Public key must be 64 hex characters (32 bytes), got ${trimmed.length}"
+        }
+
+        // Check if all characters are valid hex
+        if (!trimmed.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+            return "Public key must contain only hex characters (0-9, a-f)"
+        }
+
+        return null
+    }
+
+    /**
+     * Validates DNS resolver format.
+     * Expected format: "host:port" or "host" (port defaults to 53)
+     * Multiple resolvers can be comma-separated.
+     * Supports IPv4, IPv6, and domain names.
+     * @return error message if invalid, null if valid
+     */
+    private fun validateResolvers(input: String): String? {
+        val resolvers = input.split(",").map { it.trim() }.filter { it.isNotBlank() }
+
+        if (resolvers.isEmpty()) {
+            return "At least one resolver is required"
+        }
+
+        for (resolver in resolvers) {
+            val error = validateSingleResolver(resolver)
+            if (error != null) {
+                return error
+            }
+        }
+
+        return null
+    }
+
+    private fun validateSingleResolver(resolver: String): String? {
+        val trimmed = resolver.trim()
+
+        if (trimmed.isBlank()) {
+            return "Resolver cannot be empty"
+        }
+
+        // Handle IPv6 with port: [2001:db8::1]:53
+        if (trimmed.startsWith("[")) {
+            val closeBracket = trimmed.indexOf("]")
+            if (closeBracket == -1) {
+                return "Invalid IPv6 format: missing closing bracket in '$trimmed'"
+            }
+
+            val ipv6 = trimmed.substring(1, closeBracket)
+            if (!isValidIPv6(ipv6)) {
+                return "Invalid IPv6 address: '$ipv6'"
+            }
+
+            // Check for port after ]
+            if (closeBracket < trimmed.length - 1) {
+                if (trimmed[closeBracket + 1] != ':') {
+                    return "Invalid format: expected ':' after ']' in '$trimmed'"
+                }
+                val portStr = trimmed.substring(closeBracket + 2)
+                val portError = validatePort(portStr, trimmed)
+                if (portError != null) return portError
+            }
+
+            return null
+        }
+
+        // Count colons to distinguish IPv4:port from IPv6
+        val colonCount = trimmed.count { it == ':' }
+
+        when {
+            // IPv6 without port (multiple colons)
+            colonCount > 1 -> {
+                if (!isValidIPv6(trimmed)) {
+                    return "Invalid IPv6 address: '$trimmed'"
+                }
+            }
+            // IPv4:port or host:port (single colon)
+            colonCount == 1 -> {
+                val parts = trimmed.split(":")
+                val host = parts[0]
+                val portStr = parts[1]
+
+                val hostError = validateHost(host)
+                if (hostError != null) return hostError
+
+                val portError = validatePort(portStr, trimmed)
+                if (portError != null) return portError
+            }
+            // No colon - just host/IP (port defaults to 53)
+            else -> {
+                val hostError = validateHost(trimmed)
+                if (hostError != null) return hostError
+            }
+        }
+
+        return null
+    }
+
+    private fun validateHost(host: String): String? {
+        if (host.isBlank()) {
+            return "Host cannot be empty"
+        }
+
+        // Check if it's an IPv4 address
+        if (host.all { it.isDigit() || it == '.' }) {
+            if (!isValidIPv4(host)) {
+                return "Invalid IPv4 address: '$host'"
+            }
+            return null
+        }
+
+        // Otherwise treat as domain name - basic validation
+        if (!isValidDomainName(host)) {
+            return "Invalid host: '$host'"
+        }
+
+        return null
+    }
+
+    private fun validatePort(portStr: String, context: String): String? {
+        val port = portStr.toIntOrNull()
+        if (port == null) {
+            return "Invalid port number in '$context'"
+        }
+        if (port !in 1..65535) {
+            return "Port must be between 1 and 65535 in '$context'"
+        }
+        return null
+    }
+
+    private fun isValidIPv4(ip: String): Boolean {
+        val parts = ip.split(".")
+        if (parts.size != 4) return false
+
+        return parts.all { part ->
+            val num = part.toIntOrNull() ?: return false
+            num in 0..255 && (part == "0" || !part.startsWith("0"))
+        }
+    }
+
+    private fun isValidIPv6(ip: String): Boolean {
+        // Basic IPv6 validation
+        val trimmed = ip.trim()
+
+        // Handle :: shorthand
+        if (trimmed.contains("::")) {
+            val parts = trimmed.split("::")
+            if (parts.size > 2) return false // Only one :: allowed
+
+            val left = if (parts[0].isEmpty()) emptyList() else parts[0].split(":")
+            val right = if (parts.size < 2 || parts[1].isEmpty()) emptyList() else parts[1].split(":")
+
+            if (left.size + right.size > 7) return false
+
+            return (left + right).all { isValidIPv6Segment(it) }
+        }
+
+        // Full IPv6 address
+        val segments = trimmed.split(":")
+        if (segments.size != 8) return false
+
+        return segments.all { isValidIPv6Segment(it) }
+    }
+
+    private fun isValidIPv6Segment(segment: String): Boolean {
+        if (segment.isEmpty() || segment.length > 4) return false
+        return segment.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+    }
+
+    private fun isValidDomainName(domain: String): Boolean {
+        // Basic domain name validation
+        if (domain.isEmpty() || domain.length > 253) return false
+
+        val labels = domain.split(".")
+        if (labels.isEmpty()) return false
+
+        return labels.all { label ->
+            label.isNotEmpty() &&
+                    label.length <= 63 &&
+                    label.first().isLetterOrDigit() &&
+                    label.last().isLetterOrDigit() &&
+                    label.all { it.isLetterOrDigit() || it == '-' }
+        }
     }
 
     fun clearError() {

@@ -6,6 +6,7 @@ import app.slipnet.data.local.database.ProfileEntity
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.TunnelType
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,9 +33,13 @@ class ProfileMapper @Inject constructor(
             gsoEnabled = entity.gsoEnabled,
             tcpListenPort = entity.tcpListenPort,
             tcpListenHost = entity.tcpListenHost,
+            socksUsername = entity.socksUsername.ifBlank { null },
+            socksPassword = entity.socksPassword.ifBlank { null },
             isActive = entity.isActive,
             createdAt = entity.createdAt,
-            updatedAt = entity.updatedAt
+            updatedAt = entity.updatedAt,
+            tunnelType = TunnelType.fromValue(entity.tunnelType),
+            dnsttPublicKey = entity.dnsttPublicKey
         )
     }
 
@@ -52,9 +57,13 @@ class ProfileMapper @Inject constructor(
             gsoEnabled = profile.gsoEnabled,
             tcpListenPort = profile.tcpListenPort,
             tcpListenHost = profile.tcpListenHost,
+            socksUsername = profile.socksUsername ?: "",
+            socksPassword = profile.socksPassword ?: "",
             isActive = profile.isActive,
             createdAt = profile.createdAt,
-            updatedAt = profile.updatedAt
+            updatedAt = profile.updatedAt,
+            tunnelType = profile.tunnelType.value,
+            dnsttPublicKey = profile.dnsttPublicKey
         )
     }
 

@@ -1361,6 +1361,8 @@ pub(crate) fn handle_command(
                 );
             }
             if state.debug_streams {
+                debug!("stream {}: accepted", stream_id);
+            } else {
                 debug!("Accepted TCP stream {}", stream_id);
             }
             check_stream_invariants(state, stream_id, "NewStream");

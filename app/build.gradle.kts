@@ -14,8 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
-val appVersionName = "1.3.0"
-val appVersionCode = 8
+val appVersionName = "1.4.0"
+val appVersionCode = 9
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -80,13 +80,6 @@ android {
         versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-        // Room schema export
-        kapt {
-            arguments {
-                arg("room.schemaLocation", "$projectDir/schemas")
-            }
-        }
     }
 
     buildTypes {
@@ -371,6 +364,9 @@ tasks.named("clean") {
 }
 
 dependencies {
+    // DNSTT Go library
+    implementation(files("libs/dnstt.aar"))
+
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
     implementation(composeBom)
@@ -430,4 +426,8 @@ dependencies {
 
 kapt {
     correctErrorTypes = true
+    // Room schema export
+    arguments {
+        arg("room.schemaLocation", "$projectDir/schemas")
+    }
 }
