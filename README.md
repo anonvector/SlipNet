@@ -29,8 +29,12 @@ SlipNet supports two tunnel types:
 
 ## Server Setup
 
-To use this client, you need a compatible server. Please set up your server using the **socks mode** of the following deployment script:
+To use this client, you must have a compatible server. Please configure your server in SOCKS mode using one of the following deployment scripts:
 
+**DNSTT**:
+[**dnstt-deploy**](https://github.com/bugfloyd/dnstt-deploy)
+
+**SlipStream:**
 [**slipstream-rust-deploy**](https://github.com/AliRezaBeigy/slipstream-rust-deploy)
 
 ## Screenshots
