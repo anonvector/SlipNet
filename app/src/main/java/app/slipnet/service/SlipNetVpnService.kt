@@ -424,19 +424,17 @@ class SlipNetVpnService : VpnService() {
     }
 
     /**
-     * Start the SSH tunnel through DNSTT's SOCKS5 proxy.
-     * The SSH session is routed through the local SOCKS5 proxy (DNSTT) to
-     * reach the SSH server on the remote end, then provides its own SOCKS5 proxy
-     * on the user-facing port. SSH is only supported for DNSTT tunnel type.
+     * Start the SSH tunnel through the DNSTT tunnel.
+     * DNSTT forwards raw TCP through the DNS tunnel to the remote SSH server.
+     * JSch connects directly to the DNSTT port (no SOCKS5 handshake needed).
+     * SSH is only supported for DNSTT tunnel type.
      */
     private suspend fun startSshTunnel(profile: app.slipnet.domain.model.ServerProfile): Result<Unit> {
         return withContext(Dispatchers.IO) {
-            Log.i(TAG, "Starting SSH tunnel through DNS proxy")
-            SshTunnelBridge.start(
-                socksHost = "127.0.0.1",
-                socksPort = profile.tcpListenPort + 1,
-                sshHost = "127.0.0.1",
-                sshPort = 22,
+            Log.i(TAG, "Starting SSH tunnel through DNSTT (direct mode)")
+            SshTunnelBridge.startDirect(
+                tunnelHost = profile.tcpListenHost,
+                tunnelPort = profile.tcpListenPort + 1,
                 sshUsername = profile.sshUsername,
                 sshPassword = profile.sshPassword,
                 listenPort = profile.tcpListenPort,
