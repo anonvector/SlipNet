@@ -28,6 +28,9 @@ sealed class ImportResult {
  *
  * Decoded profile format v2 (pipe-delimited):
  * v2|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword
+ *
+ * Decoded profile format v3 (pipe-delimited):
+ * v3|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword
  */
 @Singleton
 class ConfigImporter @Inject constructor() {
@@ -41,6 +44,7 @@ class ConfigImporter @Inject constructor() {
         private const val RESOLVER_PART_DELIMITER = ":"
         private const val V1_FIELD_COUNT = 11
         private const val V2_FIELD_COUNT = 14
+        private const val V3_FIELD_COUNT = 17
     }
 
     fun parseAndImport(input: String): ImportResult {
@@ -104,6 +108,7 @@ class ConfigImporter @Inject constructor() {
         return when (version) {
             "1" -> parseProfileV1(fields, lineNum)
             "2" -> parseProfileV2(fields, lineNum)
+            "3" -> parseProfileV3(fields, lineNum)
             else -> ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
         }
     }
@@ -233,6 +238,84 @@ class ConfigImporter @Inject constructor() {
             dnsttPublicKey = dnsttPublicKey,
             socksUsername = socksUsername,
             socksPassword = socksPassword
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV3(fields: List<String>, lineNum: Int): ProfileParseResult {
+        if (fields.size < V3_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v3 format (expected $V3_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        val tunnelTypeStr = fields[1]
+        val tunnelType = when (tunnelTypeStr) {
+            MODE_SLIPSTREAM -> TunnelType.SLIPSTREAM
+            MODE_DNSTT -> TunnelType.DNSTT
+            else -> {
+                return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
+            }
+        }
+
+        val name = fields[2]
+        val domain = fields[3]
+        val resolversStr = fields[4]
+        val authMode = fields[5] == "1"
+        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val cc = fields[7]
+        val port = fields[8].toIntOrNull() ?: 10800
+        val host = fields[9]
+        val gso = fields[10] == "1"
+        val dnsttPublicKey = fields[11]
+        val socksUsername = fields[12].takeIf { it.isNotBlank() }
+        val socksPassword = fields[13].takeIf { it.isNotBlank() }
+        val sshEnabled = fields[14] == "1"
+        val sshUsername = fields[15]
+        val sshPassword = fields[16]
+
+        if (name.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Profile name is required")
+        }
+        if (domain.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Domain is required")
+        }
+
+        val resolvers = parseResolvers(resolversStr)
+        if (resolvers.isEmpty()) {
+            return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
+        }
+
+        if (port !in 1..65535) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid port $port")
+        }
+
+        // For DNSTT, validate public key
+        if (tunnelType == TunnelType.DNSTT) {
+            val keyError = validateDnsttPublicKey(dnsttPublicKey)
+            if (keyError != null) {
+                return ProfileParseResult.Error("Line $lineNum: $keyError")
+            }
+        }
+
+        val profile = ServerProfile(
+            id = 0,
+            name = name,
+            domain = domain,
+            resolvers = resolvers,
+            authoritativeMode = authMode,
+            keepAliveInterval = keepAlive,
+            congestionControl = CongestionControl.fromValue(cc),
+            tcpListenPort = port,
+            tcpListenHost = host,
+            gsoEnabled = gso,
+            isActive = false,
+            tunnelType = tunnelType,
+            dnsttPublicKey = dnsttPublicKey,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword,
+            sshEnabled = sshEnabled,
+            sshUsername = sshUsername,
+            sshPassword = sshPassword
         )
 
         return ProfileParseResult.Success(profile)

@@ -57,5 +57,15 @@ data class ProfileEntity(
 
     // DNSTT-specific: Noise protocol public key (hex encoded)
     @ColumnInfo(name = "dnstt_public_key", defaultValue = "")
-    val dnsttPublicKey: String = ""
+    val dnsttPublicKey: String = "",
+
+    // SSH tunnel fields
+    @ColumnInfo(name = "ssh_enabled", defaultValue = "0")
+    val sshEnabled: Boolean = false,
+
+    @ColumnInfo(name = "ssh_username", defaultValue = "")
+    val sshUsername: String = "",
+
+    @ColumnInfo(name = "ssh_password", defaultValue = "")
+    val sshPassword: String = ""
 )

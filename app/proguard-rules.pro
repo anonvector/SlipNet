@@ -27,6 +27,11 @@
 -keep class dagger.hilt.** { *; }
 -keep class javax.inject.** { *; }
 -keep class * extends dagger.hilt.android.lifecycle.HiltViewModel { *; }
+-keep class app.slipnet.Hilt_* { *; }
+-keep class app.slipnet.*_GeneratedInjector { *; }
+-keep class dagger.hilt.internal.** { *; }
+-keep class * implements dagger.hilt.internal.GeneratedComponent { *; }
+-keep class * implements dagger.hilt.internal.GeneratedComponentManager { *; }
 
 # Room
 -keep class * extends androidx.room.RoomDatabase
@@ -56,6 +61,10 @@
 -keep class app.slipnet.domain.model.** { *; }
 -keep class app.slipnet.data.local.database.** { *; }
 -keep class app.slipnet.data.mapper.** { *; }
+
+# JSch SSH library
+-keep class com.jcraft.jsch.** { *; }
+-dontwarn com.jcraft.jsch.**
 
 # Compose
 -dontwarn androidx.compose.**

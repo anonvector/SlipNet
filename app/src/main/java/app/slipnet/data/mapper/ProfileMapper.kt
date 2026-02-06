@@ -39,7 +39,10 @@ class ProfileMapper @Inject constructor(
             createdAt = entity.createdAt,
             updatedAt = entity.updatedAt,
             tunnelType = TunnelType.fromValue(entity.tunnelType),
-            dnsttPublicKey = entity.dnsttPublicKey
+            dnsttPublicKey = entity.dnsttPublicKey,
+            sshEnabled = entity.sshEnabled,
+            sshUsername = entity.sshUsername,
+            sshPassword = entity.sshPassword
         )
     }
 
@@ -63,7 +66,10 @@ class ProfileMapper @Inject constructor(
             createdAt = profile.createdAt,
             updatedAt = profile.updatedAt,
             tunnelType = profile.tunnelType.value,
-            dnsttPublicKey = profile.dnsttPublicKey
+            dnsttPublicKey = profile.dnsttPublicKey,
+            sshEnabled = profile.sshEnabled,
+            sshUsername = profile.sshUsername,
+            sshPassword = profile.sshPassword
         )
     }
 

@@ -5,7 +5,7 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [ProfileEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {

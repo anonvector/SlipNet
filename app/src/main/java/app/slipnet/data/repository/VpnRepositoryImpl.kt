@@ -76,7 +76,7 @@ class VpnRepositoryImpl @Inject constructor(
             )
         }
 
-        val success = startSlipstreamClient(profile.domain, resolvers, profile, debugLogging)
+        val success = startSlipstreamClient(profile.domain, resolvers, profile, debugLogging, profile.tcpListenPort)
 
         return if (success) {
             Log.i(TAG, "Slipstream SOCKS5 proxy started successfully")
@@ -102,11 +102,14 @@ class VpnRepositoryImpl @Inject constructor(
         // Get DNS server from first resolver, or use default
         val dnsServer = profile.resolvers.firstOrNull()?.let { "${it.host}:${it.port}" } ?: "8.8.8.8:53"
 
+        // When SSH is enabled, the DNS tunnel listens on an internal port
+        val listenPort = if (profile.sshEnabled) profile.tcpListenPort + 1 else profile.tcpListenPort
+
         val result = DnsttBridge.startClient(
             dnsServer = dnsServer,
             tunnelDomain = profile.domain,
             publicKey = profile.dnsttPublicKey,
-            listenPort = profile.tcpListenPort,
+            listenPort = listenPort,
             listenHost = profile.tcpListenHost
         )
 
@@ -140,10 +143,16 @@ class VpnRepositoryImpl @Inject constructor(
         // Server uses Dante SOCKS5 proxy which supports UDP relay
         val enableUdpTunneling = true
 
+        // When SSH is enabled, hev-socks5-tunnel connects to the SSH SOCKS5 proxy
+        // which doesn't require authentication (auth is handled by SSH itself)
+        val socksUsername = if (profile.sshEnabled) null else profile.socksUsername
+        val socksPassword = if (profile.sshEnabled) null else profile.socksPassword
+
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting hev-socks5-tunnel")
         Log.i(TAG, "  SOCKS5 proxy: 127.0.0.1:$socksPort")
-        Log.i(TAG, "  SOCKS auth: ${if (!profile.socksUsername.isNullOrBlank()) "enabled" else "disabled"}")
+        Log.i(TAG, "  SOCKS auth: ${if (!socksUsername.isNullOrBlank()) "enabled" else "disabled"}")
+        Log.i(TAG, "  SSH tunnel: ${profile.sshEnabled}")
         Log.i(TAG, "  UDP tunneling: $enableUdpTunneling (tunnel type: ${profile.tunnelType})")
         Log.i(TAG, "========================================")
 
@@ -151,8 +160,8 @@ class VpnRepositoryImpl @Inject constructor(
             tunFd = pfd,
             socksAddress = "127.0.0.1",
             socksPort = socksPort,
-            socksUsername = profile.socksUsername,
-            socksPassword = profile.socksPassword,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword,
             enableUdpTunneling = enableUdpTunneling,
             mtu = 1500,
             ipv4Address = "10.255.255.1"
@@ -278,7 +287,8 @@ class VpnRepositoryImpl @Inject constructor(
         domain: String,
         resolvers: List<ResolverConfig>,
         profile: ServerProfile,
-        debugLogging: Boolean
+        debugLogging: Boolean,
+        listenPort: Int = profile.tcpListenPort
     ): Boolean {
         tunnelStartException = null
         val result = SlipstreamBridge.startClient(
@@ -286,7 +296,7 @@ class VpnRepositoryImpl @Inject constructor(
             resolvers = resolvers,
             congestionControl = profile.congestionControl.value,
             keepAliveInterval = profile.keepAliveInterval,
-            tcpListenPort = profile.tcpListenPort,
+            tcpListenPort = listenPort,
             tcpListenHost = profile.tcpListenHost,
             gsoEnabled = profile.gsoEnabled,
             debugPoll = debugLogging,
