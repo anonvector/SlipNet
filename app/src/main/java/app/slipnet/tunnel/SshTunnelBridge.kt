@@ -49,6 +49,86 @@ object SshTunnelBridge {
      * @param listenHost Local host for the SSH SOCKS5 proxy
      * @return Result indicating success or failure
      */
+    /**
+     * Start in direct mode: JSch connects directly to the tunnel port.
+     * Used for DNSTT which forwards raw TCP through the DNS tunnel.
+     *
+     * @param tunnelHost Local tunnel host (e.g., 127.0.0.1)
+     * @param tunnelPort Local tunnel port (DNSTT listen port)
+     * @param sshUsername SSH username
+     * @param sshPassword SSH password
+     * @param listenPort Local port for the SSH SOCKS5 proxy
+     * @param listenHost Local host for the SSH SOCKS5 proxy
+     * @return Result indicating success or failure
+     */
+    fun startDirect(
+        tunnelHost: String,
+        tunnelPort: Int,
+        sshUsername: String,
+        sshPassword: String,
+        listenPort: Int,
+        listenHost: String = "127.0.0.1"
+    ): Result<Unit> {
+        Log.i(TAG, "========================================")
+        Log.i(TAG, "Starting SSH tunnel (direct mode)")
+        Log.i(TAG, "  Tunnel: $tunnelHost:$tunnelPort")
+        Log.i(TAG, "  SSH User: $sshUsername")
+        Log.i(TAG, "  SOCKS5 Listen: $listenHost:$listenPort")
+        Log.i(TAG, "========================================")
+
+        stop()
+
+        return try {
+            // Connect SSH directly through the tunnel port
+            // DNSTT forwards raw TCP to the remote SSH server
+            val jsch = JSch()
+            val newSession = jsch.getSession(sshUsername, tunnelHost, tunnelPort)
+            newSession.setPassword(sshPassword)
+
+            newSession.setConfig("StrictHostKeyChecking", "no")
+            newSession.setServerAliveInterval(KEEPALIVE_INTERVAL_MS)
+            newSession.setServerAliveCountMax(3)
+            newSession.connect(CONNECT_TIMEOUT_MS)
+
+            if (!newSession.isConnected) {
+                return Result.failure(RuntimeException("SSH session failed to connect"))
+            }
+
+            session = newSession
+            Log.i(TAG, "SSH session connected (direct mode)")
+
+            // Start SOCKS5 server
+            val ss = ServerSocket()
+            ss.reuseAddress = true
+            ss.bind(InetSocketAddress(listenHost, listenPort))
+            serverSocket = ss
+            running.set(true)
+
+            // Start acceptor thread
+            acceptorThread = Thread({
+                Log.d(TAG, "Acceptor thread started")
+                while (running.get() && !Thread.currentThread().isInterrupted) {
+                    try {
+                        val clientSocket = ss.accept()
+                        handleConnection(clientSocket)
+                    } catch (e: Exception) {
+                        if (running.get()) {
+                            Log.w(TAG, "Accept error: ${e.message}")
+                        }
+                    }
+                }
+                Log.d(TAG, "Acceptor thread exited")
+            }, "ssh-socks5-acceptor").also { it.isDaemon = true; it.start() }
+
+            Log.i(TAG, "SSH SOCKS5 proxy started on $listenHost:$listenPort")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start SSH tunnel", e)
+            stop()
+            Result.failure(e)
+        }
+    }
+
     fun start(
         socksHost: String,
         socksPort: Int,
@@ -60,7 +140,7 @@ object SshTunnelBridge {
         listenHost: String = "127.0.0.1"
     ): Result<Unit> {
         Log.i(TAG, "========================================")
-        Log.i(TAG, "Starting SSH tunnel")
+        Log.i(TAG, "Starting SSH tunnel (SOCKS5 mode)")
         Log.i(TAG, "  SOCKS5 Proxy: $socksHost:$socksPort")
         Log.i(TAG, "  SSH Destination: $sshUsername@$sshHost:$sshPort")
         Log.i(TAG, "  SOCKS5 Listen: $listenHost:$listenPort")
@@ -69,13 +149,12 @@ object SshTunnelBridge {
         stop()
 
         return try {
-            // Connect SSH session through the DNS tunnel's SOCKS5 proxy
+            // Connect SSH session through the SOCKS5 proxy
             val jsch = JSch()
             val newSession = jsch.getSession(sshUsername, sshHost, sshPort)
             newSession.setPassword(sshPassword)
 
-            // Route SSH through the DNS tunnel's SOCKS5 proxy using custom implementation
-            // (JSch's ProxySOCKS5 sends auth method 0x02 which some proxies don't handle)
+            // Route SSH through the SOCKS5 proxy using custom implementation
             val proxy = Socks5Proxy(socksHost, socksPort)
             newSession.setProxy(proxy)
 
