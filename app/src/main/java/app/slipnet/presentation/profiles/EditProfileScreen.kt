@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -195,6 +196,25 @@ fun EditProfileScreen(
                     supportingText = {
                         Text(uiState.resolversError ?: "DNS server address (IP:port)")
                     },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { viewModel.autoDetectResolver() },
+                            enabled = !uiState.isAutoDetecting
+                        ) {
+                            if (uiState.isAutoDetecting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text(
+                                    text = "Auto",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -344,6 +364,75 @@ fun EditProfileScreen(
                         },
                         modifier = Modifier.fillMaxWidth()
                     )
+                }
+
+                // SSH Tunnel Section (DNSTT only)
+                if (uiState.tunnelType == TunnelType.DNSTT) {
+                    Text(
+                        text = "SSH Tunnel",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Enable SSH Tunnel",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "Route traffic through SSH over the DNS tunnel",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = uiState.sshEnabled,
+                            onCheckedChange = { viewModel.updateSshEnabled(it) }
+                        )
+                    }
+
+                    if (uiState.sshEnabled) {
+                        OutlinedTextField(
+                            value = uiState.sshUsername,
+                            onValueChange = { viewModel.updateSshUsername(it) },
+                            label = { Text("SSH Username") },
+                            placeholder = { Text("Enter SSH username") },
+                            isError = uiState.sshUsernameError != null,
+                            supportingText = uiState.sshUsernameError?.let { { Text(it) } },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        var sshPasswordVisible by remember { mutableStateOf(false) }
+                        OutlinedTextField(
+                            value = uiState.sshPassword,
+                            onValueChange = { viewModel.updateSshPassword(it) },
+                            label = { Text("SSH Password") },
+                            placeholder = { Text("Enter SSH password") },
+                            isError = uiState.sshPasswordError != null,
+                            supportingText = uiState.sshPasswordError?.let { { Text(it) } },
+                            singleLine = true,
+                            visualTransformation = if (sshPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            trailingIcon = {
+                                IconButton(onClick = { sshPasswordVisible = !sshPasswordVisible }) {
+                                    Text(
+                                        text = if (sshPasswordVisible) "Hide" else "Show",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(32.dp))

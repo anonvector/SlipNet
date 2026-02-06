@@ -91,13 +91,14 @@ private val ErrorRed = Color(0xFFE53935)
 @Composable
 fun ScanResultsScreen(
     profileId: Long? = null,
+    fromProfile: Boolean = false,
     parentBackStackEntry: NavBackStackEntry,
     onNavigateBack: () -> Unit,
     onResolversSelected: (String) -> Unit,
     viewModel: DnsScannerViewModel = hiltViewModel(parentBackStackEntry)
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val canApply = profileId != null
+    val canApply = fromProfile
     val snackbarHostState = remember { SnackbarHostState() }
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
     var sortOption by remember { mutableStateOf(SortOption.NONE) }

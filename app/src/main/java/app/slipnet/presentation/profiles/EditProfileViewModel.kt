@@ -1,5 +1,7 @@
 package app.slipnet.presentation.profiles
 
+import android.content.Context
+import android.net.ConnectivityManager
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,17 +12,20 @@ import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.usecase.GetProfileByIdUseCase
 import app.slipnet.domain.usecase.SaveProfileUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 data class EditProfileUiState(
     val profileId: Long? = null,
     val name: String = "",
     val domain: String = "",
-    val resolvers: String = "", // Format: "host:port,host:port"
+    val resolvers: String = "1.1.1.1:53", // Format: "host:port,host:port"
     val authoritativeMode: Boolean = false,
     val keepAliveInterval: String = "200",
     val congestionControl: CongestionControl = CongestionControl.BBR,
@@ -35,8 +40,15 @@ data class EditProfileUiState(
     // DNSTT-specific fields
     val dnsttPublicKey: String = "",
     val dnsttPublicKeyError: String? = null,
+    // SSH tunnel fields
+    val sshEnabled: Boolean = false,
+    val sshUsername: String = "",
+    val sshPassword: String = "",
+    val sshUsernameError: String? = null,
+    val sshPasswordError: String? = null,
     val isLoading: Boolean = false,
     val isSaving: Boolean = false,
+    val isAutoDetecting: Boolean = false,
     val saveSuccess: Boolean = false,
     val error: String? = null,
     val nameError: String? = null,
@@ -46,6 +58,7 @@ data class EditProfileUiState(
 
 @HiltViewModel
 class EditProfileViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     savedStateHandle: SavedStateHandle,
     private val getProfileByIdUseCase: GetProfileByIdUseCase,
     private val saveProfileUseCase: SaveProfileUseCase
@@ -84,6 +97,9 @@ class EditProfileViewModel @Inject constructor(
                     socksPassword = profile.socksPassword ?: "",
                     tunnelType = profile.tunnelType,
                     dnsttPublicKey = profile.dnsttPublicKey,
+                    sshEnabled = profile.sshEnabled,
+                    sshUsername = profile.sshUsername,
+                    sshPassword = profile.sshPassword,
                     isLoading = false
                 )
             } else {
@@ -138,11 +154,18 @@ class EditProfileViewModel @Inject constructor(
     }
 
     fun updateSocksAuthEnabled(enabled: Boolean) {
+        val isDnstt = _uiState.value.tunnelType == TunnelType.DNSTT
         _uiState.value = _uiState.value.copy(
             socksAuthEnabled = enabled,
             // Clear credentials when disabled
             socksUsername = if (enabled) _uiState.value.socksUsername else "",
-            socksPassword = if (enabled) _uiState.value.socksPassword else ""
+            socksPassword = if (enabled) _uiState.value.socksPassword else "",
+            // Mutually exclusive with SSH (DNSTT only)
+            sshEnabled = if (enabled && isDnstt) false else _uiState.value.sshEnabled,
+            sshUsername = if (enabled && isDnstt) "" else _uiState.value.sshUsername,
+            sshPassword = if (enabled && isDnstt) "" else _uiState.value.sshPassword,
+            sshUsernameError = null,
+            sshPasswordError = null
         )
     }
 
@@ -155,7 +178,15 @@ class EditProfileViewModel @Inject constructor(
     }
 
     fun updateTunnelType(tunnelType: TunnelType) {
-        _uiState.value = _uiState.value.copy(tunnelType = tunnelType)
+        _uiState.value = _uiState.value.copy(
+            tunnelType = tunnelType,
+            // SSH is only supported for DNSTT - disable when switching to Slipstream
+            sshEnabled = if (tunnelType == TunnelType.SLIPSTREAM) false else _uiState.value.sshEnabled,
+            sshUsername = if (tunnelType == TunnelType.SLIPSTREAM) "" else _uiState.value.sshUsername,
+            sshPassword = if (tunnelType == TunnelType.SLIPSTREAM) "" else _uiState.value.sshPassword,
+            sshUsernameError = null,
+            sshPasswordError = null
+        )
     }
 
     fun updateDnsttPublicKey(publicKey: String) {
@@ -166,6 +197,63 @@ class EditProfileViewModel @Inject constructor(
             null
         }
         _uiState.value = _uiState.value.copy(dnsttPublicKey = publicKey, dnsttPublicKeyError = error)
+    }
+
+    fun updateSshEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(
+            sshEnabled = enabled,
+            sshUsername = if (enabled) _uiState.value.sshUsername else "",
+            sshPassword = if (enabled) _uiState.value.sshPassword else "",
+            sshUsernameError = null,
+            sshPasswordError = null,
+            // Mutually exclusive with SOCKS5 auth
+            socksAuthEnabled = if (enabled) false else _uiState.value.socksAuthEnabled,
+            socksUsername = if (enabled) "" else _uiState.value.socksUsername,
+            socksPassword = if (enabled) "" else _uiState.value.socksPassword
+        )
+    }
+
+    fun updateSshUsername(username: String) {
+        _uiState.value = _uiState.value.copy(sshUsername = username, sshUsernameError = null)
+    }
+
+    fun updateSshPassword(password: String) {
+        _uiState.value = _uiState.value.copy(sshPassword = password, sshPasswordError = null)
+    }
+
+    fun autoDetectResolver() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isAutoDetecting = true)
+            try {
+                val state = _uiState.value
+                val resolverIp = withContext(Dispatchers.IO) {
+                    // Both tunnel types need the ISP DNS server as resolver
+                    // to forward tunneled DNS queries to the authoritative server
+                    getSystemDnsServer()
+                }
+
+                if (resolverIp != null) {
+                    updateResolvers("$resolverIp:53")
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        error = "Could not detect DNS server"
+                    )
+                }
+                _uiState.value = _uiState.value.copy(isAutoDetecting = false)
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isAutoDetecting = false,
+                    error = "Auto-detect failed: ${e.message}"
+                )
+            }
+        }
+    }
+
+    private fun getSystemDnsServer(): String? {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivityManager.activeNetwork ?: return null
+        val linkProperties = connectivityManager.getLinkProperties(network) ?: return null
+        return linkProperties.dnsServers.firstOrNull()?.hostAddress
     }
 
     fun save() {
@@ -205,6 +293,18 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
+        // SSH validation (DNSTT only)
+        if (state.sshEnabled && state.tunnelType == TunnelType.DNSTT) {
+            if (state.sshUsername.isBlank()) {
+                _uiState.value = _uiState.value.copy(sshUsernameError = "SSH username is required")
+                hasError = true
+            }
+            if (state.sshPassword.isBlank()) {
+                _uiState.value = _uiState.value.copy(sshPasswordError = "SSH password is required")
+                hasError = true
+            }
+        }
+
         if (hasError) return
 
         viewModelScope.launch {
@@ -229,7 +329,10 @@ class EditProfileViewModel @Inject constructor(
                     socksUsername = if (state.socksAuthEnabled && state.socksUsername.isNotBlank()) state.socksUsername else null,
                     socksPassword = if (state.socksAuthEnabled && state.socksPassword.isNotBlank()) state.socksPassword else null,
                     tunnelType = state.tunnelType,
-                    dnsttPublicKey = state.dnsttPublicKey.trim()
+                    dnsttPublicKey = state.dnsttPublicKey.trim(),
+                    sshEnabled = state.sshEnabled && state.tunnelType == TunnelType.DNSTT,
+                    sshUsername = if (state.sshEnabled && state.tunnelType == TunnelType.DNSTT) state.sshUsername.trim() else "",
+                    sshPassword = if (state.sshEnabled && state.tunnelType == TunnelType.DNSTT) state.sshPassword else ""
                 )
 
                 saveProfileUseCase(profile)

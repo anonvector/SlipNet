@@ -152,7 +152,7 @@ fun ProfileListItem(
                 )
 
                 Text(
-                    text = "${profile.resolvers.size} resolver(s) • ${profile.congestionControl.value.uppercase()}",
+                    text = "${profile.resolvers.size} resolver(s) • ${profile.tunnelType.displayName}${if (profile.sshEnabled) " + SSH" else ""}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
