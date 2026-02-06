@@ -67,7 +67,7 @@ fun NavGraph(
                     navController.popBackStack()
                 },
                 onNavigateToScanner = {
-                    navController.navigate(NavRoutes.DnsScanner.createRoute())
+                    navController.navigate(NavRoutes.DnsScanner.createRoute(fromProfile = true))
                 },
                 selectedResolvers = selectedResolvers
             )
@@ -89,7 +89,7 @@ fun NavGraph(
                     navController.popBackStack()
                 },
                 onNavigateToScanner = {
-                    navController.navigate(NavRoutes.DnsScanner.createRoute(profileId))
+                    navController.navigate(NavRoutes.DnsScanner.createRoute(profileId, fromProfile = true))
                 },
                 selectedResolvers = selectedResolvers
             )
@@ -112,17 +112,22 @@ fun NavGraph(
                 navArgument("profileId") {
                     type = NavType.LongType
                     defaultValue = -1L
+                },
+                navArgument("fromProfile") {
+                    type = NavType.BoolType
+                    defaultValue = false
                 }
             )
         ) { backStackEntry ->
             val profileId = backStackEntry.arguments?.getLong("profileId")?.takeIf { it != -1L }
+            val fromProfile = backStackEntry.arguments?.getBoolean("fromProfile") ?: false
             DnsScannerScreen(
                 profileId = profileId,
                 onNavigateBack = {
                     navController.popBackStack()
                 },
                 onNavigateToResults = {
-                    navController.navigate(NavRoutes.ScanResults.createRoute(profileId))
+                    navController.navigate(NavRoutes.ScanResults.createRoute(profileId, fromProfile))
                 },
                 onResolversSelected = { resolvers ->
                     // Pass selected resolvers back through saved state
@@ -137,15 +142,21 @@ fun NavGraph(
                 navArgument("profileId") {
                     type = NavType.LongType
                     defaultValue = -1L
+                },
+                navArgument("fromProfile") {
+                    type = NavType.BoolType
+                    defaultValue = false
                 }
             )
         ) { backStackEntry ->
             val profileId = backStackEntry.arguments?.getLong("profileId")?.takeIf { it != -1L }
+            val fromProfile = backStackEntry.arguments?.getBoolean("fromProfile") ?: false
             // Get the parent (DnsScanner) back stack entry to share ViewModel
             // Use remember to cache it so it doesn't crash during recomposition after navigation
             val parentEntry = remember { navController.getBackStackEntry(NavRoutes.DnsScanner.route) }
             ScanResultsScreen(
                 profileId = profileId,
+                fromProfile = fromProfile,
                 parentBackStackEntry = parentEntry,
                 onNavigateBack = {
                     navController.popBackStack()

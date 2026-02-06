@@ -19,7 +19,11 @@ data class ServerProfile(
     // Tunnel type selection (DNSTT is more stable)
     val tunnelType: TunnelType = TunnelType.DNSTT,
     // DNSTT-specific fields
-    val dnsttPublicKey: String = ""
+    val dnsttPublicKey: String = "",
+    // SSH tunnel fields
+    val sshEnabled: Boolean = false,
+    val sshUsername: String = "",
+    val sshPassword: String = ""
 )
 
 data class DnsResolver(

@@ -12,8 +12,8 @@ import javax.inject.Singleton
  * Single profile format: slipnet://[base64-encoded-profile]
  * Multiple profiles: one URI per line
  *
- * Encoded profile format v2 (pipe-delimited):
- * v2|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword
+ * Encoded profile format v3 (pipe-delimited):
+ * v3|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -22,7 +22,7 @@ class ConfigExporter @Inject constructor() {
 
     companion object {
         const val SCHEME = "slipnet://"
-        const val VERSION = "2"
+        const val VERSION = "3"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_DNSTT = "dnstt"
         private const val FIELD_DELIMITER = "|"
@@ -62,7 +62,10 @@ class ConfigExporter @Inject constructor() {
             if (profile.gsoEnabled) "1" else "0",
             profile.dnsttPublicKey,
             profile.socksUsername ?: "",
-            profile.socksPassword ?: ""
+            profile.socksPassword ?: "",
+            if (profile.sshEnabled) "1" else "0",
+            profile.sshUsername,
+            profile.sshPassword
         ).joinToString(FIELD_DELIMITER)
 
         val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
