@@ -28,7 +28,7 @@ data class KotlinTunnelConfig(
     // Network Optimization Settings
     val dnsTimeout: Int = 5000,
     val connectionTimeout: Int = 30000,
-    val bufferSize: Int = 262144, // 256KB default
+    val bufferSize: Int = 524288, // 512KB
     val connectionPoolSize: Int = 10,
     val verboseLogging: Boolean = false,
     // DNS forwarding through SSH (for SSH-only mode)
@@ -1291,7 +1291,7 @@ class Socks5ConnectionPool(
     private val slipstreamPort: Int,
     private val poolSize: Int = 3,
     private val scope: CoroutineScope,
-    private val bufferSize: Int = 262144,
+    private val bufferSize: Int = 524288,
     private val connectionTimeout: Int = 30000,
     private val verboseLogging: Boolean = false
 ) {

@@ -3,6 +3,7 @@ package app.slipnet.data.export
 import android.util.Base64
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
+import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TunnelType
 import javax.inject.Inject
@@ -31,6 +32,24 @@ sealed class ImportResult {
  *
  * Decoded profile format v3 (pipe-delimited):
  * v3|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword
+ *
+ * Decoded profile format v4 (pipe-delimited):
+ * v4|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh
+ *
+ * Decoded profile format v5 (pipe-delimited):
+ * v5|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost
+ *
+ * Decoded profile format v6 (same fields as v5, adds slipstream_ssh tunnel type):
+ * v6|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost
+ *
+ * Decoded profile format v7 (extends v6 with useServerDns):
+ * v7|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns
+ *
+ * Decoded profile format v8 (extends v7 with dohUrl):
+ * v8|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl
+ *
+ * Decoded profile format v9 (extends v8 with dnsTransport):
+ * v9|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport
  */
 @Singleton
 class ConfigImporter @Inject constructor() {
@@ -38,13 +57,23 @@ class ConfigImporter @Inject constructor() {
     companion object {
         private const val SCHEME = "slipnet://"
         private const val MODE_SLIPSTREAM = "ss"
+        private const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         private const val MODE_DNSTT = "dnstt"
+        private const val MODE_DNSTT_SSH = "dnstt_ssh"
+        private const val MODE_SSH = "ssh"
+        private const val MODE_DOH = "doh"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
         private const val V1_FIELD_COUNT = 11
         private const val V2_FIELD_COUNT = 14
         private const val V3_FIELD_COUNT = 17
+        private const val V4_FIELD_COUNT = 18
+        private const val V5_FIELD_COUNT = 20
+        private const val V6_FIELD_COUNT = 20
+        private const val V7_FIELD_COUNT = 21
+        private const val V8_FIELD_COUNT = 22
+        private const val V9_FIELD_COUNT = 23
     }
 
     fun parseAndImport(input: String): ImportResult {
@@ -109,6 +138,12 @@ class ConfigImporter @Inject constructor() {
             "1" -> parseProfileV1(fields, lineNum)
             "2" -> parseProfileV2(fields, lineNum)
             "3" -> parseProfileV3(fields, lineNum)
+            "4" -> parseProfileV4(fields, lineNum)
+            "5" -> parseProfileV5(fields, lineNum)
+            "6" -> parseProfileV6(fields, lineNum)
+            "7" -> parseProfileV7(fields, lineNum)
+            "8" -> parseProfileV8(fields, lineNum)
+            "9" -> parseProfileV9(fields, lineNum)
             else -> ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
         }
     }
@@ -129,7 +164,7 @@ class ConfigImporter @Inject constructor() {
         val authMode = fields[5] == "1"
         val keepAlive = fields[6].toIntOrNull() ?: 200
         val cc = fields[7]
-        val port = fields[8].toIntOrNull() ?: 10800
+        val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
         val gso = fields[10] == "1"
 
@@ -179,7 +214,11 @@ class ConfigImporter @Inject constructor() {
         val tunnelTypeStr = fields[1]
         val tunnelType = when (tunnelTypeStr) {
             MODE_SLIPSTREAM -> TunnelType.SLIPSTREAM
+            MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
+            MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_SSH -> TunnelType.SSH
+            MODE_DOH -> TunnelType.DOH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -191,7 +230,7 @@ class ConfigImporter @Inject constructor() {
         val authMode = fields[5] == "1"
         val keepAlive = fields[6].toIntOrNull() ?: 200
         val cc = fields[7]
-        val port = fields[8].toIntOrNull() ?: 10800
+        val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
         val gso = fields[10] == "1"
         val dnsttPublicKey = fields[11]
@@ -205,8 +244,9 @@ class ConfigImporter @Inject constructor() {
             return ProfileParseResult.Error("Line $lineNum: Domain is required")
         }
 
+        // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty()) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -214,8 +254,8 @@ class ConfigImporter @Inject constructor() {
             return ProfileParseResult.Error("Line $lineNum: Invalid port $port")
         }
 
-        // For DNSTT, validate public key
-        if (tunnelType == TunnelType.DNSTT) {
+        // For DNSTT/DNSTT_SSH, validate public key
+        if (tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH) {
             val keyError = validateDnsttPublicKey(dnsttPublicKey)
             if (keyError != null) {
                 return ProfileParseResult.Error("Line $lineNum: $keyError")
@@ -251,7 +291,11 @@ class ConfigImporter @Inject constructor() {
         val tunnelTypeStr = fields[1]
         val tunnelType = when (tunnelTypeStr) {
             MODE_SLIPSTREAM -> TunnelType.SLIPSTREAM
+            MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
+            MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_SSH -> TunnelType.SSH
+            MODE_DOH -> TunnelType.DOH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -263,7 +307,7 @@ class ConfigImporter @Inject constructor() {
         val authMode = fields[5] == "1"
         val keepAlive = fields[6].toIntOrNull() ?: 200
         val cc = fields[7]
-        val port = fields[8].toIntOrNull() ?: 10800
+        val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
         val gso = fields[10] == "1"
         val dnsttPublicKey = fields[11]
@@ -280,8 +324,9 @@ class ConfigImporter @Inject constructor() {
             return ProfileParseResult.Error("Line $lineNum: Domain is required")
         }
 
+        // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty()) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -289,8 +334,8 @@ class ConfigImporter @Inject constructor() {
             return ProfileParseResult.Error("Line $lineNum: Invalid port $port")
         }
 
-        // For DNSTT, validate public key
-        if (tunnelType == TunnelType.DNSTT) {
+        // For DNSTT/DNSTT_SSH, validate public key
+        if (tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH) {
             val keyError = validateDnsttPublicKey(dnsttPublicKey)
             if (keyError != null) {
                 return ProfileParseResult.Error("Line $lineNum: $keyError")
@@ -313,9 +358,597 @@ class ConfigImporter @Inject constructor() {
             dnsttPublicKey = dnsttPublicKey,
             socksUsername = socksUsername,
             socksPassword = socksPassword,
-            sshEnabled = sshEnabled,
             sshUsername = sshUsername,
             sshPassword = sshPassword
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV4(fields: List<String>, lineNum: Int): ProfileParseResult {
+        if (fields.size < V4_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v4 format (expected $V4_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        val tunnelTypeStr = fields[1]
+        val tunnelType = when (tunnelTypeStr) {
+            MODE_SLIPSTREAM -> TunnelType.SLIPSTREAM
+            MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
+            MODE_DNSTT -> TunnelType.DNSTT
+            MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_SSH -> TunnelType.SSH
+            MODE_DOH -> TunnelType.DOH
+            else -> {
+                return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
+            }
+        }
+
+        val name = fields[2]
+        val domain = fields[3]
+        val resolversStr = fields[4]
+        val authMode = fields[5] == "1"
+        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val cc = fields[7]
+        val port = fields[8].toIntOrNull() ?: 1080
+        val host = fields[9]
+        val gso = fields[10] == "1"
+        val dnsttPublicKey = fields[11]
+        val socksUsername = fields[12].takeIf { it.isNotBlank() }
+        val socksPassword = fields[13].takeIf { it.isNotBlank() }
+        val sshEnabled = fields[14] == "1"
+        val sshUsername = fields[15]
+        val sshPassword = fields[16]
+        val sshPort = fields[17].toIntOrNull() ?: 22
+        val forwardDnsThroughSsh = fields.getOrNull(18)?.let { it == "1" } ?: false
+
+        if (name.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Profile name is required")
+        }
+        if (domain.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Domain is required")
+        }
+
+        // SSH-only profiles don't need resolvers
+        val resolvers = parseResolvers(resolversStr)
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+            return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
+        }
+
+        if (port !in 1..65535) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid port $port")
+        }
+
+        // For DNSTT/DNSTT_SSH, validate public key
+        if (tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH) {
+            val keyError = validateDnsttPublicKey(dnsttPublicKey)
+            if (keyError != null) {
+                return ProfileParseResult.Error("Line $lineNum: $keyError")
+            }
+        }
+
+        val profile = ServerProfile(
+            id = 0,
+            name = name,
+            domain = domain,
+            resolvers = resolvers,
+            authoritativeMode = authMode,
+            keepAliveInterval = keepAlive,
+            congestionControl = CongestionControl.fromValue(cc),
+            tcpListenPort = port,
+            tcpListenHost = host,
+            gsoEnabled = gso,
+            isActive = false,
+            tunnelType = tunnelType,
+            dnsttPublicKey = dnsttPublicKey,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword,
+            sshUsername = sshUsername,
+            sshPassword = sshPassword,
+            sshPort = sshPort
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV5(fields: List<String>, lineNum: Int): ProfileParseResult {
+        if (fields.size < V5_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v5 format (expected $V5_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        val tunnelTypeStr = fields[1]
+        val tunnelType = when (tunnelTypeStr) {
+            MODE_SLIPSTREAM -> TunnelType.SLIPSTREAM
+            MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
+            MODE_DNSTT -> TunnelType.DNSTT
+            MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_SSH -> TunnelType.SSH
+            MODE_DOH -> TunnelType.DOH
+            else -> {
+                return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
+            }
+        }
+
+        val name = fields[2]
+        val domain = fields[3]
+        val resolversStr = fields[4]
+        val authMode = fields[5] == "1"
+        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val cc = fields[7]
+        val port = fields[8].toIntOrNull() ?: 1080
+        val host = fields[9]
+        val gso = fields[10] == "1"
+        val dnsttPublicKey = fields[11]
+        val socksUsername = fields[12].takeIf { it.isNotBlank() }
+        val socksPassword = fields[13].takeIf { it.isNotBlank() }
+        val sshEnabled = fields[14] == "1"
+        val sshUsername = fields[15]
+        val sshPassword = fields[16]
+        val sshPort = fields[17].toIntOrNull() ?: 22
+        val forwardDnsThroughSsh = fields[18] == "1"
+        val sshHost = fields[19]
+
+        if (name.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Profile name is required")
+        }
+        if (domain.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Domain is required")
+        }
+
+        // SSH-only profiles don't need resolvers
+        val resolvers = parseResolvers(resolversStr)
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+            return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
+        }
+
+        if (port !in 1..65535) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid port $port")
+        }
+
+        // For DNSTT/DNSTT_SSH, validate public key
+        if (tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH) {
+            val keyError = validateDnsttPublicKey(dnsttPublicKey)
+            if (keyError != null) {
+                return ProfileParseResult.Error("Line $lineNum: $keyError")
+            }
+        }
+
+        // For DNSTT_SSH, validate SSH credentials
+        if (tunnelType == TunnelType.DNSTT_SSH) {
+            if (sshUsername.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: DNSTT+SSH profiles require SSH username")
+            }
+            if (sshPassword.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: DNSTT+SSH profiles require SSH password")
+            }
+        }
+
+        val profile = ServerProfile(
+            id = 0,
+            name = name,
+            domain = domain,
+            resolvers = resolvers,
+            authoritativeMode = authMode,
+            keepAliveInterval = keepAlive,
+            congestionControl = CongestionControl.fromValue(cc),
+            tcpListenPort = port,
+            tcpListenHost = host,
+            gsoEnabled = gso,
+            isActive = false,
+            tunnelType = tunnelType,
+            dnsttPublicKey = dnsttPublicKey,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword,
+            sshUsername = sshUsername,
+            sshPassword = sshPassword,
+            sshPort = sshPort,
+            sshHost = sshHost
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV6(fields: List<String>, lineNum: Int): ProfileParseResult {
+        if (fields.size < V6_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v6 format (expected $V6_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        val tunnelTypeStr = fields[1]
+        val tunnelType = when (tunnelTypeStr) {
+            MODE_SLIPSTREAM -> TunnelType.SLIPSTREAM
+            MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
+            MODE_DNSTT -> TunnelType.DNSTT
+            MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_SSH -> TunnelType.SSH
+            MODE_DOH -> TunnelType.DOH
+            else -> {
+                return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
+            }
+        }
+
+        val name = fields[2]
+        val domain = fields[3]
+        val resolversStr = fields[4]
+        val authMode = fields[5] == "1"
+        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val cc = fields[7]
+        val port = fields[8].toIntOrNull() ?: 1080
+        val host = fields[9]
+        val gso = fields[10] == "1"
+        val dnsttPublicKey = fields[11]
+        val socksUsername = fields[12].takeIf { it.isNotBlank() }
+        val socksPassword = fields[13].takeIf { it.isNotBlank() }
+        val sshEnabled = fields[14] == "1"
+        val sshUsername = fields[15]
+        val sshPassword = fields[16]
+        val sshPort = fields[17].toIntOrNull() ?: 22
+        val forwardDnsThroughSsh = fields[18] == "1"
+        val sshHost = fields[19]
+
+        if (name.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Profile name is required")
+        }
+        if (domain.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Domain is required")
+        }
+
+        // SSH-only profiles don't need resolvers
+        val resolvers = parseResolvers(resolversStr)
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+            return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
+        }
+
+        if (port !in 1..65535) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid port $port")
+        }
+
+        // For DNSTT/DNSTT_SSH, validate public key
+        if (tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH) {
+            val keyError = validateDnsttPublicKey(dnsttPublicKey)
+            if (keyError != null) {
+                return ProfileParseResult.Error("Line $lineNum: $keyError")
+            }
+        }
+
+        // For SSH tunnel types, validate SSH credentials
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH) {
+            if (sshUsername.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
+            }
+            if (sshPassword.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH password")
+            }
+        }
+
+        val profile = ServerProfile(
+            id = 0,
+            name = name,
+            domain = domain,
+            resolvers = resolvers,
+            authoritativeMode = authMode,
+            keepAliveInterval = keepAlive,
+            congestionControl = CongestionControl.fromValue(cc),
+            tcpListenPort = port,
+            tcpListenHost = host,
+            gsoEnabled = gso,
+            isActive = false,
+            tunnelType = tunnelType,
+            dnsttPublicKey = dnsttPublicKey,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword,
+            sshUsername = sshUsername,
+            sshPassword = sshPassword,
+            sshPort = sshPort,
+            sshHost = sshHost
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV7(fields: List<String>, lineNum: Int): ProfileParseResult {
+        if (fields.size < V7_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v7 format (expected $V7_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        val tunnelTypeStr = fields[1]
+        val tunnelType = when (tunnelTypeStr) {
+            MODE_SLIPSTREAM -> TunnelType.SLIPSTREAM
+            MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
+            MODE_DNSTT -> TunnelType.DNSTT
+            MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_SSH -> TunnelType.SSH
+            MODE_DOH -> TunnelType.DOH
+            else -> {
+                return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
+            }
+        }
+
+        val name = fields[2]
+        val domain = fields[3]
+        val resolversStr = fields[4]
+        val authMode = fields[5] == "1"
+        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val cc = fields[7]
+        val port = fields[8].toIntOrNull() ?: 1080
+        val host = fields[9]
+        val gso = fields[10] == "1"
+        val dnsttPublicKey = fields[11]
+        val socksUsername = fields[12].takeIf { it.isNotBlank() }
+        val socksPassword = fields[13].takeIf { it.isNotBlank() }
+        val sshUsername = fields[15]
+        val sshPassword = fields[16]
+        val sshPort = fields[17].toIntOrNull() ?: 22
+        val sshHost = fields[19]
+        val useServerDns = fields[20] == "1"
+
+        if (name.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Profile name is required")
+        }
+        if (domain.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Domain is required")
+        }
+
+        val resolvers = parseResolvers(resolversStr)
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+            return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
+        }
+
+        if (port !in 1..65535) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid port $port")
+        }
+
+        if (tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH) {
+            val keyError = validateDnsttPublicKey(dnsttPublicKey)
+            if (keyError != null) {
+                return ProfileParseResult.Error("Line $lineNum: $keyError")
+            }
+        }
+
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH) {
+            if (sshUsername.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
+            }
+            if (sshPassword.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH password")
+            }
+        }
+
+        val profile = ServerProfile(
+            id = 0,
+            name = name,
+            domain = domain,
+            resolvers = resolvers,
+            authoritativeMode = authMode,
+            keepAliveInterval = keepAlive,
+            congestionControl = CongestionControl.fromValue(cc),
+            tcpListenPort = port,
+            tcpListenHost = host,
+            gsoEnabled = gso,
+            isActive = false,
+            tunnelType = tunnelType,
+            dnsttPublicKey = dnsttPublicKey,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword,
+            sshUsername = sshUsername,
+            sshPassword = sshPassword,
+            sshPort = sshPort,
+            sshHost = sshHost,
+            useServerDns = useServerDns
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV8(fields: List<String>, lineNum: Int): ProfileParseResult {
+        if (fields.size < V8_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v8 format (expected $V8_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        val tunnelTypeStr = fields[1]
+        val tunnelType = when (tunnelTypeStr) {
+            MODE_SLIPSTREAM -> TunnelType.SLIPSTREAM
+            MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
+            MODE_DNSTT -> TunnelType.DNSTT
+            MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_SSH -> TunnelType.SSH
+            MODE_DOH -> TunnelType.DOH
+            else -> {
+                return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
+            }
+        }
+
+        val name = fields[2]
+        val domain = fields[3]
+        val resolversStr = fields[4]
+        val authMode = fields[5] == "1"
+        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val cc = fields[7]
+        val port = fields[8].toIntOrNull() ?: 1080
+        val host = fields[9]
+        val gso = fields[10] == "1"
+        val dnsttPublicKey = fields[11]
+        val socksUsername = fields[12].takeIf { it.isNotBlank() }
+        val socksPassword = fields[13].takeIf { it.isNotBlank() }
+        val sshUsername = fields[15]
+        val sshPassword = fields[16]
+        val sshPort = fields[17].toIntOrNull() ?: 22
+        val sshHost = fields[19]
+        val useServerDns = fields[20] == "1"
+        val dohUrl = fields[21]
+
+        if (name.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Profile name is required")
+        }
+        if (tunnelType != TunnelType.DOH && domain.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Domain is required")
+        }
+
+        val resolvers = parseResolvers(resolversStr)
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+            return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
+        }
+
+        if (port !in 1..65535) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid port $port")
+        }
+
+        if (tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH) {
+            val keyError = validateDnsttPublicKey(dnsttPublicKey)
+            if (keyError != null) {
+                return ProfileParseResult.Error("Line $lineNum: $keyError")
+            }
+        }
+
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH) {
+            if (sshUsername.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
+            }
+            if (sshPassword.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH password")
+            }
+        }
+
+        if (tunnelType == TunnelType.DOH) {
+            if (dohUrl.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: DOH profiles require a DoH server URL")
+            }
+            if (!dohUrl.startsWith("https://")) {
+                return ProfileParseResult.Error("Line $lineNum: DoH URL must start with https://")
+            }
+        }
+
+        val profile = ServerProfile(
+            id = 0,
+            name = name,
+            domain = domain,
+            resolvers = resolvers,
+            authoritativeMode = authMode,
+            keepAliveInterval = keepAlive,
+            congestionControl = CongestionControl.fromValue(cc),
+            tcpListenPort = port,
+            tcpListenHost = host,
+            gsoEnabled = gso,
+            isActive = false,
+            tunnelType = tunnelType,
+            dnsttPublicKey = dnsttPublicKey,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword,
+            sshUsername = sshUsername,
+            sshPassword = sshPassword,
+            sshPort = sshPort,
+            sshHost = sshHost,
+            useServerDns = useServerDns,
+            dohUrl = dohUrl
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV9(fields: List<String>, lineNum: Int): ProfileParseResult {
+        if (fields.size < V9_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v9 format (expected $V9_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        val tunnelTypeStr = fields[1]
+        val tunnelType = when (tunnelTypeStr) {
+            MODE_SLIPSTREAM -> TunnelType.SLIPSTREAM
+            MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
+            MODE_DNSTT -> TunnelType.DNSTT
+            MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_SSH -> TunnelType.SSH
+            MODE_DOH -> TunnelType.DOH
+            else -> {
+                return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
+            }
+        }
+
+        val name = fields[2]
+        val domain = fields[3]
+        val resolversStr = fields[4]
+        val authMode = fields[5] == "1"
+        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val cc = fields[7]
+        val port = fields[8].toIntOrNull() ?: 1080
+        val host = fields[9]
+        val gso = fields[10] == "1"
+        val dnsttPublicKey = fields[11]
+        val socksUsername = fields[12].takeIf { it.isNotBlank() }
+        val socksPassword = fields[13].takeIf { it.isNotBlank() }
+        val sshUsername = fields[15]
+        val sshPassword = fields[16]
+        val sshPort = fields[17].toIntOrNull() ?: 22
+        val sshHost = fields[19]
+        val useServerDns = fields[20] == "1"
+        val dohUrl = fields[21]
+        val dnsTransport = DnsTransport.fromValue(fields[22])
+
+        if (name.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Profile name is required")
+        }
+        if (tunnelType != TunnelType.DOH && domain.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Domain is required")
+        }
+
+        val resolvers = parseResolvers(resolversStr)
+        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
+        val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
+                (isDnsttBased && dnsTransport == DnsTransport.DOH)
+        if (resolvers.isEmpty() && !skipResolvers) {
+            return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
+        }
+
+        if (port !in 1..65535) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid port $port")
+        }
+
+        if (isDnsttBased) {
+            val keyError = validateDnsttPublicKey(dnsttPublicKey)
+            if (keyError != null) {
+                return ProfileParseResult.Error("Line $lineNum: $keyError")
+            }
+        }
+
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH) {
+            if (sshUsername.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
+            }
+            if (sshPassword.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH password")
+            }
+        }
+
+        val needsDohUrl = tunnelType == TunnelType.DOH || (isDnsttBased && dnsTransport == DnsTransport.DOH)
+        if (needsDohUrl) {
+            if (dohUrl.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: DoH URL is required")
+            }
+            if (!dohUrl.startsWith("https://")) {
+                return ProfileParseResult.Error("Line $lineNum: DoH URL must start with https://")
+            }
+        }
+
+        val profile = ServerProfile(
+            id = 0,
+            name = name,
+            domain = domain,
+            resolvers = resolvers,
+            authoritativeMode = authMode,
+            keepAliveInterval = keepAlive,
+            congestionControl = CongestionControl.fromValue(cc),
+            tcpListenPort = port,
+            tcpListenHost = host,
+            gsoEnabled = gso,
+            isActive = false,
+            tunnelType = tunnelType,
+            dnsttPublicKey = dnsttPublicKey,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword,
+            sshUsername = sshUsername,
+            sshPassword = sshPassword,
+            sshPort = sshPort,
+            sshHost = sshHost,
+            useServerDns = useServerDns,
+            dohUrl = dohUrl,
+            dnsTransport = dnsTransport
         )
 
         return ProfileParseResult.Success(profile)

@@ -14,8 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
-val appVersionName = "1.4.1"
-val appVersionCode = 10
+val appVersionName = "1.5"
+val appVersionCode = 11
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -411,8 +411,11 @@ dependencies {
     // JSON serialization for Room converters
     implementation("com.google.code.gson:gson:2.10.1")
 
-    // SSH tunneling library
-    implementation("com.jcraft:jsch:0.1.55")
+    // SSH tunneling library (mwiede fork — supports modern ciphers: AES-GCM, ChaCha20)
+    implementation("com.github.mwiede:jsch:0.2.21")
+
+    // OkHttp for DoH (HTTP/2, connection pooling, custom DNS resolver)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Core
     implementation("androidx.core:core-ktx:1.12.0")

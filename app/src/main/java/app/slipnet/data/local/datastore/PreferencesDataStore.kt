@@ -33,11 +33,20 @@ class PreferencesDataStore @Inject constructor(
         val TOTAL_BYTES_RECEIVED = longPreferencesKey("total_bytes_received")
         val TOTAL_CONNECTION_TIME = longPreferencesKey("total_connection_time")
         val LAST_CONNECTED_PROFILE_ID = longPreferencesKey("last_connected_profile_id")
+        // Proxy Settings Keys
+        val PROXY_LISTEN_ADDRESS = stringPreferencesKey("proxy_listen_address")
+        val PROXY_LISTEN_PORT = intPreferencesKey("proxy_listen_port")
+        // Network Settings Keys
+        val DISABLE_QUIC = booleanPreferencesKey("disable_quic")
         // Network Optimization Keys
         val DNS_TIMEOUT = intPreferencesKey("dns_timeout")
         val CONNECTION_TIMEOUT = intPreferencesKey("connection_timeout")
         val BUFFER_SIZE = stringPreferencesKey("buffer_size")
         val CONNECTION_POOL_SIZE = intPreferencesKey("connection_pool_size")
+        // SSH Tunnel Keys
+        val SSH_CIPHER = stringPreferencesKey("ssh_cipher")
+        val SSH_COMPRESSION = booleanPreferencesKey("ssh_compression")
+        val SSH_MAX_CHANNELS = intPreferencesKey("ssh_max_channels")
     }
 
     // Auto-connect on boot
@@ -132,6 +141,38 @@ class PreferencesDataStore @Inject constructor(
         }
     }
 
+    // Proxy Settings
+    val proxyListenAddress: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.PROXY_LISTEN_ADDRESS] ?: "0.0.0.0"
+    }
+
+    suspend fun setProxyListenAddress(address: String) {
+        dataStore.edit { prefs ->
+            prefs[Keys.PROXY_LISTEN_ADDRESS] = address
+        }
+    }
+
+    val proxyListenPort: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.PROXY_LISTEN_PORT] ?: 1080
+    }
+
+    suspend fun setProxyListenPort(port: Int) {
+        dataStore.edit { prefs ->
+            prefs[Keys.PROXY_LISTEN_PORT] = port.coerceIn(1, 65535)
+        }
+    }
+
+    // Network Settings
+    val disableQuic: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.DISABLE_QUIC] ?: true
+    }
+
+    suspend fun setDisableQuic(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.DISABLE_QUIC] = enabled
+        }
+    }
+
     // Network Optimization Settings
     val dnsTimeout: Flow<Int> = dataStore.data.map { prefs ->
         prefs[Keys.DNS_TIMEOUT] ?: 5000
@@ -172,6 +213,37 @@ class PreferencesDataStore @Inject constructor(
             prefs[Keys.CONNECTION_POOL_SIZE] = size.coerceIn(1, 20)
         }
     }
+
+    // SSH Tunnel Settings
+    val sshCipher: Flow<SshCipher> = dataStore.data.map { prefs ->
+        SshCipher.fromValue(prefs[Keys.SSH_CIPHER] ?: SshCipher.AUTO.value)
+    }
+
+    suspend fun setSshCipher(cipher: SshCipher) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SSH_CIPHER] = cipher.value
+        }
+    }
+
+    val sshCompression: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.SSH_COMPRESSION] ?: false
+    }
+
+    suspend fun setSshCompression(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SSH_COMPRESSION] = enabled
+        }
+    }
+
+    val sshMaxChannels: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.SSH_MAX_CHANNELS] ?: 16
+    }
+
+    suspend fun setSshMaxChannels(count: Int) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SSH_MAX_CHANNELS] = count.coerceIn(4, 64)
+        }
+    }
 }
 
 enum class DarkMode(val value: String) {
@@ -194,6 +266,19 @@ enum class BufferSize(val value: String, val bytes: Int) {
     companion object {
         fun fromValue(value: String): BufferSize {
             return entries.find { it.value == value } ?: MEDIUM
+        }
+    }
+}
+
+enum class SshCipher(val value: String, val displayName: String, val jschConfig: String?) {
+    AUTO("auto", "Auto (Fastest)", null),
+    AES_128_GCM("aes128-gcm", "AES-128-GCM", "aes128-gcm@openssh.com"),
+    CHACHA20("chacha20", "ChaCha20-Poly1305", "chacha20-poly1305@openssh.com"),
+    AES_128_CTR("aes128-ctr", "AES-128-CTR (Legacy)", "aes128-ctr");
+
+    companion object {
+        fun fromValue(value: String): SshCipher {
+            return entries.find { it.value == value } ?: AUTO
         }
     }
 }
