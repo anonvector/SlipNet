@@ -35,7 +35,7 @@ SlipNet supports two tunnel types:
 
 ## Server Setup
 
-To use this client, you must have a compatible server. Please configure your server in SOCKS mode using one of the following deployment scripts:
+To use this client, you must have a compatible server. Please configure your server in SOCKS or SSH mode using one of the following deployment scripts:
 
 **DNSTT**:
 [**dnstt-deploy**](https://github.com/bugfloyd/dnstt-deploy)
