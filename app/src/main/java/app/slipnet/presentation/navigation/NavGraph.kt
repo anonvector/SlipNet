@@ -48,8 +48,8 @@ fun NavGraph(
                 onNavigateBack = {
                     navController.popBackStack()
                 },
-                onNavigateToAddProfile = {
-                    navController.navigate(NavRoutes.AddProfile.route)
+                onNavigateToAddProfile = { tunnelType ->
+                    navController.navigate(NavRoutes.AddProfile.createRoute(tunnelType))
                 },
                 onNavigateToEditProfile = { profileId ->
                     navController.navigate(NavRoutes.EditProfile.createRoute(profileId))
@@ -57,7 +57,12 @@ fun NavGraph(
             )
         }
 
-        composable(NavRoutes.AddProfile.route) { backStackEntry ->
+        composable(
+            route = NavRoutes.AddProfile.route,
+            arguments = listOf(
+                navArgument("tunnelType") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
             val selectedResolvers = backStackEntry.savedStateHandle
                 .get<String>("selected_resolvers")
 

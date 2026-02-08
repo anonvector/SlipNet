@@ -7,32 +7,51 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
+import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.usecase.GetProfileByIdUseCase
 import app.slipnet.domain.usecase.SaveProfileUseCase
+import app.slipnet.tunnel.DOH_SERVERS
+import app.slipnet.tunnel.DohBridge
+import app.slipnet.tunnel.DohServer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import javax.inject.Inject
+import javax.net.ssl.SSLException
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+
+data class DohTestResult(
+    val name: String,
+    val url: String,
+    val latencyMs: Long? = null,
+    val error: String? = null
+) {
+    val isSuccess: Boolean get() = latencyMs != null && error == null
+}
 
 data class EditProfileUiState(
     val profileId: Long? = null,
     val name: String = "",
     val domain: String = "",
-    val resolvers: String = "1.1.1.1:53", // Format: "host:port,host:port"
+    val resolvers: String = "", // Format: "host:port,host:port" — auto-filled from system DNS
     val authoritativeMode: Boolean = false,
     val keepAliveInterval: String = "200",
     val congestionControl: CongestionControl = CongestionControl.BBR,
     val gsoEnabled: Boolean = false,
-    val tcpListenPort: String = "10800",
-    val tcpListenHost: String = "127.0.0.1",
-    val socksAuthEnabled: Boolean = false,
     val socksUsername: String = "",
     val socksPassword: String = "",
     // Tunnel type selection (DNSTT is recommended)
@@ -40,12 +59,13 @@ data class EditProfileUiState(
     // DNSTT-specific fields
     val dnsttPublicKey: String = "",
     val dnsttPublicKeyError: String? = null,
-    // SSH tunnel fields
-    val sshEnabled: Boolean = false,
+    // SSH tunnel fields (SSH-only tunnel type)
     val sshUsername: String = "",
     val sshPassword: String = "",
+    val sshPort: String = "22",
     val sshUsernameError: String? = null,
     val sshPasswordError: String? = null,
+    val sshPortError: String? = null,
     val isLoading: Boolean = false,
     val isSaving: Boolean = false,
     val isAutoDetecting: Boolean = false,
@@ -53,8 +73,34 @@ data class EditProfileUiState(
     val error: String? = null,
     val nameError: String? = null,
     val domainError: String? = null,
-    val resolversError: String? = null
-)
+    val resolversError: String? = null,
+    // DoH fields
+    val dohUrl: String = "",
+    val dohUrlError: String? = null,
+    val isTestingDoh: Boolean = false,
+    val showDohTestDialog: Boolean = false,
+    val dohTestResults: List<DohTestResult> = emptyList(),
+    // DNS transport for DNSTT tunnel types
+    val dnsTransport: DnsTransport = DnsTransport.UDP
+) {
+    val useSsh: Boolean
+        get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH
+
+    val isDnsttBased: Boolean
+        get() = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
+
+    val isSlipstreamBased: Boolean
+        get() = tunnelType == TunnelType.SLIPSTREAM || tunnelType == TunnelType.SLIPSTREAM_SSH
+
+    val isSshOnly: Boolean
+        get() = tunnelType == TunnelType.SSH
+
+    val isDoh: Boolean
+        get() = tunnelType == TunnelType.DOH
+
+    val showConnectionMethod: Boolean
+        get() = !isSshOnly && !isDoh
+}
 
 @HiltViewModel
 class EditProfileViewModel @Inject constructor(
@@ -65,13 +111,29 @@ class EditProfileViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val profileId: Long? = savedStateHandle.get<Long>("profileId")
+    private val initialTunnelType: TunnelType = savedStateHandle.get<String>("tunnelType")
+        ?.let { TunnelType.fromValue(it) } ?: TunnelType.DNSTT
 
-    private val _uiState = MutableStateFlow(EditProfileUiState(profileId = profileId))
+    private val _uiState = MutableStateFlow(
+        EditProfileUiState(profileId = profileId, tunnelType = initialTunnelType)
+    )
     val uiState: StateFlow<EditProfileUiState> = _uiState.asStateFlow()
 
     init {
         if (profileId != null && profileId != 0L) {
             loadProfile(profileId)
+        } else {
+            // New profile: auto-fill resolver with device's current DNS server
+            autoFillResolver()
+        }
+    }
+
+    private fun autoFillResolver() {
+        viewModelScope.launch {
+            val dns = withContext(Dispatchers.IO) { getSystemDnsServer() }
+            if (dns != null) {
+                _uiState.value = _uiState.value.copy(resolvers = "$dns:53")
+            }
         }
     }
 
@@ -90,16 +152,15 @@ class EditProfileViewModel @Inject constructor(
                     keepAliveInterval = profile.keepAliveInterval.toString(),
                     congestionControl = profile.congestionControl,
                     gsoEnabled = profile.gsoEnabled,
-                    tcpListenPort = profile.tcpListenPort.toString(),
-                    tcpListenHost = profile.tcpListenHost,
-                    socksAuthEnabled = !profile.socksUsername.isNullOrBlank(),
                     socksUsername = profile.socksUsername ?: "",
                     socksPassword = profile.socksPassword ?: "",
                     tunnelType = profile.tunnelType,
                     dnsttPublicKey = profile.dnsttPublicKey,
-                    sshEnabled = profile.sshEnabled,
                     sshUsername = profile.sshUsername,
                     sshPassword = profile.sshPassword,
+                    sshPort = profile.sshPort.toString(),
+                    dohUrl = profile.dohUrl,
+                    dnsTransport = profile.dnsTransport,
                     isLoading = false
                 )
             } else {
@@ -141,32 +202,8 @@ class EditProfileViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(congestionControl = cc)
     }
 
-    fun updateTcpListenPort(port: String) {
-        _uiState.value = _uiState.value.copy(tcpListenPort = port)
-    }
-
-    fun updateTcpListenHost(host: String) {
-        _uiState.value = _uiState.value.copy(tcpListenHost = host)
-    }
-
     fun updateGsoEnabled(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(gsoEnabled = enabled)
-    }
-
-    fun updateSocksAuthEnabled(enabled: Boolean) {
-        val isDnstt = _uiState.value.tunnelType == TunnelType.DNSTT
-        _uiState.value = _uiState.value.copy(
-            socksAuthEnabled = enabled,
-            // Clear credentials when disabled
-            socksUsername = if (enabled) _uiState.value.socksUsername else "",
-            socksPassword = if (enabled) _uiState.value.socksPassword else "",
-            // Mutually exclusive with SSH (DNSTT only)
-            sshEnabled = if (enabled && isDnstt) false else _uiState.value.sshEnabled,
-            sshUsername = if (enabled && isDnstt) "" else _uiState.value.sshUsername,
-            sshPassword = if (enabled && isDnstt) "" else _uiState.value.sshPassword,
-            sshUsernameError = null,
-            sshPasswordError = null
-        )
     }
 
     fun updateSocksUsername(username: String) {
@@ -177,15 +214,20 @@ class EditProfileViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(socksPassword = password)
     }
 
-    fun updateTunnelType(tunnelType: TunnelType) {
+    fun setUseSsh(useSsh: Boolean) {
+        val currentType = _uiState.value.tunnelType
+        val newType = when {
+            useSsh && (currentType == TunnelType.DNSTT || currentType == TunnelType.DNSTT_SSH) -> TunnelType.DNSTT_SSH
+            useSsh && (currentType == TunnelType.SLIPSTREAM || currentType == TunnelType.SLIPSTREAM_SSH) -> TunnelType.SLIPSTREAM_SSH
+            !useSsh && (currentType == TunnelType.DNSTT || currentType == TunnelType.DNSTT_SSH) -> TunnelType.DNSTT
+            !useSsh && (currentType == TunnelType.SLIPSTREAM || currentType == TunnelType.SLIPSTREAM_SSH) -> TunnelType.SLIPSTREAM
+            else -> currentType
+        }
         _uiState.value = _uiState.value.copy(
-            tunnelType = tunnelType,
-            // SSH is only supported for DNSTT - disable when switching to Slipstream
-            sshEnabled = if (tunnelType == TunnelType.SLIPSTREAM) false else _uiState.value.sshEnabled,
-            sshUsername = if (tunnelType == TunnelType.SLIPSTREAM) "" else _uiState.value.sshUsername,
-            sshPassword = if (tunnelType == TunnelType.SLIPSTREAM) "" else _uiState.value.sshPassword,
+            tunnelType = newType,
             sshUsernameError = null,
-            sshPasswordError = null
+            sshPasswordError = null,
+            sshPortError = null
         )
     }
 
@@ -199,26 +241,165 @@ class EditProfileViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(dnsttPublicKey = publicKey, dnsttPublicKeyError = error)
     }
 
-    fun updateSshEnabled(enabled: Boolean) {
-        _uiState.value = _uiState.value.copy(
-            sshEnabled = enabled,
-            sshUsername = if (enabled) _uiState.value.sshUsername else "",
-            sshPassword = if (enabled) _uiState.value.sshPassword else "",
-            sshUsernameError = null,
-            sshPasswordError = null,
-            // Mutually exclusive with SOCKS5 auth
-            socksAuthEnabled = if (enabled) false else _uiState.value.socksAuthEnabled,
-            socksUsername = if (enabled) "" else _uiState.value.socksUsername,
-            socksPassword = if (enabled) "" else _uiState.value.socksPassword
-        )
-    }
-
     fun updateSshUsername(username: String) {
         _uiState.value = _uiState.value.copy(sshUsername = username, sshUsernameError = null)
     }
 
     fun updateSshPassword(password: String) {
         _uiState.value = _uiState.value.copy(sshPassword = password, sshPasswordError = null)
+    }
+
+    fun updateSshPort(port: String) {
+        _uiState.value = _uiState.value.copy(sshPort = port, sshPortError = null)
+    }
+
+    fun updateDnsTransport(transport: DnsTransport) {
+        _uiState.value = _uiState.value.copy(dnsTransport = transport)
+    }
+
+    fun updateDohUrl(url: String) {
+        _uiState.value = _uiState.value.copy(dohUrl = url, dohUrlError = null)
+    }
+
+    fun selectDohPreset(preset: DohServer) {
+        _uiState.value = _uiState.value.copy(
+            dohUrl = preset.url,
+            dohUrlError = null
+        )
+    }
+
+    fun testDohServers() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isTestingDoh = true,
+                showDohTestDialog = true,
+                dohTestResults = DOH_SERVERS.map { DohTestResult(it.name, it.url) }
+            )
+
+            val client = DohBridge.createHttpClient()
+            val completed = java.util.concurrent.ConcurrentHashMap<String, DohTestResult>()
+
+            // Launch all tests in parallel — results stream in as each completes
+            val jobs = DOH_SERVERS.map { preset ->
+                launch(Dispatchers.IO) {
+                    val result = testSingleDohServer(preset, client)
+                    completed[result.url] = result
+
+                    // Update UI immediately with this result
+                    val snapshot = completed.values.toList()
+                    val pending = DOH_SERVERS
+                        .filter { p -> !completed.containsKey(p.url) }
+                        .map { DohTestResult(it.name, it.url) }
+                    _uiState.value = _uiState.value.copy(
+                        dohTestResults = sortTestResults(snapshot + pending)
+                    )
+                }
+            }
+
+            jobs.joinAll()
+
+            // Clean up OkHttp on IO thread to avoid NetworkOnMainThreadException
+            withContext(Dispatchers.IO) {
+                client.connectionPool.evictAll()
+            }
+
+            _uiState.value = _uiState.value.copy(
+                isTestingDoh = false,
+                dohTestResults = sortTestResults(completed.values.toList())
+            )
+        }
+    }
+
+    private fun sortTestResults(results: List<DohTestResult>): List<DohTestResult> {
+        return results.sortedWith(
+            compareBy<DohTestResult> {
+                when {
+                    it.isSuccess -> 0   // Successful first
+                    it.error != null -> 1 // Failed second
+                    else -> 2            // Pending last
+                }
+            }.thenBy { it.latencyMs ?: Long.MAX_VALUE }
+        )
+    }
+
+    fun dismissDohTestDialog() {
+        _uiState.value = _uiState.value.copy(showDohTestDialog = false)
+    }
+
+    fun selectDohTestResult(result: DohTestResult) {
+        _uiState.value = _uiState.value.copy(
+            dohUrl = result.url,
+            dohUrlError = null,
+            showDohTestDialog = false
+        )
+    }
+
+    private fun testSingleDohServer(preset: DohServer, client: okhttp3.OkHttpClient): DohTestResult {
+        return try {
+            val dnsQuery = buildDnsQuery("example.com")
+            val startTime = System.currentTimeMillis()
+
+            val body = dnsQuery.toRequestBody("application/dns-message".toMediaType())
+            val request = Request.Builder()
+                .url(preset.url)
+                .post(body)
+                .header("Accept", "application/dns-message")
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    response.body?.bytes()
+                    val latency = System.currentTimeMillis() - startTime
+                    DohTestResult(preset.name, preset.url, latencyMs = latency)
+                } else {
+                    DohTestResult(preset.name, preset.url, error = "HTTP ${response.code}")
+                }
+            }
+        } catch (e: Exception) {
+            val error = when (e) {
+                is SocketTimeoutException -> "Timeout"
+                is ConnectException -> "Connection refused"
+                is UnknownHostException -> "DNS lookup failed"
+                is SSLException -> "TLS error"
+                else -> {
+                    // Clean up raw Java messages like "Failed to connect to /1.2.3.4:443"
+                    val msg = e.message ?: "Connection failed"
+                    if (msg.contains("/")) msg.substringAfterLast("/").let {
+                        if (it.isBlank()) "Unreachable" else it
+                    } else msg
+                }
+            }
+            DohTestResult(preset.name, preset.url, error = error)
+        }
+    }
+
+    /**
+     * Build a minimal DNS query for an A record lookup.
+     * Wire format per RFC 1035.
+     */
+    private fun buildDnsQuery(domain: String): ByteArray {
+        val out = ByteArrayOutputStream()
+        // Transaction ID
+        out.write(0x00); out.write(0x01)
+        // Flags: standard query, recursion desired
+        out.write(0x01); out.write(0x00)
+        // Questions: 1
+        out.write(0x00); out.write(0x01)
+        // Answer/Authority/Additional RRs: 0
+        out.write(0x00); out.write(0x00)
+        out.write(0x00); out.write(0x00)
+        out.write(0x00); out.write(0x00)
+        // QNAME
+        for (label in domain.split(".")) {
+            out.write(label.length)
+            out.write(label.toByteArray(Charsets.US_ASCII))
+        }
+        out.write(0x00) // root label
+        // QTYPE: A (1)
+        out.write(0x00); out.write(0x01)
+        // QCLASS: IN (1)
+        out.write(0x00); out.write(0x01)
+        return out.toByteArray()
     }
 
     fun autoDetectResolver() {
@@ -267,25 +448,42 @@ class EditProfileViewModel @Inject constructor(
             hasError = true
         }
 
-        if (state.domain.isBlank()) {
+        if (state.tunnelType != TunnelType.DOH && state.domain.isBlank()) {
             _uiState.value = _uiState.value.copy(domainError = "Domain is required")
             hasError = true
         }
 
-        // Resolver validation
-        if (state.resolvers.isBlank()) {
-            _uiState.value = _uiState.value.copy(resolversError = "At least one resolver is required")
-            hasError = true
-        } else {
-            val resolversError = validateResolvers(state.resolvers)
-            if (resolversError != null) {
-                _uiState.value = _uiState.value.copy(resolversError = resolversError)
+        // DoH URL validation (DOH tunnel type or DNSTT with DoH transport)
+        val needsDohUrl = state.tunnelType == TunnelType.DOH ||
+                (state.isDnsttBased && state.dnsTransport == DnsTransport.DOH)
+        if (needsDohUrl) {
+            if (state.dohUrl.isBlank()) {
+                _uiState.value = _uiState.value.copy(dohUrlError = "DoH server URL is required")
+                hasError = true
+            } else if (!state.dohUrl.startsWith("https://")) {
+                _uiState.value = _uiState.value.copy(dohUrlError = "URL must start with https://")
                 hasError = true
             }
         }
 
-        // DNSTT-specific validation
-        if (state.tunnelType == TunnelType.DNSTT) {
+        // Resolver validation (SSH-only, DOH profiles, and DNSTT with DoH transport don't need resolvers)
+        val skipResolvers = state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
+                (state.isDnsttBased && state.dnsTransport == DnsTransport.DOH)
+        if (!skipResolvers) {
+            if (state.resolvers.isBlank()) {
+                _uiState.value = _uiState.value.copy(resolversError = "At least one resolver is required")
+                hasError = true
+            } else {
+                val resolversError = validateResolvers(state.resolvers)
+                if (resolversError != null) {
+                    _uiState.value = _uiState.value.copy(resolversError = resolversError)
+                    hasError = true
+                }
+            }
+        }
+
+        // DNSTT-specific validation (DNSTT and DNSTT+SSH)
+        if (state.tunnelType == TunnelType.DNSTT || state.tunnelType == TunnelType.DNSTT_SSH) {
             val publicKeyError = validateDnsttPublicKey(state.dnsttPublicKey)
             if (publicKeyError != null) {
                 _uiState.value = _uiState.value.copy(dnsttPublicKeyError = publicKeyError)
@@ -293,14 +491,23 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
-        // SSH validation (DNSTT only)
-        if (state.sshEnabled && state.tunnelType == TunnelType.DNSTT) {
+        // SSH validation (SSH-only, DNSTT+SSH, and Slipstream+SSH tunnel types)
+        if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH) {
             if (state.sshUsername.isBlank()) {
                 _uiState.value = _uiState.value.copy(sshUsernameError = "SSH username is required")
                 hasError = true
             }
             if (state.sshPassword.isBlank()) {
                 _uiState.value = _uiState.value.copy(sshPasswordError = "SSH password is required")
+                hasError = true
+            }
+        }
+
+        // SSH port validation (SSH-only, DNSTT+SSH, and Slipstream+SSH)
+        if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH) {
+            val sshPort = state.sshPort.toIntOrNull()
+            if (sshPort == null || sshPort !in 1..65535) {
+                _uiState.value = _uiState.value.copy(sshPortError = "Port must be between 1 and 65535")
                 hasError = true
             }
         }
@@ -313,7 +520,6 @@ class EditProfileViewModel @Inject constructor(
             try {
                 val resolversList = parseResolvers(state.resolvers, state.authoritativeMode)
                 val keepAlive = state.keepAliveInterval.toIntOrNull() ?: 200
-                val listenPort = state.tcpListenPort.toIntOrNull() ?: 10800
 
                 val profile = ServerProfile(
                     id = state.profileId ?: 0,
@@ -324,15 +530,17 @@ class EditProfileViewModel @Inject constructor(
                     keepAliveInterval = keepAlive,
                     congestionControl = state.congestionControl,
                     gsoEnabled = state.gsoEnabled,
-                    tcpListenPort = listenPort,
-                    tcpListenHost = state.tcpListenHost.ifBlank { "127.0.0.1" },
-                    socksUsername = if (state.socksAuthEnabled && state.socksUsername.isNotBlank()) state.socksUsername else null,
-                    socksPassword = if (state.socksAuthEnabled && state.socksPassword.isNotBlank()) state.socksPassword else null,
+                    socksUsername = state.socksUsername.takeIf { it.isNotBlank() },
+                    socksPassword = state.socksPassword.takeIf { it.isNotBlank() },
                     tunnelType = state.tunnelType,
                     dnsttPublicKey = state.dnsttPublicKey.trim(),
-                    sshEnabled = state.sshEnabled && state.tunnelType == TunnelType.DNSTT,
-                    sshUsername = if (state.sshEnabled && state.tunnelType == TunnelType.DNSTT) state.sshUsername.trim() else "",
-                    sshPassword = if (state.sshEnabled && state.tunnelType == TunnelType.DNSTT) state.sshPassword else ""
+                    sshUsername = if (state.useSsh) state.sshUsername.trim() else "",
+                    sshPassword = if (state.useSsh) state.sshPassword else "",
+                    sshPort = state.sshPort.toIntOrNull() ?: 22,
+                    sshHost = "127.0.0.1",
+                    useServerDns = false,
+                    dohUrl = if (state.isDoh || (state.isDnsttBased && state.dnsTransport == DnsTransport.DOH)) state.dohUrl.trim() else "",
+                    dnsTransport = if (state.isDnsttBased) state.dnsTransport else DnsTransport.UDP
                 )
 
                 saveProfileUseCase(profile)

@@ -35,4 +35,7 @@ interface ProfileDao {
 
     @Query("SELECT COUNT(*) FROM server_profiles")
     suspend fun getProfileCount(): Int
+
+    @Query("UPDATE server_profiles SET last_connected_at = :timestamp WHERE id = :id")
+    suspend fun updateLastConnectedAt(id: Long, timestamp: Long)
 }

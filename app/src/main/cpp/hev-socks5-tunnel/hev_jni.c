@@ -111,6 +111,15 @@ Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeStop(
     LOGI("Tunnel stopped");
 }
 
+JNIEXPORT void JNICALL
+Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeSetRejectQuic(
+    JNIEnv *env,
+    jclass clazz,
+    jboolean enabled
+) {
+    hev_socks5_tunnel_set_reject_quic(enabled ? 1 : 0);
+}
+
 JNIEXPORT jboolean JNICALL
 Java_app_slipnet_tunnel_HevSocks5Tunnel_nativeIsRunning(
     JNIEnv *env,

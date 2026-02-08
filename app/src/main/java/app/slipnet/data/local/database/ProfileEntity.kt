@@ -31,7 +31,7 @@ data class ProfileEntity(
     val gsoEnabled: Boolean = false,
 
     @ColumnInfo(name = "tcp_listen_port")
-    val tcpListenPort: Int = 10800,
+    val tcpListenPort: Int = 1080,
 
     @ColumnInfo(name = "tcp_listen_host")
     val tcpListenHost: String = "127.0.0.1",
@@ -67,5 +67,26 @@ data class ProfileEntity(
     val sshUsername: String = "",
 
     @ColumnInfo(name = "ssh_password", defaultValue = "")
-    val sshPassword: String = ""
+    val sshPassword: String = "",
+
+    @ColumnInfo(name = "ssh_port", defaultValue = "22")
+    val sshPort: Int = 22,
+
+    @ColumnInfo(name = "forward_dns_through_ssh", defaultValue = "0")
+    val forwardDnsThroughSsh: Boolean = false,
+
+    @ColumnInfo(name = "ssh_host", defaultValue = "127.0.0.1")
+    val sshHost: String = "127.0.0.1",
+
+    @ColumnInfo(name = "use_server_dns", defaultValue = "0")
+    val useServerDns: Boolean = false,
+
+    @ColumnInfo(name = "doh_url", defaultValue = "")
+    val dohUrl: String = "",
+
+    @ColumnInfo(name = "last_connected_at", defaultValue = "0")
+    val lastConnectedAt: Long = 0,
+
+    @ColumnInfo(name = "dns_transport", defaultValue = "udp")
+    val dnsTransport: String = "udp"
 )

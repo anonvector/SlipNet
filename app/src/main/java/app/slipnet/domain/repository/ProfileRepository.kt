@@ -12,4 +12,5 @@ interface ProfileRepository {
     suspend fun deleteProfile(id: Long)
     suspend fun setActiveProfile(id: Long)
     suspend fun clearActiveProfile()
+    suspend fun updateLastConnectedAt(id: Long)
 }

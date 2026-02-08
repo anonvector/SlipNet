@@ -53,4 +53,8 @@ class ProfileRepositoryImpl @Inject constructor(
     override suspend fun clearActiveProfile() {
         profileDao.clearActiveProfile()
     }
+
+    override suspend fun updateLastConnectedAt(id: Long) {
+        profileDao.updateLastConnectedAt(id, System.currentTimeMillis())
+    }
 }

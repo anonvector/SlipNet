@@ -41,11 +41,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.TunnelType
 import app.slipnet.presentation.theme.ConnectedGreen
+import app.slipnet.tunnel.DOH_SERVERS
 
 @Composable
 fun ProfileListItem(
     profile: ServerProfile,
+    isSelected: Boolean,
     isConnected: Boolean,
     onClick: () -> Unit,
     onEditClick: () -> Unit,
@@ -57,14 +60,44 @@ fun ProfileListItem(
 
     val cardShape = RoundedCornerShape(12.dp)
 
+    val borderColor = when {
+        isConnected -> ConnectedGreen
+        isSelected -> MaterialTheme.colorScheme.primary
+        else -> null
+    }
+
+    val containerColor = when {
+        isConnected -> ConnectedGreen.copy(alpha = 0.08f)
+        isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+        else -> MaterialTheme.colorScheme.surface
+    }
+
+    val iconBackground = when {
+        isConnected -> ConnectedGreen.copy(alpha = 0.15f)
+        isSelected -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+
+    val iconImage = when {
+        isConnected -> Icons.Default.Check
+        isSelected -> Icons.Default.Check
+        else -> Icons.Default.VpnKey
+    }
+
+    val iconTint = when {
+        isConnected -> ConnectedGreen
+        isSelected -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
     Card(
         modifier = modifier
             .fillMaxWidth()
             .then(
-                if (isConnected) {
+                if (borderColor != null) {
                     Modifier.border(
                         width = 2.dp,
-                        color = ConnectedGreen,
+                        color = borderColor,
                         shape = cardShape
                     )
                 } else {
@@ -73,13 +106,7 @@ fun ProfileListItem(
             )
             .clickable { onClick() },
         shape = cardShape,
-        colors = CardDefaults.cardColors(
-            containerColor = if (isConnected) {
-                ConnectedGreen.copy(alpha = 0.08f)
-            } else {
-                MaterialTheme.colorScheme.surface
-            }
-        ),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Row(
@@ -93,19 +120,13 @@ fun ProfileListItem(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(CircleShape)
-                    .background(
-                        if (isConnected) {
-                            ConnectedGreen.copy(alpha = 0.15f)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        }
-                    ),
+                    .background(iconBackground),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = if (isConnected) Icons.Default.Check else Icons.Default.VpnKey,
+                    imageVector = iconImage,
                     contentDescription = null,
-                    tint = if (isConnected) ConnectedGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = iconTint,
                     modifier = Modifier.size(22.dp)
                 )
             }
@@ -127,10 +148,23 @@ fun ProfileListItem(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (profile.isActive) {
+                    if (isConnected) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Active",
+                            text = "Connected",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ConnectedGreen,
+                            modifier = Modifier
+                                .background(
+                                    ConnectedGreen.copy(alpha = 0.15f),
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    } else if (isSelected) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Selected",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier
@@ -143,18 +177,28 @@ fun ProfileListItem(
                     }
                 }
 
+                // Subtitle: server/domain info
                 Text(
-                    text = profile.domain,
+                    text = when (profile.tunnelType) {
+                        TunnelType.DOH -> DOH_SERVERS.firstOrNull { it.url == profile.dohUrl }?.name
+                            ?: profile.dohUrl
+                        TunnelType.SSH -> "${profile.domain}:${profile.sshPort}"
+                        TunnelType.DNSTT_SSH -> "${profile.domain} via SSH"
+                        else -> profile.domain
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
 
+                // Detail line: tunnel type
                 Text(
-                    text = "${profile.resolvers.size} resolver(s) • ${profile.tunnelType.displayName}${if (profile.sshEnabled) " + SSH" else ""}",
+                    text = profile.tunnelType.displayName,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 

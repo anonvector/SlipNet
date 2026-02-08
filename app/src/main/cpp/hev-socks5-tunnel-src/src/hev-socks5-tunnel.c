@@ -40,6 +40,7 @@
 #include "hev-socks5-tunnel.h"
 
 static int run;
+static int reject_quic = 1;
 static int tun_fd = -1;
 static int tun_fd_local;
 static int session_count;
@@ -294,6 +295,118 @@ event_task_entry (void *data)
     hev_task_del_fd (task_event, event_fds[0]);
 }
 
+/*
+ * Check if an IPv4 packet is UDP destined for port 443 (QUIC).
+ * Returns the IP header length in bytes if QUIC, 0 otherwise.
+ */
+static uint16_t
+is_quic_packet (const uint8_t *data, uint16_t len)
+{
+    uint16_t iphdr_len, dst_port;
+
+    /* Minimum: IPv4 header (20) + UDP header (8) */
+    if (len < 28)
+        return 0;
+
+    /* IPv4 only */
+    if ((data[0] >> 4) != 4)
+        return 0;
+
+    iphdr_len = (data[0] & 0x0F) * 4;
+    if (iphdr_len < 20 || len < iphdr_len + 4)
+        return 0;
+
+    /* UDP protocol (17) */
+    if (data[9] != 17)
+        return 0;
+
+    /* Destination port (big-endian at iphdr_len+2..3) */
+    dst_port = ((uint16_t)data[iphdr_len + 2] << 8) | data[iphdr_len + 3];
+
+    return (dst_port == 443) ? iphdr_len : 0;
+}
+
+/*
+ * Send ICMP Destination Unreachable / Port Unreachable back to TUN.
+ * Forces QUIC clients to fall back to TCP immediately instead of
+ * waiting 5-10 seconds for a timeout.
+ *
+ * Packet format (RFC 792):
+ *   [20B IP header][8B ICMP header][original IP header + 8B of UDP]
+ */
+static void
+send_icmp_port_unreachable (const uint8_t *orig, uint16_t orig_len,
+                            uint16_t iphdr_len)
+{
+    uint16_t icmp_data_len, icmp_total, ip_total;
+    struct pbuf *p;
+    uint8_t *out, *icmp;
+    uint32_t sum;
+    uint16_t cksum;
+    int i;
+
+    icmp_data_len = iphdr_len + 8;    /* Original IP header + 8B of UDP */
+    if (orig_len < icmp_data_len)
+        return;
+
+    icmp_total = 8 + icmp_data_len;   /* ICMP header (8) + data */
+    ip_total = 20 + icmp_total;       /* IP header (20) + ICMP */
+
+    p = pbuf_alloc (PBUF_RAW, ip_total, PBUF_RAM);
+    if (!p)
+        return;
+
+    out = (uint8_t *)p->payload;
+    memset (out, 0, ip_total);
+
+    /* --- IPv4 header (20 bytes) --- */
+    out[0] = 0x45;                         /* Version 4, IHL 5 */
+    out[2] = (ip_total >> 8) & 0xFF;       /* Total Length */
+    out[3] = ip_total & 0xFF;
+    out[8] = 64;                           /* TTL */
+    out[9] = 1;                            /* Protocol: ICMP */
+    memcpy (out + 12, orig + 16, 4);       /* Src IP = original Dst IP */
+    memcpy (out + 16, orig + 12, 4);       /* Dst IP = original Src IP */
+
+    /* IP header checksum */
+    sum = 0;
+    for (i = 0; i < 20; i += 2)
+        sum += ((uint32_t)out[i] << 8) | out[i + 1];
+    while (sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    cksum = ~sum & 0xFFFF;
+    out[10] = (cksum >> 8) & 0xFF;
+    out[11] = cksum & 0xFF;
+
+    /* --- ICMP header (8 bytes) --- */
+    icmp = out + 20;
+    icmp[0] = 3;                           /* Type: Destination Unreachable */
+    icmp[1] = 3;                           /* Code: Port Unreachable */
+    /* Bytes 2-3: checksum (computed below) */
+    /* Bytes 4-7: unused (zero) */
+
+    /* ICMP data: original IP header + first 8 bytes of UDP */
+    memcpy (icmp + 8, orig, icmp_data_len);
+
+    /* ICMP checksum (over ICMP header + data) */
+    sum = 0;
+    for (i = 0; i < icmp_total; i += 2) {
+        if (i + 1 < icmp_total)
+            sum += ((uint32_t)icmp[i] << 8) | icmp[i + 1];
+        else
+            sum += (uint32_t)icmp[i] << 8;
+    }
+    while (sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    cksum = ~sum & 0xFFFF;
+    icmp[2] = (cksum >> 8) & 0xFF;
+    icmp[3] = cksum & 0xFF;
+
+    /* Write ICMP response back to TUN */
+    netif_output_handler (&netif, p);
+    pbuf_free (p);
+}
+
 static void
 lwip_io_task_entry (void *data)
 {
@@ -305,6 +418,7 @@ lwip_io_task_entry (void *data)
 
     for (; run;) {
         struct pbuf *buf;
+        uint16_t iphdr_len;
 
         buf = hev_tunnel_read (tun_fd, mtu, task_io_yielder, NULL);
         if (!buf)
@@ -312,6 +426,17 @@ lwip_io_task_entry (void *data)
 
         stat_tx_packets++;
         stat_tx_bytes += buf->tot_len;
+
+        /* Reject QUIC (UDP 443) with ICMP Port Unreachable.
+         * Forces immediate TCP fallback instead of 5-10s timeout. */
+        iphdr_len = is_quic_packet ((const uint8_t *)buf->payload,
+                                     buf->len);
+        if (reject_quic && iphdr_len) {
+            send_icmp_port_unreachable ((const uint8_t *)buf->payload,
+                                         buf->len, iphdr_len);
+            pbuf_free (buf);
+            continue;
+        }
 
         hev_task_mutex_lock (&mutex);
         if (netif.input (buf, &netif) != ERR_OK)
@@ -665,6 +790,7 @@ hev_socks5_tunnel_fini (void)
     stat_rx_packets = 0;
     stat_tx_bytes = 0;
     stat_rx_bytes = 0;
+    reject_quic = 1;
 }
 
 int
@@ -705,6 +831,12 @@ hev_socks5_tunnel_stop (void)
 
     res = write (fd, &res, 1);
     assert (res > 0 && "socks5 tunnel write event");
+}
+
+void
+hev_socks5_tunnel_set_reject_quic (int enabled)
+{
+    reject_quic = enabled;
 }
 
 void

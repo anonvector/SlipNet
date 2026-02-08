@@ -5,6 +5,7 @@ import com.google.gson.reflect.TypeToken
 import app.slipnet.data.local.database.ProfileEntity
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
+import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TunnelType
 import javax.inject.Inject
@@ -40,9 +41,14 @@ class ProfileMapper @Inject constructor(
             updatedAt = entity.updatedAt,
             tunnelType = TunnelType.fromValue(entity.tunnelType),
             dnsttPublicKey = entity.dnsttPublicKey,
-            sshEnabled = entity.sshEnabled,
             sshUsername = entity.sshUsername,
-            sshPassword = entity.sshPassword
+            sshPassword = entity.sshPassword,
+            sshPort = entity.sshPort,
+            sshHost = entity.sshHost,
+            useServerDns = entity.useServerDns,
+            dohUrl = entity.dohUrl,
+            lastConnectedAt = entity.lastConnectedAt,
+            dnsTransport = DnsTransport.fromValue(entity.dnsTransport)
         )
     }
 
@@ -67,9 +73,16 @@ class ProfileMapper @Inject constructor(
             updatedAt = profile.updatedAt,
             tunnelType = profile.tunnelType.value,
             dnsttPublicKey = profile.dnsttPublicKey,
-            sshEnabled = profile.sshEnabled,
+            sshEnabled = profile.tunnelType == TunnelType.SSH || profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.SLIPSTREAM_SSH,
             sshUsername = profile.sshUsername,
-            sshPassword = profile.sshPassword
+            sshPassword = profile.sshPassword,
+            sshPort = profile.sshPort,
+            forwardDnsThroughSsh = false,
+            sshHost = profile.sshHost,
+            useServerDns = profile.useServerDns,
+            dohUrl = profile.dohUrl,
+            lastConnectedAt = profile.lastConnectedAt,
+            dnsTransport = profile.dnsTransport.value
         )
     }
 

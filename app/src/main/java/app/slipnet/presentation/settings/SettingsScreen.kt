@@ -16,14 +16,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Compress
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Hub
-import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -51,8 +51,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import app.slipnet.data.local.datastore.BufferSize
 import app.slipnet.data.local.datastore.DarkMode
+import app.slipnet.data.local.datastore.SshCipher
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.filled.Lan
+import androidx.compose.material.icons.filled.Numbers
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.KeyboardType
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -66,7 +74,11 @@ fun SettingsScreen(
     val scrollState = rememberScrollState()
 
     var showDarkModeDialog by remember { mutableStateOf(false) }
-    var showBufferSizeDialog by remember { mutableStateOf(false) }
+    var showSshCipherDialog by remember { mutableStateOf(false) }
+
+    // Proxy settings - local state for port text field to avoid cursor jumps from async DataStore round-trip
+    var proxyPort by remember { mutableStateOf(uiState.proxyListenPort.toString()) }
+    val addressOptions = getAddressOptions()
 
     Scaffold(
         topBar = {
@@ -99,56 +111,96 @@ fun SettingsScreen(
                 )
             }
 
-            // Network Optimization Settings
+            // Tools Section
+            if (onNavigateToScanner != null) {
+                SettingsSection(title = "Tools") {
+                    ClickableSettingItem(
+                        icon = Icons.Default.Search,
+                        title = "DNS Resolver Scanner",
+                        description = "Find working DNS resolvers for your profiles",
+                        onClick = onNavigateToScanner
+                    )
+                }
+            }
+
+            // Proxy Settings
             SettingsSection(
-                title = "Network Optimization",
+                title = "Proxy Settings",
                 subtitle = "Changes apply on next connection"
             ) {
-                SliderSettingItem(
-                    icon = Icons.Default.Timer,
-                    title = "DNS Timeout",
-                    value = uiState.dnsTimeout,
-                    valueRange = 1000f..15000f,
-                    steps = 13,
-                    valueFormatter = { "${(it / 1000f).roundToInt()}s" },
-                    onValueChange = { viewModel.setDnsTimeout(it.roundToInt()) }
+                AddressSettingItem(
+                    value = uiState.proxyListenAddress,
+                    options = addressOptions,
+                    onValueChange = { viewModel.setProxyListenAddress(it) }
                 )
 
                 SettingsDivider()
 
-                SliderSettingItem(
-                    icon = Icons.Default.NetworkCheck,
-                    title = "Connection Timeout",
-                    value = uiState.connectionTimeout,
-                    valueRange = 10000f..60000f,
-                    steps = 9,
-                    valueFormatter = { "${(it / 1000f).roundToInt()}s" },
-                    onValueChange = { viewModel.setConnectionTimeout(it.roundToInt()) }
+                TextFieldSettingItem(
+                    icon = Icons.Default.Numbers,
+                    title = "Listen Port",
+                    value = proxyPort,
+                    placeholder = "1080",
+                    supportingText = "Local SOCKS5 proxy port",
+                    keyboardType = KeyboardType.Number,
+                    onValueChange = { text ->
+                        proxyPort = text
+                        text.toIntOrNull()?.let { viewModel.setProxyListenPort(it) }
+                    }
                 )
+            }
 
-                SettingsDivider()
+            // Network Settings
+            SettingsSection(
+                title = "Network",
+                subtitle = "Changes apply on next connection"
+            ) {
+                SwitchSettingItem(
+                    icon = Icons.Default.Block,
+                    title = "Disable QUIC",
+                    description = "Block QUIC protocol to force TCP (faster page loads over tunnels)",
+                    checked = uiState.disableQuic,
+                    onCheckedChange = { viewModel.setDisableQuic(it) }
+                )
+            }
 
+            // SSH Tunnel Settings
+            SettingsSection(
+                title = "SSH Tunnel",
+                subtitle = "Changes apply on next connection"
+            ) {
                 ClickableSettingItem(
-                    icon = Icons.Default.Memory,
-                    title = "Buffer Size",
-                    description = when (uiState.bufferSize) {
-                        BufferSize.SMALL -> "Small (64KB)"
-                        BufferSize.MEDIUM -> "Medium (256KB)"
-                        BufferSize.LARGE -> "Large (512KB)"
+                    icon = Icons.Default.Lock,
+                    title = "Cipher",
+                    description = when (uiState.sshCipher) {
+                        SshCipher.AUTO -> "Auto (Fastest)"
+                        SshCipher.AES_128_GCM -> "AES-128-GCM"
+                        SshCipher.CHACHA20 -> "ChaCha20-Poly1305"
+                        SshCipher.AES_128_CTR -> "AES-128-CTR (Legacy)"
                     },
-                    onClick = { showBufferSizeDialog = true }
+                    onClick = { showSshCipherDialog = true }
+                )
+
+                SettingsDivider()
+
+                SwitchSettingItem(
+                    icon = Icons.Default.Compress,
+                    title = "Compression",
+                    description = "Compress data through SSH (helps on slow links, hurts with HTTPS)",
+                    checked = uiState.sshCompression,
+                    onCheckedChange = { viewModel.setSshCompression(it) }
                 )
 
                 SettingsDivider()
 
                 SliderSettingItem(
                     icon = Icons.Default.Hub,
-                    title = "Connection Pool Size",
-                    value = uiState.connectionPoolSize,
-                    valueRange = 1f..20f,
-                    steps = 18,
+                    title = "Max Channels",
+                    value = uiState.sshMaxChannels,
+                    valueRange = 4f..64f,
+                    steps = 14,
                     valueFormatter = { "${it.roundToInt()}" },
-                    onValueChange = { viewModel.setConnectionPoolSize(it.roundToInt()) }
+                    onValueChange = { viewModel.setSshMaxChannels(it.roundToInt()) }
                 )
             }
 
@@ -164,18 +216,6 @@ fun SettingsScreen(
                     },
                     onClick = { showDarkModeDialog = true }
                 )
-            }
-
-            // Tools Section
-            if (onNavigateToScanner != null) {
-                SettingsSection(title = "Tools") {
-                    ClickableSettingItem(
-                        icon = Icons.Default.Search,
-                        title = "DNS Resolver Scanner",
-                        description = "Find working DNS resolvers for your profiles",
-                        onClick = onNavigateToScanner
-                    )
-                }
             }
 
             // Debug Settings
@@ -249,38 +289,34 @@ fun SettingsScreen(
         )
     }
 
-    // Buffer Size Dialog
-    if (showBufferSizeDialog) {
+    // SSH Cipher Dialog
+    if (showSshCipherDialog) {
         AlertDialog(
-            onDismissRequest = { showBufferSizeDialog = false },
-            title = { Text("Buffer Size") },
+            onDismissRequest = { showSshCipherDialog = false },
+            title = { Text("SSH Cipher") },
             text = {
                 Column {
-                    BufferSize.entries.forEach { size ->
+                    SshCipher.entries.forEach { cipher ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
                                 .clickable {
-                                    viewModel.setBufferSize(size)
-                                    showBufferSizeDialog = false
+                                    viewModel.setSshCipher(cipher)
+                                    showSshCipherDialog = false
                                 }
                                 .padding(vertical = 12.dp, horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
-                                selected = uiState.bufferSize == size,
+                                selected = uiState.sshCipher == cipher,
                                 onClick = {
-                                    viewModel.setBufferSize(size)
-                                    showBufferSizeDialog = false
+                                    viewModel.setSshCipher(cipher)
+                                    showSshCipherDialog = false
                                 }
                             )
                             Text(
-                                text = when (size) {
-                                    BufferSize.SMALL -> "Small (64KB)"
-                                    BufferSize.MEDIUM -> "Medium (256KB)"
-                                    BufferSize.LARGE -> "Large (512KB)"
-                                },
+                                text = cipher.displayName,
                                 modifier = Modifier.padding(start = 8.dp)
                             )
                         }
@@ -288,7 +324,7 @@ fun SettingsScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showBufferSizeDialog = false }) {
+                TextButton(onClick = { showSshCipherDialog = false }) {
                     Text("Cancel")
                 }
             }
@@ -475,6 +511,139 @@ private fun SliderSettingItem(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = 40.dp, top = 4.dp)
+        )
+    }
+}
+
+@Composable
+/**
+ * Detect available network addresses for the listen address picker.
+ * Returns list of (label, ip) pairs.
+ */
+private fun getAddressOptions(): List<Pair<String, String>> {
+    return listOf(
+        "All interfaces" to "0.0.0.0",
+        "Localhost" to "127.0.0.1"
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddressSettingItem(
+    value: String,
+    options: List<Pair<String, String>>,
+    onValueChange: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    // Find the label for the current value, if it matches a known option
+    val displayText = options.find { it.second == value }?.let { (label, ip) ->
+        if (label == "All interfaces" || label == "Localhost") "$label ($ip)" else "$label: $ip"
+    } ?: value
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Lan,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+            Text(
+                text = "Listen Address",
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(start = 16.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+            modifier = Modifier.padding(start = 40.dp)
+        ) {
+            OutlinedTextField(
+                value = displayText,
+                onValueChange = { },
+                readOnly = true,
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor()
+            )
+
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                options.forEach { (label, ip) ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = "$label ($ip)",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        },
+                        onClick = {
+                            onValueChange(ip)
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TextFieldSettingItem(
+    icon: ImageVector,
+    title: String,
+    value: String,
+    placeholder: String,
+    supportingText: String,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    onValueChange: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(start = 16.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = { Text(placeholder) },
+            supportingText = { Text(supportingText) },
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 40.dp)
         )
     }
 }

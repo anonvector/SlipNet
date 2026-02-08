@@ -3,7 +3,9 @@ package app.slipnet.presentation.home
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.net.VpnService
+import androidx.core.content.FileProvider
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -34,11 +36,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,6 +53,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -72,7 +78,9 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.TunnelType
 import app.slipnet.presentation.theme.ConnectedGreen
+import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.presentation.theme.ConnectingOrange
 import app.slipnet.presentation.theme.DisconnectedRed
 
@@ -99,6 +107,7 @@ fun HomeScreen(
 
     var pendingConnect by remember { mutableStateOf(false) }
     var pendingProfile by remember { mutableStateOf<ServerProfile?>(null) }
+    var showShareDialog by remember { mutableStateOf(false) }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -132,6 +141,9 @@ fun HomeScreen(
                     )
                 },
                 actions = {
+                    IconButton(onClick = { showShareDialog = true }) {
+                        Icon(Icons.Default.Share, contentDescription = "Share App")
+                    }
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
@@ -184,24 +196,44 @@ fun HomeScreen(
                     profiles = uiState.profiles,
                     connectionState = uiState.connectionState,
                     onProfileClick = { profile ->
-                        val isConnected = uiState.connectionState is ConnectionState.Connected &&
-                                (uiState.connectionState as ConnectionState.Connected).profile.id == profile.id
-                        if (!isConnected && uiState.connectionState !is ConnectionState.Connecting && activity != null) {
-                            val vpnIntent = VpnService.prepare(activity)
-                            if (vpnIntent != null) {
-                                pendingConnect = true
-                                pendingProfile = profile
-                                vpnPermissionLauncher.launch(vpnIntent)
-                            } else {
-                                viewModel.connect(profile)
-                            }
-                        }
+                        viewModel.setActiveProfile(profile)
                     },
                     onManageClick = onNavigateToProfiles,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
                 )
             }
         }
+    }
+
+    // Share dialog
+    if (showShareDialog) {
+        AlertDialog(
+            onDismissRequest = { showShareDialog = false },
+            title = { Text("Share SlipNet") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "How would you like to share the app?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    TextButton(
+                        onClick = { showShareDialog = false; shareApk(context) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("APK File") }
+                    TextButton(
+                        onClick = { showShareDialog = false; shareGithubLink(context) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("GitHub Link") }
+                    TextButton(
+                        onClick = { showShareDialog = false; shareTelegramLink(context) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Telegram Channel") }
+                }
+            },
+            confirmButton = {}
+        )
     }
 }
 
@@ -239,7 +271,7 @@ private fun ConnectionHero(
             isConnected = isConnected,
             isConnecting = isConnecting,
             statusColor = statusColor,
-            enabled = hasProfile && !isConnecting,
+            enabled = hasProfile && connectionState !is ConnectionState.Disconnecting,
             onClick = onConnectClick
         )
 
@@ -454,16 +486,21 @@ private fun ProfilesSection(
                 }
             }
         } else {
-            // Profile List
+            // Profile List — recently connected first
             Column(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                profiles.take(3).forEach { profile ->
+                val sortedProfiles = profiles.sortedWith(
+                    compareByDescending<ServerProfile> { it.isActive }
+                        .thenByDescending { it.lastConnectedAt }
+                )
+                sortedProfiles.take(3).forEach { profile ->
                     val isConnected = connectionState is ConnectionState.Connected &&
                             connectionState.profile.id == profile.id
 
                     ProfileCard(
                         profile = profile,
+                        isSelected = profile.isActive,
                         isConnected = isConnected,
                         onClick = { onProfileClick(profile) }
                     )
@@ -495,22 +532,41 @@ private fun ProfilesSection(
 @Composable
 private fun ProfileCard(
     profile: ServerProfile,
+    isSelected: Boolean,
     isConnected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val borderStroke = when {
+        isConnected -> androidx.compose.foundation.BorderStroke(1.5.dp, ConnectedGreen.copy(alpha = 0.5f))
+        isSelected -> androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+        else -> null
+    }
+
+    val cardColor = when {
+        isConnected -> ConnectedGreen.copy(alpha = 0.1f)
+        isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    }
+
+    val iconBackground = when {
+        isConnected -> ConnectedGreen.copy(alpha = 0.15f)
+        isSelected -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surface
+    }
+
+    val iconTint = when {
+        isConnected -> ConnectedGreen
+        isSelected -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
     Surface(
         modifier = modifier.fillMaxWidth(),
         onClick = onClick,
         shape = RoundedCornerShape(12.dp),
-        color = if (isConnected) {
-            ConnectedGreen.copy(alpha = 0.1f)
-        } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        },
-        border = if (isConnected) {
-            androidx.compose.foundation.BorderStroke(1.5.dp, ConnectedGreen.copy(alpha = 0.5f))
-        } else null
+        color = cardColor,
+        border = borderStroke
     ) {
         Row(
             modifier = Modifier
@@ -523,17 +579,14 @@ private fun ProfileCard(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(
-                        if (isConnected) ConnectedGreen.copy(alpha = 0.15f)
-                        else MaterialTheme.colorScheme.surface
-                    ),
+                    .background(iconBackground),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.Shield,
+                    imageVector = if (isConnected || isSelected) Icons.Default.Check else Icons.Outlined.Shield,
                     contentDescription = null,
                     modifier = Modifier.size(20.dp),
-                    tint = if (isConnected) ConnectedGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = iconTint
                 )
             }
 
@@ -549,7 +602,20 @@ private fun ProfileCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = profile.domain,
+                    text = when (profile.tunnelType) {
+                        TunnelType.DOH -> DOH_SERVERS.firstOrNull { it.url == profile.dohUrl }?.name
+                            ?: profile.dohUrl
+                        TunnelType.SSH -> "${profile.domain}:${profile.sshPort}"
+                        TunnelType.DNSTT_SSH -> "${profile.domain} via SSH"
+                        else -> profile.domain
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = profile.tunnelType.displayName,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -557,7 +623,7 @@ private fun ProfileCard(
                 )
             }
 
-            // Connected indicator
+            // Status indicator
             if (isConnected) {
                 Box(
                     modifier = Modifier
@@ -568,4 +634,66 @@ private fun ProfileCard(
             }
         }
     }
+}
+
+private fun shareGithubLink(context: Context) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, "SlipNet VPN")
+        putExtra(Intent.EXTRA_TEXT, "Download SlipNet VPN:\nhttps://github.com/anonvector/SlipNet/releases/latest")
+    }
+    context.startActivity(Intent.createChooser(intent, "Share SlipNet"))
+}
+
+private fun shareTelegramLink(context: Context) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, "SlipNet VPN")
+        putExtra(Intent.EXTRA_TEXT, "Join SlipNet VPN on Telegram:\nhttps://t.me/SlipNet_app")
+    }
+    context.startActivity(Intent.createChooser(intent, "Share SlipNet"))
+}
+
+private fun shareApk(context: Context) {
+    try {
+        val appInfo = context.applicationInfo
+        val sharedDir = java.io.File(context.cacheDir, "shared")
+        sharedDir.mkdirs()
+
+        val splits = appInfo.splitSourceDirs
+        if (splits.isNullOrEmpty()) {
+            // Single APK — share directly
+            val sourceApk = java.io.File(appInfo.sourceDir)
+            val sharedApk = java.io.File(sharedDir, "SlipNet-v${app.slipnet.BuildConfig.VERSION_NAME}.apk")
+            sourceApk.copyTo(sharedApk, overwrite = true)
+
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", sharedApk)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/vnd.android.package-archive"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Share SlipNet"))
+        } else {
+            // Split APKs (Android Studio install) — bundle into .apks zip
+            val apksFile = java.io.File(sharedDir, "SlipNet-v${app.slipnet.BuildConfig.VERSION_NAME}.apks")
+            java.util.zip.ZipOutputStream(apksFile.outputStream().buffered()).use { zip ->
+                val allApks = listOf(appInfo.sourceDir) + splits
+                for (path in allApks) {
+                    val file = java.io.File(path)
+                    zip.putNextEntry(java.util.zip.ZipEntry(file.name))
+                    file.inputStream().buffered().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                }
+            }
+
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apksFile)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Share SlipNet"))
+        }
+    } catch (_: Exception) { }
 }

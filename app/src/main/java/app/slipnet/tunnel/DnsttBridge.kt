@@ -70,8 +70,12 @@ object DnsttBridge {
         return try {
             val listenAddr = "$listenHost:$listenPort"
 
-            // Ensure DNS server has port
-            val dnsAddr = if (dnsServer.contains(":")) dnsServer else "$dnsServer:53"
+            // Format address: DoH URLs pass through, UDP/DoT get default port if missing
+            val dnsAddr = when {
+                dnsServer.startsWith("https://") -> dnsServer  // DoH URL
+                dnsServer.contains(":") -> dnsServer           // Already has port
+                else -> "$dnsServer:53"                        // Default UDP port
+            }
 
             // Create the DNSTT client via Go mobile bindings
             val newClient = Mobile.newClient(dnsAddr, tunnelDomain, publicKey, listenAddr)

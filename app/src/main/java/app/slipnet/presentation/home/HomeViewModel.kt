@@ -8,6 +8,7 @@ import app.slipnet.domain.usecase.ConnectVpnUseCase
 import app.slipnet.domain.usecase.DisconnectVpnUseCase
 import app.slipnet.domain.usecase.GetActiveProfileUseCase
 import app.slipnet.domain.usecase.GetProfilesUseCase
+import app.slipnet.domain.usecase.SetActiveProfileUseCase
 import app.slipnet.service.VpnConnectionManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,7 +34,8 @@ class HomeViewModel @Inject constructor(
     private val getProfilesUseCase: GetProfilesUseCase,
     private val getActiveProfileUseCase: GetActiveProfileUseCase,
     private val connectVpnUseCase: ConnectVpnUseCase,
-    private val disconnectVpnUseCase: DisconnectVpnUseCase
+    private val disconnectVpnUseCase: DisconnectVpnUseCase,
+    private val setActiveProfileUseCase: SetActiveProfileUseCase
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -91,6 +93,12 @@ class HomeViewModel @Inject constructor(
             is ConnectionState.Connected,
             is ConnectionState.Connecting -> disconnect()
             else -> connect()
+        }
+    }
+
+    fun setActiveProfile(profile: ServerProfile) {
+        viewModelScope.launch {
+            setActiveProfileUseCase(profile.id)
         }
     }
 
