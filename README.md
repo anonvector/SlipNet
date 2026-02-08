@@ -19,7 +19,7 @@ SlipNet supports two tunnel types:
 | Tunnel Type | Protocol | Status | Description |
 |-------------|----------|--------|-------------|
 | **DNSTT** | KCP + Noise | **Recommended** | Stable and reliable DNS tunneling |
-| **Slipstream** | QUIC | Experimental | High-performance but less stable |
+| **Slipstream** | QUIC | Stable | High-performance QUIC tunneling |
 
 **Note:** DNSTT is the default and recommended tunnel type for most users.
 
