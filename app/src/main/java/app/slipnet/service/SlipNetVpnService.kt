@@ -1669,6 +1669,14 @@ class SlipNetVpnService : VpnService() {
         // Don't wait for native threads - they'll clean up themselves
         cleanupConnectionSync()
 
+        // Ensure connection state is always reset when the service dies.
+        // This is critical for onRevoke() (another VPN app takes over):
+        // disconnect() runs cleanup in a coroutine on serviceScope, but onDestroy()
+        // cancels serviceScope before the coroutine reaches onVpnDisconnected().
+        // Without this, the UI would still show "Connected" after another VPN connects.
+        clearConnectionState()
+        connectionManager.onVpnDisconnected()
+
         // Release WakeLock
         releaseWakeLock()
 
