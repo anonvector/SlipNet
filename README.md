@@ -14,23 +14,34 @@ If you want to support development:
 
 ## Tunnel Types
 
-SlipNet supports two tunnel types:
+SlipNet supports multiple tunnel types with optional SSH chaining:
 
-| Tunnel Type | Protocol | Status | Description |
-|-------------|----------|--------|-------------|
-| **DNSTT** | KCP + Noise | **Recommended** | Stable and reliable DNS tunneling |
-| **Slipstream** | QUIC | Stable | High-performance QUIC tunneling |
+| Tunnel Type | Protocol | Description |
+|-------------|----------|-------------|
+| **DNSTT** | KCP + Noise | Stable and reliable DNS tunneling |
+| **DNSTT + SSH** | KCP + Noise + SSH | DNSTT with SSH chaining for zero DNS leaks |
+| **Slipstream** | QUIC | High-performance QUIC tunneling |
+| **Slipstream + SSH** | QUIC + SSH | Slipstream with SSH chaining |
+| **SSH** | SSH | Standalone SSH tunnel (no DNS tunneling) |
+| **DOH** | DNS over HTTPS | DNS-only encryption via HTTPS (RFC 8484) |
 
-**Note:** DNSTT is the default and recommended tunnel type for most users.
+**Note:** DNSTT is the default and recommended tunnel type for most users. SSH variants add an extra layer of encryption and can prevent DNS leaks.
 
 ## Features
 
 - **Modern UI**: Built entirely with Jetpack Compose and Material 3 design
-- **Multiple Tunnel Types**: Choose between DNSTT (recommended) or Slipstream (experimental)
+- **Multiple Tunnel Types**: DNSTT, Slipstream, SSH, and DOH with optional SSH chaining
+- **SSH Tunneling**: Chain SSH through DNSTT or Slipstream, or use standalone SSH
+- **DNS over HTTPS**: Encrypt DNS queries via HTTPS without tunneling other traffic
+- **DNS Transport Selection**: Choose UDP, DoT, or DoH for DNSTT DNS resolution
+- **SSH Cipher Selection**: Choose between AES-128-GCM, ChaCha20, and AES-128-CTR
 - **DNS Server Scanning**: Automatically discover and test compatible DNS servers
 - **Multiple Profiles**: Create and manage multiple server configurations
+- **Configurable Proxy**: Set custom listen address and port
 - **Quick Settings Tile**: Toggle VPN connection directly from the notification shade
 - **Auto-connect on Boot**: Optionally reconnect VPN when device starts
+- **APK Sharing**: Share the app via Bluetooth or other methods in case of internet shutdowns
+- **Debug Logging**: Toggle detailed traffic logs for troubleshooting
 - **Dark Mode**: Full support for system-wide dark theme
 
 ## Server Setup
@@ -154,6 +165,8 @@ SlipNet follows Clean Architecture principles with three main layers:
 - **Preferences**: DataStore
 - **Async**: Kotlin Coroutines & Flow
 - **Native**: Rust via JNI (QUIC protocol implementation)
+- **SSH**: JSch (mwiede fork with AES-GCM, ChaCha20 support)
+- **HTTP**: OkHttp (HTTP/2 for DoH requests)
 
 ## Configuration
 
@@ -162,18 +175,28 @@ SlipNet follows Clean Architecture principles with three main layers:
 Each server profile contains:
 
 - **Name**: Display name for the profile
-- **Tunnel Type**: DNSTT (recommended) or Slipstream (experimental)
+- **Tunnel Type**: DNSTT, Slipstream, SSH, DOH, or their SSH variants
 - **Domain**: Server domain for DNS tunneling
 - **Resolvers**: DNS resolver configurations
 
 #### DNSTT-specific settings:
 - **Public Key**: Server's Noise protocol public key (hex format)
+- **DNS Transport**: UDP, DoT (DNS over TLS), or DoH (DNS over HTTPS)
 
 #### Slipstream-specific settings:
 - **Congestion Control**: QUIC congestion control algorithm (BBR, DCUBIC)
 - **Keep-Alive Interval**: QUIC keep-alive interval in milliseconds
 - **Authoritative Mode**: Use authoritative DNS resolution
 - **GSO**: Generic Segmentation Offload for better performance
+
+#### SSH settings (SSH, DNSTT+SSH, Slipstream+SSH):
+- **SSH Host**: SSH server address
+- **SSH Port**: SSH server port (default 22)
+- **SSH Username/Password**: Authentication credentials
+- **SSH Cipher**: Preferred encryption algorithm (AES-128-GCM, ChaCha20, AES-128-CTR)
+
+#### DOH settings:
+- **DoH Server URL**: HTTPS endpoint for DNS queries (e.g., `https://cloudflare-dns.com/dns-query`)
 
 ## Contributing
 
