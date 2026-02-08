@@ -12,7 +12,7 @@ import java.lang.ref.WeakReference
 @Suppress("KotlinJniMissingFunction")
 object SlipstreamBridge {
     private const val TAG = "SlipstreamBridge"
-    const val DEFAULT_SLIPSTREAM_PORT = 10800
+    const val DEFAULT_SLIPSTREAM_PORT = 1080
     const val DEFAULT_LISTEN_HOST = "127.0.0.1"
 
     private var isLibraryLoaded = false

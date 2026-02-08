@@ -46,7 +46,8 @@ object HevSocks5Tunnel {
         socksPassword: String? = null,
         enableUdpTunneling: Boolean = false,
         mtu: Int = 1500,
-        ipv4Address: String = "10.255.255.1"
+        ipv4Address: String = "10.255.255.1",
+        disableQuic: Boolean = true
     ): Result<Unit> {
         if (!isLibraryLoaded) {
             return Result.failure(IllegalStateException("Native library not loaded"))
@@ -77,6 +78,7 @@ object HevSocks5Tunnel {
         Log.d(TAG, "Config:\n$config")
 
         return try {
+            nativeSetRejectQuic(disableQuic)
             val fd = tunFd.fd
             val result = nativeStart(config, fd)
             if (result == 0) {
@@ -182,9 +184,8 @@ object HevSocks5Tunnel {
         sb.appendLine("socks5:")
         sb.appendLine("  address: $socksAddress")
         sb.appendLine("  port: $socksPort")
-        // UDP tunneling:
-        // - DNSTT: Enable UDP tunneling via 'tcp' mode (DNSTT supports proper SOCKS5)
-        // - Slipstream: Disable UDP tunneling (server uses simplified protocol, DNS handled by DnsForwarder)
+        // UDP tunneling via 'tcp' mode sends FWD_UDP (cmd 0x05) to the SOCKS5 proxy.
+        // Supported by: SSH SOCKS5, DohBridge, SlipstreamSocksBridge, DNSTT (remote Dante).
         if (enableUdpTunneling) {
             sb.appendLine("  udp: 'tcp'")
         }
@@ -216,6 +217,7 @@ object HevSocks5Tunnel {
     // Native methods
     private external fun nativeStart(config: String, tunFd: Int): Int
     private external fun nativeStop()
+    private external fun nativeSetRejectQuic(enabled: Boolean)
     private external fun nativeIsRunning(): Boolean
     private external fun nativeGetStats(): LongArray?
 }

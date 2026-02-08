@@ -70,6 +70,18 @@ int hev_socks5_tunnel_main_from_str (const unsigned char *config_str,
 void hev_socks5_tunnel_quit (void);
 
 /**
+ * hev_socks5_tunnel_set_reject_quic:
+ * @enabled: 1 to reject QUIC (UDP 443) with ICMP, 0 to allow
+ *
+ * Control whether QUIC packets are rejected with ICMP Port Unreachable.
+ * When enabled, forces clients to fall back to TCP immediately.
+ * Default is enabled (1). Resets to 1 on hev_socks5_tunnel_fini.
+ *
+ * Since: 2.6.8
+ */
+void hev_socks5_tunnel_set_reject_quic (int enabled);
+
+/**
  * hev_socks5_tunnel_stats:
  * @tx_packets (out): transmitted packets
  * @tx_bytes (out): transmitted bytes

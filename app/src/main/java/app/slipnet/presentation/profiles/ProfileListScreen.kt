@@ -1,10 +1,14 @@
 package app.slipnet.presentation.profiles
 
-import android.app.Activity
 import android.content.Intent
-import android.net.VpnService
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,12 +19,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Waves
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -34,6 +45,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -46,18 +58,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ServerProfile
+
 import app.slipnet.presentation.common.components.ProfileListItem
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileListScreen(
     onNavigateBack: () -> Unit,
-    onNavigateToAddProfile: () -> Unit,
+    onNavigateToAddProfile: (tunnelType: String) -> Unit,
     onNavigateToEditProfile: (Long) -> Unit,
     viewModel: ProfileListViewModel = hiltViewModel()
 ) {
@@ -66,19 +81,10 @@ fun ProfileListScreen(
     val context = LocalContext.current
 
     var profileToDelete by remember { mutableStateOf<ServerProfile?>(null) }
-    var pendingConnectProfile by remember { mutableStateOf<ServerProfile?>(null) }
     var showOverflowMenu by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf("") }
-
-    val vpnPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            pendingConnectProfile?.let { viewModel.connectToProfile(it) }
-        }
-        pendingConnectProfile = null
-    }
+    var showAddMenu by remember { mutableStateOf(false) }
 
     val importFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -155,12 +161,71 @@ fun ProfileListScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = onNavigateToAddProfile,
-                containerColor = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(bottom = 16.dp, end = 8.dp)
+            Column(
+                horizontalAlignment = Alignment.End
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Add Profile")
+                AnimatedVisibility(
+                    visible = showAddMenu,
+                    enter = scaleIn(transformOrigin = TransformOrigin(1f, 1f)) + fadeIn(),
+                    exit = scaleOut(transformOrigin = TransformOrigin(1f, 1f)) + fadeOut()
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        tonalElevation = 4.dp,
+                        shadowElevation = 8.dp,
+                        modifier = Modifier.padding(bottom = 12.dp, end = 8.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .width(220.dp)
+                                .padding(vertical = 8.dp)
+                        ) {
+                            AddMenuOption(
+                                icon = Icons.Default.Dns,
+                                title = "DNSTT",
+                                description = "DNS tunnel (KCP + Noise)",
+                                onClick = {
+                                    showAddMenu = false
+                                    onNavigateToAddProfile("dnstt")
+                                }
+                            )
+                            AddMenuOption(
+                                icon = Icons.Default.Waves,
+                                title = "Slipstream",
+                                description = "DNS tunnel (QUIC)",
+                                onClick = {
+                                    showAddMenu = false
+                                    onNavigateToAddProfile("slipstream")
+                                }
+                            )
+                            AddMenuOption(
+                                icon = Icons.Default.Lock,
+                                title = "SSH",
+                                description = "Direct SSH tunnel",
+                                onClick = {
+                                    showAddMenu = false
+                                    onNavigateToAddProfile("ssh")
+                                }
+                            )
+                            AddMenuOption(
+                                icon = Icons.Default.Language,
+                                title = "DOH",
+                                description = "DNS over HTTPS",
+                                onClick = {
+                                    showAddMenu = false
+                                    onNavigateToAddProfile("doh")
+                                }
+                            )
+                        }
+                    }
+                }
+                FloatingActionButton(
+                    onClick = { showAddMenu = !showAddMenu },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(bottom = 16.dp, end = 8.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Add Profile")
+                }
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
@@ -200,18 +265,9 @@ fun ProfileListScreen(
 
                             ProfileListItem(
                                 profile = profile,
+                                isSelected = profile.isActive,
                                 isConnected = isConnected,
-                                onClick = {
-                                    if (!isConnected) {
-                                        val vpnIntent = VpnService.prepare(context)
-                                        if (vpnIntent != null) {
-                                            pendingConnectProfile = profile
-                                            vpnPermissionLauncher.launch(vpnIntent)
-                                        } else {
-                                            viewModel.connectToProfile(profile)
-                                        }
-                                    }
-                                },
+                                onClick = { viewModel.setActiveProfile(profile) },
                                 onEditClick = { onNavigateToEditProfile(profile.id) },
                                 onDeleteClick = { profileToDelete = profile },
                                 onExportClick = { viewModel.exportProfile(profile) }
@@ -219,6 +275,18 @@ fun ProfileListScreen(
                         }
                     }
                 }
+            }
+
+            // Scrim to dismiss the FAB menu
+            if (showAddMenu) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            indication = null,
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                        ) { showAddMenu = false }
+                )
             }
         }
     }
@@ -366,5 +434,40 @@ fun ProfileListScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun AddMenuOption(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(28.dp)
+        )
+        Spacer(Modifier.width(16.dp))
+        Column {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }

@@ -51,6 +51,11 @@ class VpnConnectionManager @Inject constructor(
         pendingProfile = profile
         _connectionState.value = ConnectionState.Connecting
 
+        // Set active profile immediately so it shows on the main screen
+        scope.launch {
+            profileRepository.setActiveProfile(profile.id)
+        }
+
         // Start VPN service
         val intent = Intent(context, SlipNetVpnService::class.java).apply {
             action = SlipNetVpnService.ACTION_CONNECT
@@ -79,7 +84,7 @@ class VpnConnectionManager @Inject constructor(
         // Just do bookkeeping here - save the profile as last connected.
         scope.launch {
             preferencesDataStore.setLastConnectedProfileId(profile.id)
-            profileRepository.setActiveProfile(profile.id)
+            profileRepository.updateLastConnectedAt(profile.id)
         }
     }
 

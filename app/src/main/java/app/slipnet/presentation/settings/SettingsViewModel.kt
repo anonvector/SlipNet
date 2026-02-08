@@ -2,9 +2,9 @@ package app.slipnet.presentation.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import app.slipnet.data.local.datastore.BufferSize
 import app.slipnet.data.local.datastore.DarkMode
 import app.slipnet.data.local.datastore.PreferencesDataStore
+import app.slipnet.data.local.datastore.SshCipher
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,11 +18,15 @@ data class SettingsUiState(
     val darkMode: DarkMode = DarkMode.SYSTEM,
     val debugLogging: Boolean = false,
     val isLoading: Boolean = true,
-    // Network Optimization Settings
-    val dnsTimeout: Int = 5000,
-    val connectionTimeout: Int = 30000,
-    val bufferSize: BufferSize = BufferSize.MEDIUM,
-    val connectionPoolSize: Int = 10
+    // Proxy Settings
+    val proxyListenAddress: String = "0.0.0.0",
+    val proxyListenPort: Int = 1080,
+    // Network Settings
+    val disableQuic: Boolean = true,
+    // SSH Tunnel Settings
+    val sshCipher: SshCipher = SshCipher.AUTO,
+    val sshCompression: Boolean = false,
+    val sshMaxChannels: Int = 16
 )
 
 @HiltViewModel
@@ -39,24 +43,37 @@ class SettingsViewModel @Inject constructor(
 
     private fun loadSettings() {
         viewModelScope.launch {
-            combine(
+            val mainFlow = combine(
                 preferencesDataStore.autoConnectOnBoot,
                 preferencesDataStore.darkMode,
                 preferencesDataStore.debugLogging,
-                preferencesDataStore.dnsTimeout,
-                preferencesDataStore.connectionTimeout,
-                preferencesDataStore.bufferSize,
-                preferencesDataStore.connectionPoolSize
+                preferencesDataStore.proxyListenAddress,
+                preferencesDataStore.proxyListenPort,
+                preferencesDataStore.disableQuic
             ) { values ->
+                arrayOf(values[0], values[1], values[2], values[3], values[4], values[5])
+            }
+
+            val sshFlow = combine(
+                preferencesDataStore.sshCipher,
+                preferencesDataStore.sshCompression,
+                preferencesDataStore.sshMaxChannels
+            ) { cipher, compression, maxChannels ->
+                Triple(cipher, compression, maxChannels)
+            }
+
+            combine(mainFlow, sshFlow) { main, ssh ->
                 SettingsUiState(
-                    autoConnectOnBoot = values[0] as Boolean,
-                    darkMode = values[1] as DarkMode,
-                    debugLogging = values[2] as Boolean,
+                    autoConnectOnBoot = main[0] as Boolean,
+                    darkMode = main[1] as DarkMode,
+                    debugLogging = main[2] as Boolean,
                     isLoading = false,
-                    dnsTimeout = values[3] as Int,
-                    connectionTimeout = values[4] as Int,
-                    bufferSize = values[5] as BufferSize,
-                    connectionPoolSize = values[6] as Int
+                    proxyListenAddress = main[3] as String,
+                    proxyListenPort = main[4] as Int,
+                    disableQuic = main[5] as Boolean,
+                    sshCipher = ssh.first,
+                    sshCompression = ssh.second,
+                    sshMaxChannels = ssh.third
                 )
             }.collect { newState ->
                 _uiState.value = newState
@@ -82,28 +99,42 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // Network Optimization Settings
-    fun setDnsTimeout(timeout: Int) {
+    // Network Settings
+    fun setDisableQuic(enabled: Boolean) {
         viewModelScope.launch {
-            preferencesDataStore.setDnsTimeout(timeout)
+            preferencesDataStore.setDisableQuic(enabled)
         }
     }
 
-    fun setConnectionTimeout(timeout: Int) {
+    // Proxy Settings
+    fun setProxyListenAddress(address: String) {
         viewModelScope.launch {
-            preferencesDataStore.setConnectionTimeout(timeout)
+            preferencesDataStore.setProxyListenAddress(address)
         }
     }
 
-    fun setBufferSize(size: BufferSize) {
+    fun setProxyListenPort(port: Int) {
         viewModelScope.launch {
-            preferencesDataStore.setBufferSize(size)
+            preferencesDataStore.setProxyListenPort(port)
         }
     }
 
-    fun setConnectionPoolSize(size: Int) {
+    // SSH Tunnel Settings
+    fun setSshCipher(cipher: SshCipher) {
         viewModelScope.launch {
-            preferencesDataStore.setConnectionPoolSize(size)
+            preferencesDataStore.setSshCipher(cipher)
+        }
+    }
+
+    fun setSshCompression(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setSshCompression(enabled)
+        }
+    }
+
+    fun setSshMaxChannels(count: Int) {
+        viewModelScope.launch {
+            preferencesDataStore.setSshMaxChannels(count)
         }
     }
 }

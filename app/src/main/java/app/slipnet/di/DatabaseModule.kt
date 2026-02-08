@@ -25,7 +25,15 @@ object DatabaseModule {
             SlipNetDatabase::class.java,
             SlipNetDatabase.DATABASE_NAME
         )
-            .fallbackToDestructiveMigration()
+            .addMigrations(
+                SlipNetDatabase.MIGRATION_5_6,
+                SlipNetDatabase.MIGRATION_6_7,
+                SlipNetDatabase.MIGRATION_7_8,
+                SlipNetDatabase.MIGRATION_8_9,
+                SlipNetDatabase.MIGRATION_9_10,
+                SlipNetDatabase.MIGRATION_10_11,
+                SlipNetDatabase.MIGRATION_11_12
+            )
             .build()
     }
 

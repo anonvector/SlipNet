@@ -9,7 +9,7 @@ data class ServerProfile(
     val keepAliveInterval: Int = 200,
     val congestionControl: CongestionControl = CongestionControl.BBR,
     val gsoEnabled: Boolean = false,
-    val tcpListenPort: Int = 10800,
+    val tcpListenPort: Int = 1080,
     val tcpListenHost: String = "127.0.0.1",
     val socksUsername: String? = null,
     val socksPassword: String? = null,
@@ -20,10 +20,20 @@ data class ServerProfile(
     val tunnelType: TunnelType = TunnelType.DNSTT,
     // DNSTT-specific fields
     val dnsttPublicKey: String = "",
-    // SSH tunnel fields
-    val sshEnabled: Boolean = false,
+    // SSH tunnel fields (used for SSH-only and DNSTT+SSH tunnel types)
     val sshUsername: String = "",
-    val sshPassword: String = ""
+    val sshPassword: String = "",
+    val sshPort: Int = 22,
+    // SSH host as seen from DNSTT server (for DNSTT+SSH, default 127.0.0.1 for co-located servers)
+    val sshHost: String = "127.0.0.1",
+    // When true, DNS queries go to server's local resolver (127.0.0.53) instead of VPN DNS (e.g. 1.1.1.1)
+    val useServerDns: Boolean = false,
+    // DoH (DNS over HTTPS) server URL
+    val dohUrl: String = "",
+    // Timestamp of last successful connection (0 = never connected)
+    val lastConnectedAt: Long = 0,
+    // DNS transport for DNSTT tunnel types (UDP, DoH, DoT)
+    val dnsTransport: DnsTransport = DnsTransport.UDP
 )
 
 data class DnsResolver(
@@ -45,11 +55,27 @@ enum class CongestionControl(val value: String) {
 
 enum class TunnelType(val value: String, val displayName: String) {
     SLIPSTREAM("slipstream", "Slipstream (Experimental)"),
-    DNSTT("dnstt", "DNSTT");
+    SLIPSTREAM_SSH("slipstream_ssh", "Slipstream + SSH"),
+    DNSTT("dnstt", "DNSTT"),
+    DNSTT_SSH("dnstt_ssh", "DNSTT + SSH"),
+    SSH("ssh", "SSH"),
+    DOH("doh", "DOH (DNS over HTTPS)");
 
     companion object {
         fun fromValue(value: String): TunnelType {
             return entries.find { it.value == value } ?: DNSTT
+        }
+    }
+}
+
+enum class DnsTransport(val value: String, val displayName: String) {
+    UDP("udp", "UDP"),
+    DOT("dot", "DoT"),
+    DOH("doh", "DoH");
+
+    companion object {
+        fun fromValue(value: String): DnsTransport {
+            return entries.find { it.value == value } ?: UDP
         }
     }
 }
