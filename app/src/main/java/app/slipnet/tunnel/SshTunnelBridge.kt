@@ -31,7 +31,7 @@ import java.util.concurrent.locks.ReentrantLock
 object SshTunnelBridge {
     private const val TAG = "SshTunnelBridge"
     @Volatile var debugLogging = false
-    private fun logd(msg: String) { if (debugLogging) logd(msg) }
+    private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BUFFER_SIZE = 65536  // 64KB for better throughput
     private const val CONNECT_TIMEOUT_MS = 30000
     private const val CHANNEL_CONNECT_TIMEOUT_MS = 15000  // shorter for channels

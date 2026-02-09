@@ -16,6 +16,7 @@ import app.slipnet.presentation.profiles.EditProfileScreen
 import app.slipnet.presentation.profiles.ProfileListScreen
 import app.slipnet.presentation.scanner.DnsScannerScreen
 import app.slipnet.presentation.scanner.ScanResultsScreen
+import app.slipnet.presentation.settings.AppSelectorScreen
 import app.slipnet.presentation.settings.SettingsScreen
 
 @Composable
@@ -107,6 +108,17 @@ fun NavGraph(
                 },
                 onNavigateToScanner = {
                     navController.navigate(NavRoutes.DnsScanner.createRoute())
+                },
+                onNavigateToAppSelector = {
+                    navController.navigate(NavRoutes.AppSelector.route)
+                }
+            )
+        }
+
+        composable(NavRoutes.AppSelector.route) {
+            AppSelectorScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
                 }
             )
         }

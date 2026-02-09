@@ -1,3 +1,6 @@
 [submodule "app/src/main/rust/slipstream-rust"]
 	path = app/src/main/rust/slipstream-rust
 	url = https://github.com/Mygod/slipstream-rust
+[submodule "app/src/main/rust/slipstream-rust-plus"]
+	path = app/src/main/rust/slipstream-rust-plus
+	url = https://github.com/Fox-Fig/slipstream-rust-plus

@@ -4,8 +4,12 @@ import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import okhttp3.ConnectionPool
 import okhttp3.Dns
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -14,16 +18,16 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
- * Lightweight UDP-to-DoH DNS proxy for DNSTT.
+ * Lightweight UDP-to-DoH DNS proxy.
  *
- * DNSTT's Go mobile library only supports UDP DNS resolvers. This proxy bridges
- * the gap: it listens on a local UDP port and forwards DNS queries to a DoH server
- * via HTTPS, then returns the responses back to DNSTT over UDP.
+ * Listens on a local UDP port and forwards DNS queries to a DoH server
+ * via HTTPS, then returns the responses back over UDP.
  *
- * DNSTT sends valid DNS queries (with tunnel data encoded in subdomains), so the
- * DoH server resolves them normally through the DNS hierarchy.
+ * Note: DNSTT's Go library supports DoH natively (via https:// prefix),
+ * so this proxy is typically not needed for DNSTT+DoH. It remains available
+ * as a fallback or for other use cases.
  *
- * Lifecycle: start before DNSTT, stop after DNSTT.
+ * Lifecycle: start before consumer, stop after consumer.
  */
 object DnsDoHProxy {
     private const val TAG = "DnsDoHProxy"
@@ -31,6 +35,7 @@ object DnsDoHProxy {
 
     private var socket: DatagramSocket? = null
     private var thread: Thread? = null
+    private var executor: ExecutorService? = null
     private val running = AtomicBoolean(false)
     @Volatile
     private var httpClient: OkHttpClient? = null
@@ -57,9 +62,10 @@ object DnsDoHProxy {
 
         httpClient = OkHttpClient.Builder()
             .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
             .writeTimeout(5, TimeUnit.SECONDS)
+            .connectionPool(ConnectionPool(8, 30, TimeUnit.SECONDS))
             .dns(object : Dns {
                 override fun lookup(hostname: String): List<InetAddress> {
                     val preResolved = serverIpMap[hostname]?.mapNotNull { ip ->
@@ -75,6 +81,13 @@ object DnsDoHProxy {
             })
             .build()
 
+        val pool = ThreadPoolExecutor(
+            4, 32, 30L, TimeUnit.SECONDS,
+            LinkedBlockingQueue(256)
+        )
+        pool.allowCoreThreadTimeOut(true)
+        executor = pool
+
         return try {
             val ds = DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
             socket = ds
@@ -82,7 +95,7 @@ object DnsDoHProxy {
             running.set(true)
 
             thread = Thread({
-                Log.i(TAG, "UDP-to-DoH proxy started on 127.0.0.1:$port → $dohUrl")
+                Log.i(TAG, "UDP-to-DoH proxy started on 127.0.0.1:$port -> $dohUrl")
                 val buf = ByteArray(MAX_DNS_PACKET)
                 while (running.get()) {
                     try {
@@ -92,8 +105,7 @@ object DnsDoHProxy {
                         val clientAddr = packet.address
                         val clientPort = packet.port
 
-                        // Forward to DoH in a background thread to not block the receiver
-                        Thread {
+                        executor?.execute {
                             try {
                                 val response = forwardViaDoH(query)
                                 if (response != null) {
@@ -105,7 +117,7 @@ object DnsDoHProxy {
                                     Log.w(TAG, "DoH forward error: ${e.message}")
                                 }
                             }
-                        }.start()
+                        }
                     } catch (e: Exception) {
                         if (running.get()) {
                             Log.w(TAG, "Receive error: ${e.message}")
@@ -132,6 +144,8 @@ object DnsDoHProxy {
         socket = null
         thread?.interrupt()
         thread = null
+        try { executor?.shutdownNow() } catch (_: Exception) {}
+        executor = null
         try {
             httpClient?.connectionPool?.evictAll()
             httpClient?.dispatcher?.executorService?.shutdown()

@@ -10,6 +10,7 @@ sealed class NavRoutes(val route: String) {
         fun createRoute(profileId: Long) = "edit_profile/$profileId"
     }
     data object Settings : NavRoutes("settings")
+    data object AppSelector : NavRoutes("app_selector")
     data object DnsScanner : NavRoutes("dns_scanner?profileId={profileId}&fromProfile={fromProfile}") {
         fun createRoute(profileId: Long? = null, fromProfile: Boolean = false): String {
             val params = mutableListOf<String>()

@@ -70,11 +70,16 @@ object DnsttBridge {
         return try {
             val listenAddr = "$listenHost:$listenPort"
 
-            // Format address: DoH URLs pass through, UDP/DoT get default port if missing
-            val dnsAddr = when {
-                dnsServer.startsWith("https://") -> dnsServer  // DoH URL
-                dnsServer.contains(":") -> dnsServer           // Already has port
-                else -> "$dnsServer:53"                        // Default UDP port
+            // Format address(es): may be comma-separated for multi-resolver (UDP/DoT).
+            // DoH/DoT URLs pass through, UDP gets default port if missing.
+            val dnsAddr = dnsServer.split(",").joinToString(",") { addr ->
+                val trimmed = addr.trim()
+                when {
+                    trimmed.startsWith("https://") -> trimmed  // DoH URL (native Go HTTP/2 + uTLS)
+                    trimmed.startsWith("tls://") -> trimmed    // DoT URL (native Go TLS + uTLS)
+                    trimmed.contains(":") -> trimmed           // Already has port
+                    else -> "$trimmed:53"                      // Default UDP port
+                }
             }
 
             // Create the DNSTT client via Go mobile bindings

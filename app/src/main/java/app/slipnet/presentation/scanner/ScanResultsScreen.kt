@@ -450,7 +450,7 @@ private fun ResultsSelectionControls(
                             .padding(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = "1 selected",
+                            text = "$selectedCount selected",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary
