@@ -4,3 +4,9 @@
 [submodule "app/src/main/rust/slipstream-rust-plus"]
 	path = app/src/main/rust/slipstream-rust-plus
 	url = https://github.com/Fox-Fig/slipstream-rust-plus
+[submodule "dnstt-mobile"]
+	path = dnstt-mobile
+	url = https://github.com/anonvector/dnstt-mobile.git
+[submodule "dnstt"]
+	path = dnstt
+	url = https://github.com/tladesignz/dnstt.git
