@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.usecase.ConnectVpnUseCase
 import app.slipnet.domain.usecase.DisconnectVpnUseCase
 import app.slipnet.domain.usecase.GetActiveProfileUseCase
@@ -25,7 +26,8 @@ data class HomeUiState(
     val activeProfile: ServerProfile? = null,
     val profiles: List<ServerProfile> = emptyList(),
     val isLoading: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val proxyOnlyMode: Boolean = false
 )
 
 @HiltViewModel
@@ -35,7 +37,8 @@ class HomeViewModel @Inject constructor(
     private val getActiveProfileUseCase: GetActiveProfileUseCase,
     private val connectVpnUseCase: ConnectVpnUseCase,
     private val disconnectVpnUseCase: DisconnectVpnUseCase,
-    private val setActiveProfileUseCase: SetActiveProfileUseCase
+    private val setActiveProfileUseCase: SetActiveProfileUseCase,
+    private val preferencesDataStore: PreferencesDataStore
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -44,6 +47,7 @@ class HomeViewModel @Inject constructor(
     init {
         observeConnectionState()
         observeProfiles()
+        observeProxyOnlyMode()
     }
 
     private fun observeConnectionState() {
@@ -53,6 +57,14 @@ class HomeViewModel @Inject constructor(
                     connectionState = state,
                     error = if (state is ConnectionState.Error) state.message else null
                 )
+            }
+        }
+    }
+
+    private fun observeProxyOnlyMode() {
+        viewModelScope.launch {
+            preferencesDataStore.proxyOnlyMode.collect { enabled ->
+                _uiState.value = _uiState.value.copy(proxyOnlyMode = enabled)
             }
         }
     }

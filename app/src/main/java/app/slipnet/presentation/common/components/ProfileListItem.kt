@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Card
@@ -54,6 +55,7 @@ fun ProfileListItem(
     onEditClick: () -> Unit,
     onDeleteClick: () -> Unit,
     onExportClick: () -> Unit,
+    onShareQrClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -233,6 +235,16 @@ fun ProfileListItem(
                         },
                         leadingIcon = {
                             Icon(Icons.Default.Share, contentDescription = null)
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Share QR Code") },
+                        onClick = {
+                            showMenu = false
+                            onShareQrClick()
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Default.QrCode2, contentDescription = null)
                         }
                     )
                     DropdownMenuItem(

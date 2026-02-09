@@ -55,6 +55,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,8 +66,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ServerProfile
+import kotlinx.coroutines.launch
 
 import app.slipnet.presentation.common.components.ProfileListItem
+import app.slipnet.presentation.common.components.QrCodeDialog
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -78,6 +83,7 @@ fun ProfileListScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
     var profileToDelete by remember { mutableStateOf<ServerProfile?>(null) }
@@ -97,6 +103,21 @@ fun ProfileListScreen(
                 }
             } catch (e: Exception) {
                 viewModel.clearError()
+            }
+        }
+    }
+
+    val qrScanLauncher = rememberLauncherForActivityResult(
+        contract = ScanContract()
+    ) { result ->
+        val contents = result.contents
+        if (contents != null) {
+            if (contents.startsWith("slipnet://")) {
+                viewModel.parseImportConfig(contents)
+            } else {
+                scope.launch {
+                    snackbarHostState.showSnackbar("Invalid QR code: not a SlipNet config")
+                }
             }
         }
     }
@@ -268,9 +289,30 @@ fun ProfileListScreen(
                                 isSelected = profile.isActive,
                                 isConnected = isConnected,
                                 onClick = { viewModel.setActiveProfile(profile) },
-                                onEditClick = { onNavigateToEditProfile(profile.id) },
-                                onDeleteClick = { profileToDelete = profile },
-                                onExportClick = { viewModel.exportProfile(profile) }
+                                onEditClick = {
+                                    if (isConnected) {
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar(
+                                                "Disconnect VPN before editing this profile"
+                                            )
+                                        }
+                                    } else {
+                                        onNavigateToEditProfile(profile.id)
+                                    }
+                                },
+                                onDeleteClick = {
+                                    if (isConnected) {
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar(
+                                                "Disconnect VPN before deleting this profile"
+                                            )
+                                        }
+                                    } else {
+                                        profileToDelete = profile
+                                    }
+                                },
+                                onExportClick = { viewModel.exportProfile(profile) },
+                                onShareQrClick = { viewModel.showQrCode(profile) }
                             )
                         }
                     }
@@ -366,6 +408,15 @@ fun ProfileListScreen(
         )
     }
 
+    // QR code share dialog
+    uiState.qrCodeData?.let { qrData ->
+        QrCodeDialog(
+            profileName = qrData.profileName,
+            configUri = qrData.configUri,
+            onDismiss = { viewModel.clearQrCode() }
+        )
+    }
+
     // Import input dialog
     if (showImportDialog) {
         AlertDialog(
@@ -395,7 +446,7 @@ fun ProfileListScreen(
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center
+                        horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
                         TextButton(
                             onClick = {
@@ -405,6 +456,19 @@ fun ProfileListScreen(
                             }
                         ) {
                             Text("Import from File")
+                        }
+                        TextButton(
+                            onClick = {
+                                showImportDialog = false
+                                importText = ""
+                                qrScanLauncher.launch(ScanOptions().apply {
+                                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                    setPrompt("Scan a SlipNet QR code")
+                                    setBeepEnabled(false)
+                                })
+                            }
+                        ) {
+                            Text("Scan QR Code")
                         }
                     }
                 }

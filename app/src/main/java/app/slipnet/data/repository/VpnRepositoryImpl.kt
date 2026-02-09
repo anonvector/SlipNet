@@ -114,20 +114,24 @@ class VpnRepositoryImpl @Inject constructor(
     suspend fun startDnsttProxy(profile: ServerProfile): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
-        // Format DNS server address based on transport type
+        // Format DNS server address based on transport type.
+        // The Go library supports DoH (https://...) and DoT (tls://...) natively.
         val dnsServer = when (profile.dnsTransport) {
-            DnsTransport.UDP -> profile.resolvers.firstOrNull()?.let { "${it.host}:${it.port}" } ?: "8.8.8.8:53"
-            DnsTransport.DOH -> {
-                // DNSTT's Go library only supports UDP DNS. Start a local UDP-to-DoH proxy.
-                val dohUrl = profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
-                val localPort = DnsDoHProxy.start(dohUrl)
-                if (localPort < 0) {
-                    connectedProfile = null
-                    return@withContext Result.failure(Exception("Failed to start DoH DNS proxy"))
-                }
-                "127.0.0.1:$localPort"
+            DnsTransport.UDP -> {
+                // Pass all resolvers comma-separated for multi-resolver load balancing
+                profile.resolvers.joinToString(",") { "${it.host}:${it.port}" }
+                    .ifBlank { "8.8.8.8:53" }
             }
-            DnsTransport.DOT -> profile.resolvers.firstOrNull()?.let { "${it.host}:${it.port}" } ?: "8.8.8.8:853"
+            DnsTransport.DOH -> {
+                // Go library handles DoH natively via https:// prefix (HTTP/2 + uTLS)
+                // DoH stays single URL — no multi-resolver
+                profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
+            }
+            DnsTransport.DOT -> {
+                // Pass all resolvers comma-separated with tls:// prefix for multi-resolver
+                profile.resolvers.joinToString(",") { "tls://${it.host}:${it.port}" }
+                    .ifBlank { "tls://8.8.8.8:853" }
+            }
         }
 
         val proxyPort = preferencesDataStore.proxyListenPort.first()
@@ -456,6 +460,10 @@ class VpnRepositoryImpl @Inject constructor(
 
     override fun getConnectedProfile(): ServerProfile? {
         return connectedProfile
+    }
+
+    fun setProxyConnected(profile: ServerProfile) {
+        _connectionState.value = ConnectionState.Connected(profile)
     }
 
     fun updateConnectionState(state: ConnectionState) {

@@ -12,6 +12,7 @@ import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.usecase.GetProfileByIdUseCase
 import app.slipnet.domain.usecase.SaveProfileUseCase
+import app.slipnet.domain.usecase.SetActiveProfileUseCase
 import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.tunnel.DohBridge
 import app.slipnet.tunnel.DohServer
@@ -107,7 +108,8 @@ class EditProfileViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     savedStateHandle: SavedStateHandle,
     private val getProfileByIdUseCase: GetProfileByIdUseCase,
-    private val saveProfileUseCase: SaveProfileUseCase
+    private val saveProfileUseCase: SaveProfileUseCase,
+    private val setActiveProfileUseCase: SetActiveProfileUseCase
 ) : ViewModel() {
 
     private val profileId: Long? = savedStateHandle.get<Long>("profileId")
@@ -177,7 +179,12 @@ class EditProfileViewModel @Inject constructor(
     }
 
     fun updateDomain(domain: String) {
-        _uiState.value = _uiState.value.copy(domain = domain, domainError = null)
+        val error = if (domain.isNotBlank()) {
+            validateDomain(domain.trim(), _uiState.value.tunnelType)
+        } else {
+            null
+        }
+        _uiState.value = _uiState.value.copy(domain = domain, domainError = error)
     }
 
     fun updateResolvers(resolvers: String) {
@@ -451,6 +458,12 @@ class EditProfileViewModel @Inject constructor(
         if (state.tunnelType != TunnelType.DOH && state.domain.isBlank()) {
             _uiState.value = _uiState.value.copy(domainError = "Domain is required")
             hasError = true
+        } else if (state.tunnelType != TunnelType.DOH && state.domain.isNotBlank()) {
+            val domainError = validateDomain(state.domain.trim(), state.tunnelType)
+            if (domainError != null) {
+                _uiState.value = _uiState.value.copy(domainError = domainError)
+                hasError = true
+            }
         }
 
         // DoH URL validation (DOH tunnel type or DNSTT with DoH transport)
@@ -543,7 +556,8 @@ class EditProfileViewModel @Inject constructor(
                     dnsTransport = if (state.isDnsttBased) state.dnsTransport else DnsTransport.UDP
                 )
 
-                saveProfileUseCase(profile)
+                val savedId = saveProfileUseCase(profile)
+                setActiveProfileUseCase(savedId)
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
                     saveSuccess = true
@@ -569,6 +583,36 @@ class EditProfileViewModel @Inject constructor(
                     authoritative = authoritativeMode
                 )
             }
+    }
+
+    /**
+     * Validates domain format for DNSTT and Slipstream tunnel types.
+     * These require a proper DNS domain name (e.g., "t.example.com").
+     * SSH tunnel type allows IP addresses as the domain field is the SSH host.
+     * @return error message if invalid, null if valid
+     */
+    private fun validateDomain(domain: String, tunnelType: TunnelType): String? {
+        val isDnsTunnel = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH ||
+                tunnelType == TunnelType.SLIPSTREAM || tunnelType == TunnelType.SLIPSTREAM_SSH
+
+        if (!isDnsTunnel) return null
+
+        // Must not be an IP address
+        if (domain.all { it.isDigit() || it == '.' } && isValidIPv4(domain)) {
+            return "Domain must be a hostname, not an IP address"
+        }
+
+        // Must be a valid domain with at least 2 labels (e.g., "example.com")
+        if (!isValidDomainName(domain)) {
+            return "Invalid domain format"
+        }
+
+        val labels = domain.split(".")
+        if (labels.size < 2) {
+            return "Domain must have at least two parts (e.g., t.example.com)"
+        }
+
+        return null
     }
 
     /**
@@ -610,6 +654,10 @@ class EditProfileViewModel @Inject constructor(
             return "At least one resolver is required"
         }
 
+        if (resolvers.size > MAX_RESOLVERS) {
+            return "Maximum $MAX_RESOLVERS resolvers allowed"
+        }
+
         for (resolver in resolvers) {
             val error = validateSingleResolver(resolver)
             if (error != null) {
@@ -618,6 +666,10 @@ class EditProfileViewModel @Inject constructor(
         }
 
         return null
+    }
+
+    companion object {
+        const val MAX_RESOLVERS = 3
     }
 
     private fun validateSingleResolver(resolver: String): String? {
@@ -689,12 +741,17 @@ class EditProfileViewModel @Inject constructor(
             return "Host cannot be empty"
         }
 
-        // Check if it's an IPv4 address
+        // Check if it's an IPv4 address (all digits and dots)
         if (host.all { it.isDigit() || it == '.' }) {
             if (!isValidIPv4(host)) {
                 return "Invalid IPv4 address: '$host'"
             }
             return null
+        }
+
+        // Starts with digit + has 3 dots = IPv4 attempt with trailing garbage (e.g. "1.1.1.1abc")
+        if (host.first().isDigit() && host.count { it == '.' } == 3) {
+            return "Invalid IPv4 address: '$host'"
         }
 
         // Otherwise treat as domain name - basic validation

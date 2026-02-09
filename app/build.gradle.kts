@@ -417,6 +417,10 @@ dependencies {
     // OkHttp for DoH (HTTP/2, connection pooling, custom DNS resolver)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // QR code generation & scanning
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
     // Core
     implementation("androidx.core:core-ktx:1.12.0")
 

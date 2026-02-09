@@ -116,7 +116,7 @@ val DOH_SERVERS = listOf(
 object DohBridge {
     private const val TAG = "DohBridge"
     @Volatile var debugLogging = false
-    private fun logd(msg: String) { if (debugLogging) logd(msg) }
+    private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BUFFER_SIZE = 32768
     private const val TCP_CONNECT_TIMEOUT_MS = 10000
 

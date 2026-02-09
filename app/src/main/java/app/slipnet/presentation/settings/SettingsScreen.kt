@@ -16,14 +16,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -52,6 +56,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.data.local.datastore.DarkMode
+import app.slipnet.data.local.datastore.SplitTunnelingMode
 import app.slipnet.data.local.datastore.SshCipher
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.filled.Lan
@@ -68,6 +73,7 @@ import kotlin.math.roundToInt
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onNavigateToScanner: (() -> Unit)? = null,
+    onNavigateToAppSelector: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -75,6 +81,7 @@ fun SettingsScreen(
 
     var showDarkModeDialog by remember { mutableStateOf(false) }
     var showSshCipherDialog by remember { mutableStateOf(false) }
+    var showSplitModeDialog by remember { mutableStateOf(false) }
 
     // Proxy settings - local state for port text field to avoid cursor jumps from async DataStore round-trip
     var proxyPort by remember { mutableStateOf(uiState.proxyListenPort.toString()) }
@@ -108,6 +115,16 @@ fun SettingsScreen(
                     description = "Automatically connect when device starts",
                     checked = uiState.autoConnectOnBoot,
                     onCheckedChange = { viewModel.setAutoConnectOnBoot(it) }
+                )
+
+                SettingsDivider()
+
+                SwitchSettingItem(
+                    icon = Icons.Default.SettingsEthernet,
+                    title = "Proxy-only mode",
+                    description = "Expose SOCKS5 proxy without creating VPN tunnel",
+                    checked = uiState.proxyOnlyMode,
+                    onCheckedChange = { viewModel.setProxyOnlyMode(it) }
                 )
             }
 
@@ -162,6 +179,43 @@ fun SettingsScreen(
                     checked = uiState.disableQuic,
                     onCheckedChange = { viewModel.setDisableQuic(it) }
                 )
+            }
+
+            // Split Tunneling Settings
+            SettingsSection(
+                title = "Split Tunneling",
+                subtitle = "Changes apply on next connection"
+            ) {
+                SwitchSettingItem(
+                    icon = Icons.Default.CallSplit,
+                    title = "Enable split tunneling",
+                    description = "Choose which apps use the VPN",
+                    checked = uiState.splitTunnelingEnabled,
+                    onCheckedChange = { viewModel.setSplitTunnelingEnabled(it) }
+                )
+
+                if (uiState.splitTunnelingEnabled) {
+                    SettingsDivider()
+
+                    ClickableSettingItem(
+                        icon = Icons.Default.FilterList,
+                        title = "Mode",
+                        description = when (uiState.splitTunnelingMode) {
+                            SplitTunnelingMode.DISALLOW -> "Selected apps bypass VPN"
+                            SplitTunnelingMode.ALLOW -> "Only selected apps use VPN"
+                        },
+                        onClick = { showSplitModeDialog = true }
+                    )
+
+                    SettingsDivider()
+
+                    ClickableSettingItem(
+                        icon = Icons.Default.Apps,
+                        title = "Select apps",
+                        description = "${uiState.splitTunnelingApps.size} apps selected",
+                        onClick = onNavigateToAppSelector
+                    )
+                }
             }
 
             // SSH Tunnel Settings
@@ -283,6 +337,60 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showDarkModeDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Split Tunneling Mode Dialog
+    if (showSplitModeDialog) {
+        AlertDialog(
+            onDismissRequest = { showSplitModeDialog = false },
+            title = { Text("Split Tunneling Mode") },
+            text = {
+                Column {
+                    SplitTunnelingMode.entries.forEach { mode ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    viewModel.setSplitTunnelingMode(mode)
+                                    showSplitModeDialog = false
+                                }
+                                .padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = uiState.splitTunnelingMode == mode,
+                                onClick = {
+                                    viewModel.setSplitTunnelingMode(mode)
+                                    showSplitModeDialog = false
+                                }
+                            )
+                            Column(modifier = Modifier.padding(start = 8.dp)) {
+                                Text(
+                                    text = when (mode) {
+                                        SplitTunnelingMode.DISALLOW -> "Bypass"
+                                        SplitTunnelingMode.ALLOW -> "Only"
+                                    }
+                                )
+                                Text(
+                                    text = when (mode) {
+                                        SplitTunnelingMode.DISALLOW -> "Selected apps bypass VPN"
+                                        SplitTunnelingMode.ALLOW -> "Only selected apps use VPN"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSplitModeDialog = false }) {
                     Text("Cancel")
                 }
             }

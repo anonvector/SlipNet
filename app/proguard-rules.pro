@@ -68,3 +68,9 @@
 
 # Compose
 -dontwarn androidx.compose.**
+
+# ZXing QR code
+-keep class com.google.zxing.** { *; }
+-dontwarn com.google.zxing.**
+-keep class com.journeyapps.barcodescanner.** { *; }
+-dontwarn com.journeyapps.barcodescanner.**

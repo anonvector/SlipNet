@@ -31,14 +31,14 @@ data class DnsScannerUiState(
     val listSource: ListSource = ListSource.DEFAULT
 ) {
     companion object {
-        const val MAX_SELECTED_RESOLVERS = 1
+        const val MAX_SELECTED_RESOLVERS = 3
     }
 
     val isSelectionLimitReached: Boolean
         get() = selectedResolvers.size >= MAX_SELECTED_RESOLVERS
 
     val selectionLimitMessage: String
-        get() = "Only one resolver can be selected"
+        get() = "Maximum $MAX_SELECTED_RESOLVERS resolvers can be selected"
 }
 
 enum class ListSource {
@@ -119,11 +119,9 @@ class DnsScannerViewModel @Inject constructor(
     fun toggleResolverSelection(host: String) {
         val current = _uiState.value.selectedResolvers
         if (current.contains(host)) {
-            // Deselect if already selected
-            _uiState.value = _uiState.value.copy(selectedResolvers = emptySet())
-        } else {
-            // Replace selection with new resolver (only 1 allowed)
-            _uiState.value = _uiState.value.copy(selectedResolvers = setOf(host))
+            _uiState.value = _uiState.value.copy(selectedResolvers = current - host)
+        } else if (current.size < DnsScannerUiState.MAX_SELECTED_RESOLVERS) {
+            _uiState.value = _uiState.value.copy(selectedResolvers = current + host)
         }
     }
 

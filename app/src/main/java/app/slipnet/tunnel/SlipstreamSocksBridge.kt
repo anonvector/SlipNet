@@ -34,7 +34,7 @@ import javax.net.ssl.SSLSocketFactory
 object SlipstreamSocksBridge {
     private const val TAG = "SlipstreamSocksBridge"
     @Volatile var debugLogging = false
-    private fun logd(msg: String) { if (debugLogging) logd(msg) }
+    private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BUFFER_SIZE = 32768
     private const val TCP_CONNECT_TIMEOUT_MS = 10000
 
