@@ -210,7 +210,40 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the GNU Affero General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+This project is released under a **non-commercial license**.
+
+You are allowed to:
+- View and study the source code
+- Use the software for personal, educational, or research purposes
+- Modify the code for non-commercial use
+
+You are **NOT allowed** to:
+- Publish this application on app stores (including Google Play)
+- Redistribute the software without permission
+- Use the software or derivatives for commercial purposes
+
+See the [LICENSE](./LICENSE) and [ADDITIONAL_TERMS](./ADDITIONAL_TERMS.md)
+files for full terms and conditions.
+
+## Name & Branding Notice
+
+"SlipNet" is the name of this software project.
+
+Use of the project name, logo, or branding is NOT permitted
+without explicit written permission from the author,
+even if the source code is forked or modified.
+
+Unauthorized use of the name or branding may result in takedown
+requests or other enforcement actions.
+
+## Distribution Notice
+
+This project is **not authorized** for distribution on any application store
+or marketplace.
+
+If you encounter a version of this app published on an app store, it is
+unauthorized unless explicitly stated otherwise by the author.
+
 
 ## Acknowledgments
 
