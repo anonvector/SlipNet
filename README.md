@@ -207,42 +207,34 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 3. Commit your changes (`git commit -m 'Add some amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
+   
+## License & Usage
 
-## License
+This project is released under the **SlipNet Source-Available License**.
 
-This project is released under a **non-commercial license**.
+**You are allowed to:**
+- View, study, and modify the source code for **personal, private use**
+- Use the software locally for educational or research purposes
+- Fork the repository to submit contributions (Pull Requests) to the original project
 
-You are allowed to:
-- View and study the source code
-- Use the software for personal, educational, or research purposes
-- Modify the code for non-commercial use
+**You are NOT allowed to:**
+- **Distribute** this software (source or binary) to third parties
+- **Publish** this application on app stores (including Google Play, F-Droid, or Apple App Store)
+- **Commercialize** the software or any derivative works
 
-You are **NOT allowed** to:
-- Publish this application on app stores (including Google Play)
-- Redistribute the software without permission
-- Use the software or derivatives for commercial purposes
-
-See the [LICENSE](./LICENSE) and [ADDITIONAL_TERMS](./ADDITIONAL_TERMS.md)
-files for full terms and conditions.
+See [LICENSE](./LICENSE) for the full legal terms.
 
 ## Name & Branding Notice
 
-"SlipNet" is the name of this software project.
+**"SlipNet"** is the reserved project name.
 
-Use of the project name, logo, or branding is NOT permitted
-without explicit written permission from the author,
-even if the source code is forked or modified.
-
-Unauthorized use of the name or branding may result in takedown
-requests or other enforcement actions.
+Use of the project name, logo, or branding in derivative works or republished versions is **strictly prohibited** without explicit written permission from the maintainers. This applies even if you have modified or forked the code.
 
 ## Distribution Notice
 
-This project is **not authorized** for distribution on any application store
-or marketplace.
+This project is **not authorized** for distribution on any application store, marketplace, or file-hosting service.
 
-If you encounter a version of this app published on an app store, it is
-unauthorized unless explicitly stated otherwise by the author.
+**If you find this application on Google Play, the Apple App Store, or any other marketplace, it is an UNAUTHORIZED build.** It may be outdated, modified, or malicious. Please download SlipNet only from the official repository.
 
 
 ## Acknowledgments
