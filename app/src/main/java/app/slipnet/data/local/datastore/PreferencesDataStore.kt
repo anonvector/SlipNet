@@ -47,6 +47,12 @@ class PreferencesDataStore @Inject constructor(
         val SSH_CIPHER = stringPreferencesKey("ssh_cipher")
         val SSH_COMPRESSION = booleanPreferencesKey("ssh_compression")
         val SSH_MAX_CHANNELS = intPreferencesKey("ssh_max_channels")
+        // Split Tunneling Keys
+        val SPLIT_TUNNELING_ENABLED = booleanPreferencesKey("split_tunneling_enabled")
+        val SPLIT_TUNNELING_MODE = stringPreferencesKey("split_tunneling_mode")
+        val SPLIT_TUNNELING_APPS = stringPreferencesKey("split_tunneling_apps")
+        // Proxy-Only Mode
+        val PROXY_ONLY_MODE = booleanPreferencesKey("proxy_only_mode")
     }
 
     // Auto-connect on boot
@@ -244,6 +250,55 @@ class PreferencesDataStore @Inject constructor(
             prefs[Keys.SSH_MAX_CHANNELS] = count.coerceIn(4, 64)
         }
     }
+
+    // Split Tunneling Settings
+    val splitTunnelingEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.SPLIT_TUNNELING_ENABLED] ?: false
+    }
+
+    suspend fun setSplitTunnelingEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SPLIT_TUNNELING_ENABLED] = enabled
+        }
+    }
+
+    val splitTunnelingMode: Flow<SplitTunnelingMode> = dataStore.data.map { prefs ->
+        SplitTunnelingMode.fromValue(prefs[Keys.SPLIT_TUNNELING_MODE] ?: SplitTunnelingMode.DISALLOW.value)
+    }
+
+    suspend fun setSplitTunnelingMode(mode: SplitTunnelingMode) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SPLIT_TUNNELING_MODE] = mode.value
+        }
+    }
+
+    val splitTunnelingApps: Flow<Set<String>> = dataStore.data.map { prefs ->
+        val json = prefs[Keys.SPLIT_TUNNELING_APPS] ?: "[]"
+        try {
+            org.json.JSONArray(json).let { arr ->
+                (0 until arr.length()).map { arr.getString(it) }.toSet()
+            }
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
+
+    suspend fun setSplitTunnelingApps(apps: Set<String>) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SPLIT_TUNNELING_APPS] = org.json.JSONArray(apps.toList()).toString()
+        }
+    }
+
+    // Proxy-Only Mode
+    val proxyOnlyMode: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.PROXY_ONLY_MODE] ?: false
+    }
+
+    suspend fun setProxyOnlyMode(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.PROXY_ONLY_MODE] = enabled
+        }
+    }
 }
 
 enum class DarkMode(val value: String) {
@@ -279,6 +334,17 @@ enum class SshCipher(val value: String, val displayName: String, val jschConfig:
     companion object {
         fun fromValue(value: String): SshCipher {
             return entries.find { it.value == value } ?: AUTO
+        }
+    }
+}
+
+enum class SplitTunnelingMode(val value: String) {
+    DISALLOW("disallow"),
+    ALLOW("allow");
+
+    companion object {
+        fun fromValue(value: String): SplitTunnelingMode {
+            return entries.find { it.value == value } ?: DISALLOW
         }
     }
 }

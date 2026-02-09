@@ -174,7 +174,9 @@ fun HomeScreen(
                                 viewModel.disconnect()
                             }
                             else -> {
-                                if (activity != null) {
+                                if (uiState.proxyOnlyMode) {
+                                    viewModel.connect()
+                                } else if (activity != null) {
                                     val vpnIntent = VpnService.prepare(activity)
                                     if (vpnIntent != null) {
                                         pendingConnect = true

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.slipnet.data.local.datastore.DarkMode
 import app.slipnet.data.local.datastore.PreferencesDataStore
+import app.slipnet.data.local.datastore.SplitTunnelingMode
 import app.slipnet.data.local.datastore.SshCipher
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,8 +22,13 @@ data class SettingsUiState(
     // Proxy Settings
     val proxyListenAddress: String = "0.0.0.0",
     val proxyListenPort: Int = 1080,
+    val proxyOnlyMode: Boolean = false,
     // Network Settings
     val disableQuic: Boolean = true,
+    // Split Tunneling Settings
+    val splitTunnelingEnabled: Boolean = false,
+    val splitTunnelingMode: SplitTunnelingMode = SplitTunnelingMode.DISALLOW,
+    val splitTunnelingApps: Set<String> = emptySet(),
     // SSH Tunnel Settings
     val sshCipher: SshCipher = SshCipher.AUTO,
     val sshCompression: Boolean = false,
@@ -62,7 +68,17 @@ class SettingsViewModel @Inject constructor(
                 Triple(cipher, compression, maxChannels)
             }
 
-            combine(mainFlow, sshFlow) { main, ssh ->
+            val splitFlow = combine(
+                preferencesDataStore.splitTunnelingEnabled,
+                preferencesDataStore.splitTunnelingMode,
+                preferencesDataStore.splitTunnelingApps
+            ) { enabled, mode, apps ->
+                Triple(enabled, mode, apps)
+            }
+
+            val proxyOnlyFlow = preferencesDataStore.proxyOnlyMode
+
+            combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow) { main, ssh, split, proxyOnly ->
                 SettingsUiState(
                     autoConnectOnBoot = main[0] as Boolean,
                     darkMode = main[1] as DarkMode,
@@ -70,7 +86,11 @@ class SettingsViewModel @Inject constructor(
                     isLoading = false,
                     proxyListenAddress = main[3] as String,
                     proxyListenPort = main[4] as Int,
+                    proxyOnlyMode = proxyOnly,
                     disableQuic = main[5] as Boolean,
+                    splitTunnelingEnabled = split.first,
+                    splitTunnelingMode = split.second,
+                    splitTunnelingApps = split.third,
                     sshCipher = ssh.first,
                     sshCompression = ssh.second,
                     sshMaxChannels = ssh.third
@@ -99,6 +119,13 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    // Proxy-Only Mode
+    fun setProxyOnlyMode(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setProxyOnlyMode(enabled)
+        }
+    }
+
     // Network Settings
     fun setDisableQuic(enabled: Boolean) {
         viewModelScope.launch {
@@ -116,6 +143,19 @@ class SettingsViewModel @Inject constructor(
     fun setProxyListenPort(port: Int) {
         viewModelScope.launch {
             preferencesDataStore.setProxyListenPort(port)
+        }
+    }
+
+    // Split Tunneling Settings
+    fun setSplitTunnelingEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setSplitTunnelingEnabled(enabled)
+        }
+    }
+
+    fun setSplitTunnelingMode(mode: SplitTunnelingMode) {
+        viewModelScope.launch {
+            preferencesDataStore.setSplitTunnelingMode(mode)
         }
     }
 

@@ -25,13 +25,19 @@ data class ImportPreview(
     val warnings: List<String>
 )
 
+data class QrCodeData(
+    val profileName: String,
+    val configUri: String
+)
+
 data class ProfileListUiState(
     val profiles: List<ServerProfile> = emptyList(),
     val connectedProfileId: Long? = null,
     val isLoading: Boolean = false,
     val error: String? = null,
     val exportedJson: String? = null,
-    val importPreview: ImportPreview? = null
+    val importPreview: ImportPreview? = null,
+    val qrCodeData: QrCodeData? = null
 )
 
 @HiltViewModel
@@ -156,5 +162,16 @@ class ProfileListViewModel @Inject constructor(
 
     fun cancelImport() {
         _uiState.value = _uiState.value.copy(importPreview = null)
+    }
+
+    fun showQrCode(profile: ServerProfile) {
+        val configUri = configExporter.exportSingleProfile(profile)
+        _uiState.value = _uiState.value.copy(
+            qrCodeData = QrCodeData(profile.name, configUri)
+        )
+    }
+
+    fun clearQrCode() {
+        _uiState.value = _uiState.value.copy(qrCodeData = null)
     }
 }
