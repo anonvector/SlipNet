@@ -38,6 +38,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PlayArrow
@@ -51,6 +52,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -58,7 +60,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -78,14 +79,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ScanMode
 
-// Custom color for working status
 private val WorkingGreen = Color(0xFF4CAF50)
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -123,7 +125,6 @@ fun DnsScannerScreen(
         }
     }
 
-    // Navigate to results screen when scan starts
     LaunchedEffect(uiState.scannerState.isScanning) {
         if (uiState.scannerState.isScanning) {
             onNavigateToResults()
@@ -135,17 +136,7 @@ fun DnsScannerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Dns,
-                            contentDescription = null,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Text("DNS Scanner")
-                    }
-                },
+                title = { Text("DNS Scanner") },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -165,24 +156,27 @@ fun DnsScannerScreen(
                 .padding(paddingValues)
                 .imePadding()
                 .verticalScroll(rememberScrollState())
-                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp + navBarPadding.calculateBottomPadding()),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+                .padding(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 8.dp,
+                    bottom = 16.dp + navBarPadding.calculateBottomPadding()
+                ),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Hero Section
+            // Hero
             HeroCard()
 
-            // Action Buttons (Start Scan at top)
+            // Start Scan + View Results
             ActionSection(
                 canStartScan = uiState.resolverList.isNotEmpty() && !uiState.scannerState.isScanning,
                 hasResults = uiState.scannerState.results.isNotEmpty(),
                 workingCount = uiState.scannerState.workingCount,
-                onStartScan = {
-                    viewModel.startScan()
-                },
+                onStartScan = { viewModel.startScan() },
                 onViewResults = onNavigateToResults
             )
 
-            // Configuration Section
+            // Configuration
             ConfigurationSection(
                 testDomain = uiState.testDomain,
                 timeoutMs = uiState.timeoutMs,
@@ -194,7 +188,7 @@ fun DnsScannerScreen(
                 onScanModeChange = { viewModel.updateScanMode(it) }
             )
 
-            // Resolver List Section
+            // Resolver List
             ResolverListSection(
                 resolverCount = uiState.resolverList.size,
                 listSource = uiState.listSource,
@@ -203,7 +197,20 @@ fun DnsScannerScreen(
                 onImportFile = { filePickerLauncher.launch("text/*") }
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            // Recent DNS
+            if (uiState.recentDnsResolvers.isNotEmpty()) {
+                val canSelect = uiState.profileId != null
+                RecentDnsSection(
+                    recentResolvers = uiState.recentDnsResolvers,
+                    selectedResolvers = uiState.selectedResolvers,
+                    canSelect = canSelect,
+                    onToggleSelection = { viewModel.toggleResolverSelection(it) },
+                    onApply = {
+                        viewModel.saveRecentDns()
+                        onResolversSelected(viewModel.getSelectedResolversString())
+                    }
+                )
+            }
         }
     }
 }
@@ -215,18 +222,18 @@ private fun HeroCard() {
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer
         ),
-        shape = RoundedCornerShape(20.dp)
+        shape = RoundedCornerShape(16.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(56.dp)
+                    .size(44.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary),
                 contentAlignment = Alignment.Center
@@ -235,23 +242,81 @@ private fun HeroCard() {
                     Icons.Default.NetworkCheck,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(24.dp)
                 )
             }
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Find Working Resolvers",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Scan DNS servers to find ones that respond correctly without censorship or hijacking.",
+                    text = "Scan DNS servers to find ones that work without censorship.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActionSection(
+    canStartScan: Boolean,
+    hasResults: Boolean,
+    workingCount: Int,
+    onStartScan: () -> Unit,
+    onViewResults: () -> Unit
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Button(
+            onClick = onStartScan,
+            enabled = canStartScan,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary
+            )
+        ) {
+            Icon(
+                Icons.Default.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "Start Scan",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+
+        AnimatedVisibility(
+            visible = hasResults,
+            enter = fadeIn() + slideInVertically(),
+            exit = fadeOut() + slideOutVertically()
+        ) {
+            FilledTonalButton(
+                onClick = onViewResults,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(
+                    Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = WorkingGreen,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("View Results ($workingCount working)")
             }
         }
     }
@@ -268,36 +333,25 @@ private fun ConfigurationSection(
     onConcurrencyChange: (String) -> Unit,
     onScanModeChange: (ScanMode) -> Unit
 ) {
-    OutlinedCard(
+    Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp)
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    Icons.Default.Settings,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = "Configuration",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
+            SectionHeader(
+                icon = Icons.Default.Settings,
+                title = "Configuration"
+            )
 
-            // Scan Mode Selection
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            // Scan Mode
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Scan Mode",
                     style = MaterialTheme.typography.labelMedium,
@@ -415,19 +469,20 @@ private fun ScanModeChip(
         modifier = modifier
             .clickable(onClick = onClick)
             .border(
-                width = if (selected) 2.dp else 1.dp,
+                width = if (selected) 1.5.dp else 1.dp,
                 color = borderColor,
                 shape = RoundedCornerShape(12.dp)
             ),
         colors = CardDefaults.cardColors(containerColor = backgroundColor),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(12.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -438,7 +493,7 @@ private fun ScanModeChip(
                         Icons.Default.Check,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                 }
                 Text(
@@ -470,92 +525,68 @@ private fun ResolverListSection(
     onLoadDefault: () -> Unit,
     onImportFile: () -> Unit
 ) {
-    OutlinedCard(
+    Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp)
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            SectionHeader(
+                icon = Icons.Default.Storage,
+                title = "Resolver List"
+            )
+
+            // Resolver count row
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Default.Storage,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = "Resolver List",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            // Status Card
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Row(
+                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp
-                                )
-                            } else {
-                                Icon(
-                                    Icons.Default.Dns,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-
-                        Column {
-                            Text(
-                                text = "$resolverCount resolvers",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = when (listSource) {
-                                    ListSource.DEFAULT -> "Built-in list"
-                                    ListSource.IMPORTED -> "Imported from file"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(
+                            Icons.Default.Dns,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
+                }
+
+                Column {
+                    Text(
+                        text = "$resolverCount resolvers",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = when (listSource) {
+                            ListSource.DEFAULT -> "Built-in list"
+                            ListSource.IMPORTED -> "Imported from file"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
-            // Action Buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -564,7 +595,7 @@ private fun ResolverListSection(
                     onClick = onLoadDefault,
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(vertical = 12.dp)
+                    contentPadding = PaddingValues(vertical = 10.dp)
                 ) {
                     Icon(
                         Icons.Default.Refresh,
@@ -579,7 +610,7 @@ private fun ResolverListSection(
                     onClick = onImportFile,
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(vertical = 12.dp)
+                    contentPadding = PaddingValues(vertical = 10.dp)
                 ) {
                     Icon(
                         Icons.Default.FileUpload,
@@ -595,59 +626,132 @@ private fun ResolverListSection(
 }
 
 @Composable
-private fun ActionSection(
-    canStartScan: Boolean,
-    hasResults: Boolean,
-    workingCount: Int,
-    onStartScan: () -> Unit,
-    onViewResults: () -> Unit
+private fun RecentDnsSection(
+    recentResolvers: List<String>,
+    selectedResolvers: Set<String>,
+    canSelect: Boolean,
+    onToggleSelection: (String) -> Unit,
+    onApply: () -> Unit
 ) {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Button(
-            onClick = onStartScan,
-            enabled = canStartScan,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary
-            )
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Icon(
-                Icons.Default.PlayArrow,
-                contentDescription = null,
-                modifier = Modifier.size(24.dp)
+            SectionHeader(
+                icon = Icons.Default.History,
+                title = "Recent DNS"
             )
-            Spacer(Modifier.width(12.dp))
-            Text(
-                "Start Scan",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-        }
 
-        AnimatedVisibility(
-            visible = hasResults,
-            enter = fadeIn() + slideInVertically(),
-            exit = fadeOut() + slideOutVertically()
-        ) {
-            FilledTonalButton(
-                onClick = onViewResults,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = WorkingGreen,
-                    modifier = Modifier.size(20.dp)
+            recentResolvers.forEach { ip ->
+                val isSelected = canSelect && selectedResolvers.contains(ip)
+                val backgroundColor by animateColorAsState(
+                    targetValue = if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    label = "recentBg_$ip"
                 )
-                Spacer(Modifier.width(8.dp))
-                Text("View Results ($workingCount working)")
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (canSelect) Modifier.clickable { onToggleSelection(ip) }
+                            else Modifier
+                        ),
+                    colors = CardDefaults.cardColors(containerColor = backgroundColor),
+                    shape = RoundedCornerShape(12.dp),
+                    elevation = CardDefaults.cardElevation(
+                        defaultElevation = if (isSelected) 1.dp else 0.dp
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Dns,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Text(
+                            text = ip,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontFamily = FontFamily.Monospace,
+                                letterSpacing = 0.5.sp
+                            ),
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        if (canSelect) {
+                            Checkbox(
+                                checked = isSelected,
+                                onCheckedChange = { onToggleSelection(ip) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (canSelect && selectedResolvers.any { it in recentResolvers }) {
+                Button(
+                    onClick = onApply,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Apply Selected")
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun SectionHeader(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary
+        )
     }
 }

@@ -53,6 +53,8 @@ class PreferencesDataStore @Inject constructor(
         val SPLIT_TUNNELING_APPS = stringPreferencesKey("split_tunneling_apps")
         // Proxy-Only Mode
         val PROXY_ONLY_MODE = booleanPreferencesKey("proxy_only_mode")
+        // Recent DNS Resolvers
+        val RECENT_DNS_RESOLVERS = stringPreferencesKey("recent_dns_resolvers")
     }
 
     // Auto-connect on boot
@@ -286,6 +288,33 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setSplitTunnelingApps(apps: Set<String>) {
         dataStore.edit { prefs ->
             prefs[Keys.SPLIT_TUNNELING_APPS] = org.json.JSONArray(apps.toList()).toString()
+        }
+    }
+
+    // Recent DNS Resolvers
+    val recentDnsResolvers: Flow<List<String>> = dataStore.data.map { prefs ->
+        val json = prefs[Keys.RECENT_DNS_RESOLVERS] ?: "[]"
+        try {
+            org.json.JSONArray(json).let { arr ->
+                (0 until arr.length()).map { arr.getString(it) }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun addRecentDnsResolvers(newResolvers: List<String>) {
+        dataStore.edit { prefs ->
+            val existing = try {
+                val json = prefs[Keys.RECENT_DNS_RESOLVERS] ?: "[]"
+                org.json.JSONArray(json).let { arr ->
+                    (0 until arr.length()).map { arr.getString(it) }
+                }
+            } catch (_: Exception) {
+                emptyList()
+            }
+            val updated = (newResolvers + existing).distinct().take(5)
+            prefs[Keys.RECENT_DNS_RESOLVERS] = org.json.JSONArray(updated).toString()
         }
     }
 

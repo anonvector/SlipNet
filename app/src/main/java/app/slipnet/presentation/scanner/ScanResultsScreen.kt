@@ -143,6 +143,7 @@ fun ScanResultsScreen(
                     if (canApply && uiState.selectedResolvers.isNotEmpty()) {
                         TextButton(
                             onClick = {
+                                viewModel.saveRecentDns()
                                 onResolversSelected(viewModel.getSelectedResolversString())
                             }
                         ) {
@@ -163,7 +164,7 @@ fun ScanResultsScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Progress Section
+            // Progress
             if (uiState.scannerState.isScanning || uiState.scannerState.scannedCount > 0) {
                 ResultsProgressSection(
                     isScanning = uiState.scannerState.isScanning,
@@ -175,7 +176,7 @@ fun ScanResultsScreen(
                 )
             }
 
-            // Selection Controls (only when can apply to profile)
+            // Selection Controls
             if (canApply) {
                 ResultsSelectionControls(
                     selectedCount = uiState.selectedResolvers.size,
@@ -183,16 +184,14 @@ fun ScanResultsScreen(
                 )
             }
 
-            // Results List - always show working only
+            // Results
             val filteredResults = uiState.scannerState.results.filter {
                 it.status == ResolverStatus.WORKING
             }
 
-            // Apply sorting based on selected option
             val displayResults = when (sortOption) {
                 SortOption.SPEED -> filteredResults.sortedBy { it.responseTimeMs ?: Long.MAX_VALUE }
                 SortOption.IP -> filteredResults.sortedWith(compareBy {
-                    // Parse IP for proper numeric sorting
                     it.host.split(".").map { part -> part.toIntOrNull() ?: 0 }
                         .fold(0L) { acc, i -> acc * 256 + i }
                 })
@@ -225,7 +224,6 @@ fun ScanResultsScreen(
                     }
                 }
 
-                // Sort controls at bottom
                 if (displayResults.isNotEmpty()) {
                     SortControlBar(
                         sortOption = sortOption,
@@ -250,13 +248,13 @@ private fun SortControlBar(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = modifier.fillMaxWidth()
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -276,7 +274,7 @@ private fun SortControlBar(
                     Icon(
                         Icons.Default.Speed,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 },
                 colors = FilterChipDefaults.filterChipColors(
@@ -296,7 +294,7 @@ private fun SortControlBar(
                     Icon(
                         Icons.Default.Dns,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 },
                 colors = FilterChipDefaults.filterChipColors(
@@ -324,12 +322,12 @@ private fun ResultsProgressSection(
     )
 
     Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -337,7 +335,7 @@ private fun ResultsProgressSection(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(24.dp)
+                    horizontalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
                     ResultsStatChip(
                         icon = Icons.Default.Dns,
@@ -365,16 +363,16 @@ private fun ResultsProgressSection(
                         colors = ButtonDefaults.buttonColors(
                             containerColor = ErrorRed
                         ),
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                     ) {
                         Icon(
                             Icons.Default.Stop,
                             contentDescription = null,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(16.dp)
                         )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Stop")
+                        Spacer(Modifier.width(4.dp))
+                        Text("Stop", style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -383,7 +381,7 @@ private fun ResultsProgressSection(
                 progress = { animatedProgress },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(6.dp)
+                    .height(5.dp)
                     .clip(RoundedCornerShape(3.dp)),
                 strokeCap = StrokeCap.Round
             )
@@ -399,19 +397,19 @@ private fun ResultsStatChip(
     color: Color
 ) {
     Row(
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             icon,
             contentDescription = null,
             tint = color,
-            modifier = Modifier.size(16.dp)
+            modifier = Modifier.size(14.dp)
         )
         Column {
             Text(
                 text = value,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 color = color
             )
@@ -439,7 +437,7 @@ private fun ResultsSelectionControls(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -484,7 +482,7 @@ private fun ResultsEmptyState() {
         ) {
             Box(
                 modifier = Modifier
-                    .size(72.dp)
+                    .size(64.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
@@ -492,7 +490,7 @@ private fun ResultsEmptyState() {
                 Icon(
                     Icons.Default.SearchOff,
                     contentDescription = null,
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.size(32.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -523,7 +521,7 @@ private fun ResultsResolverItem(
     val backgroundColor by animateColorAsState(
         targetValue = when {
             isSelected && showSelection -> MaterialTheme.colorScheme.primaryContainer
-            else -> MaterialTheme.colorScheme.surface
+            else -> MaterialTheme.colorScheme.surfaceContainerLow
         },
         label = "backgroundColor"
     )
@@ -541,24 +539,22 @@ private fun ResultsResolverItem(
         colors = CardDefaults.cardColors(containerColor = backgroundColor),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(
-            defaultElevation = if (isSelected && showSelection) 2.dp else 0.dp
+            defaultElevation = if (isSelected && showSelection) 1.dp else 0.dp
         )
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Status Icon
             ResultsStatusIcon(status = result.status)
 
-            // Content
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = result.host,
-                    style = MaterialTheme.typography.bodyLarge.copy(
+                    style = MaterialTheme.typography.bodyMedium.copy(
                         fontFamily = FontFamily.Monospace,
                         letterSpacing = 0.5.sp
                     ),
@@ -656,14 +652,14 @@ private fun ResultsStatusIcon(status: ResolverStatus) {
 
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(36.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(bgColor),
         contentAlignment = Alignment.Center
     ) {
         if (status == ResolverStatus.SCANNING) {
             CircularProgressIndicator(
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(18.dp),
                 strokeWidth = 2.dp,
                 color = color
             )
@@ -672,7 +668,7 @@ private fun ResultsStatusIcon(status: ResolverStatus) {
                 icon,
                 contentDescription = null,
                 tint = color,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(20.dp)
             )
         }
     }

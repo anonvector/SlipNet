@@ -8,8 +8,11 @@ import app.slipnet.domain.model.ResolverScanResult
 import app.slipnet.domain.model.ResolverStatus
 import app.slipnet.domain.model.ScanMode
 import app.slipnet.domain.model.ScannerState
+import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.repository.ResolverScannerRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +29,7 @@ data class DnsScannerUiState(
     val resolverList: List<String> = emptyList(),
     val scannerState: ScannerState = ScannerState(),
     val selectedResolvers: Set<String> = emptySet(),
+    val recentDnsResolvers: List<String> = emptyList(),
     val isLoadingList: Boolean = false,
     val error: String? = null,
     val listSource: ListSource = ListSource.DEFAULT
@@ -49,7 +53,8 @@ enum class ListSource {
 @HiltViewModel
 class DnsScannerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val scannerRepository: ResolverScannerRepository
+    private val scannerRepository: ResolverScannerRepository,
+    private val preferencesDataStore: PreferencesDataStore
 ) : ViewModel() {
 
     private val profileId: Long? = savedStateHandle.get<Long>("profileId")?.takeIf { it != -1L }
@@ -61,6 +66,24 @@ class DnsScannerViewModel @Inject constructor(
 
     init {
         loadDefaultList()
+        loadRecentDns()
+    }
+
+    private fun loadRecentDns() {
+        viewModelScope.launch {
+            preferencesDataStore.recentDnsResolvers.collect { resolvers ->
+                _uiState.value = _uiState.value.copy(recentDnsResolvers = resolvers)
+            }
+        }
+    }
+
+    fun saveRecentDns() {
+        val selected = _uiState.value.selectedResolvers.toList()
+        viewModelScope.launch {
+            withContext(NonCancellable) {
+                preferencesDataStore.addRecentDnsResolvers(selected)
+            }
+        }
     }
 
     fun loadDefaultList() {
