@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.AlertDialog
@@ -108,6 +109,7 @@ fun HomeScreen(
     var pendingConnect by remember { mutableStateOf(false) }
     var pendingProfile by remember { mutableStateOf<ServerProfile?>(null) }
     var showShareDialog by remember { mutableStateOf(false) }
+    var showLogSheet by remember { mutableStateOf(false) }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -141,6 +143,11 @@ fun HomeScreen(
                     )
                 },
                 actions = {
+                    if (uiState.debugLogging) {
+                        IconButton(onClick = { showLogSheet = true }) {
+                            Icon(Icons.Default.BugReport, contentDescription = "Debug Logs")
+                        }
+                    }
                     IconButton(onClick = { showShareDialog = true }) {
                         Icon(Icons.Default.Share, contentDescription = "Share App")
                     }
@@ -205,6 +212,11 @@ fun HomeScreen(
                 )
             }
         }
+    }
+
+    // Debug log sheet
+    if (showLogSheet) {
+        DebugLogSheet(onDismiss = { showLogSheet = false })
     }
 
     // Share dialog

@@ -27,7 +27,8 @@ data class HomeUiState(
     val profiles: List<ServerProfile> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,
-    val proxyOnlyMode: Boolean = false
+    val proxyOnlyMode: Boolean = false,
+    val debugLogging: Boolean = false
 )
 
 @HiltViewModel
@@ -48,6 +49,7 @@ class HomeViewModel @Inject constructor(
         observeConnectionState()
         observeProfiles()
         observeProxyOnlyMode()
+        observeDebugLogging()
     }
 
     private fun observeConnectionState() {
@@ -65,6 +67,14 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             preferencesDataStore.proxyOnlyMode.collect { enabled ->
                 _uiState.value = _uiState.value.copy(proxyOnlyMode = enabled)
+            }
+        }
+    }
+
+    private fun observeDebugLogging() {
+        viewModelScope.launch {
+            preferencesDataStore.debugLogging.collect { enabled ->
+                _uiState.value = _uiState.value.copy(debugLogging = enabled)
             }
         }
     }
