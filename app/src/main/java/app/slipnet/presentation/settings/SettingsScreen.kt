@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.Compress
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FilterList
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SettingsEthernet
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -65,7 +67,11 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -165,6 +171,10 @@ fun SettingsScreen(
                         text.toIntOrNull()?.let { viewModel.setProxyListenPort(it) }
                     }
                 )
+
+                if (uiState.proxyListenAddress == "0.0.0.0") {
+                    HotspotInfoCard(port = uiState.proxyListenPort)
+                }
             }
 
             // Network Settings
@@ -633,6 +643,129 @@ private fun getAddressOptions(): List<Pair<String, String>> {
         "All interfaces" to "0.0.0.0",
         "Localhost" to "127.0.0.1"
     )
+}
+
+/**
+ * Detect the device's hotspot gateway IP, or fall back to the Wi-Fi IP.
+ * Returns a pair of (ip, isHotspot) or null if no suitable interface is found.
+ */
+private fun detectShareableIp(): Pair<String, Boolean>? {
+    try {
+        val interfaces = NetworkInterface.getNetworkInterfaces()?.toList() ?: return null
+        val hotspotPrefixes = listOf("wlan1", "ap0", "swlan0", "softap", "wlan-ap", "rndis")
+
+        // First try hotspot interfaces
+        for (iface in interfaces) {
+            if (!iface.isUp) continue
+            if (hotspotPrefixes.any { iface.name.startsWith(it) }) {
+                val ip = iface.inetAddresses.toList()
+                    .firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+                    ?.hostAddress
+                if (ip != null) return ip to true
+            }
+        }
+
+        // Fall back to Wi-Fi (wlan0)
+        for (iface in interfaces) {
+            if (!iface.isUp) continue
+            if (iface.name.startsWith("wlan0") || iface.name.startsWith("wlan")) {
+                val ip = iface.inetAddresses.toList()
+                    .firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+                    ?.hostAddress
+                if (ip != null) return ip to false
+            }
+        }
+    } catch (_: Exception) { }
+    return null
+}
+
+@Composable
+private fun HotspotInfoCard(port: Int) {
+    val shareableIp = remember { detectShareableIp() }
+    if (shareableIp == null) return
+
+    val (ip, isHotspot) = shareableIp
+    val proxyAddress = "$ip:$port"
+    val clipboardManager = LocalClipboardManager.current
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isHotspot)
+                MaterialTheme.colorScheme.primaryContainer
+            else
+                MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Wifi,
+                contentDescription = null,
+                tint = if (isHotspot)
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                else
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp)
+            ) {
+                Text(
+                    text = if (isHotspot) "Hotspot proxy address" else "Device IP",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isHotspot)
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = proxyAddress,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (isHotspot)
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    else
+                        MaterialTheme.colorScheme.onSurface
+                )
+                if (isHotspot) {
+                    Text(
+                        text = "Use as SOCKS5 proxy on connected devices",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                    )
+                } else {
+                    Text(
+                        text = "Enable hotspot to share with other devices",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            IconButton(
+                onClick = { clipboardManager.setText(AnnotatedString(proxyAddress)) },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ContentCopy,
+                    contentDescription = "Copy address",
+                    tint = if (isHotspot)
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
