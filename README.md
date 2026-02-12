@@ -63,7 +63,13 @@ To use this client, you must have a compatible server. Please configure your ser
 
 ## Screenshots
 
-<!-- Add screenshots here -->
+<p align="center">
+  <img src="imgs/screenshot_1.jpg" alt="Home Screen" width="250">
+  &nbsp;&nbsp;
+  <img src="imgs/screenshot_2.jpg" alt="Tunnel Types" width="250">
+  &nbsp;&nbsp;
+  <img src="imgs/screenshot_3.jpg" alt="Settings" width="250">
+</p>
 
 ## Requirements
 
