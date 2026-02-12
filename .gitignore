@@ -95,3 +95,6 @@ android-openssl/
 
 # Schemas
 app/schemas/
+
+# Release build output
+app/release/

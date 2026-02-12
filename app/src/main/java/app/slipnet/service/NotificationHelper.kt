@@ -19,12 +19,15 @@ class NotificationHelper @Inject constructor(
 ) {
     companion object {
         const val VPN_NOTIFICATION_ID = 1
+        const val RECONNECT_NOTIFICATION_ID = 2
         private const val REQUEST_CODE_MAIN = 100
         private const val REQUEST_CODE_DISCONNECT = 101
+        private const val REQUEST_CODE_RECONNECT = 102
     }
 
     fun createVpnNotification(
-        state: ConnectionState
+        state: ConnectionState,
+        isProxyOnly: Boolean = false
     ): Notification {
         val mainIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -69,7 +72,7 @@ class NotificationHelper @Inject constructor(
 
                 builder
                     .setContentTitle("Connected: ${state.profile.name}")
-                    .setContentText("VPN is active")
+                    .setContentText(if (isProxyOnly) "Proxy is active" else "VPN is active")
                     .addAction(
                         R.drawable.ic_vpn_key,
                         "Disconnect",
@@ -90,6 +93,70 @@ class NotificationHelper @Inject constructor(
         }
 
         return builder.build()
+    }
+
+    fun createReconnectNotification(
+        message: String,
+        profileId: Long
+    ): Notification {
+        val mainIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val mainPendingIntent = PendingIntent.getActivity(
+            context,
+            REQUEST_CODE_MAIN,
+            mainIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val reconnectIntent = Intent(context, SlipNetVpnService::class.java).apply {
+            action = SlipNetVpnService.ACTION_CONNECT
+            putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profileId)
+        }
+        val reconnectPendingIntent = PendingIntent.getService(
+            context,
+            REQUEST_CODE_RECONNECT,
+            reconnectIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_CONNECTION_EVENTS)
+            .setSmallIcon(R.drawable.ic_vpn_key)
+            .setContentTitle("Connection Lost")
+            .setContentText(message)
+            .setContentIntent(mainPendingIntent)
+            .addAction(R.drawable.ic_vpn_key, "Reconnect", reconnectPendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+    }
+
+    fun createSmartConnectNotification(
+        transportName: String,
+        attempt: Int,
+        total: Int
+    ): Notification {
+        val mainIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val mainPendingIntent = PendingIntent.getActivity(
+            context,
+            REQUEST_CODE_MAIN,
+            mainIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_VPN_STATUS)
+            .setSmallIcon(R.drawable.ic_vpn_key)
+            .setContentTitle("Smart Connect: Trying $transportName...")
+            .setContentText("Attempt $attempt of $total")
+            .setContentIntent(mainPendingIntent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setProgress(total, attempt, false)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
     }
 
     fun createConnectionEventNotification(

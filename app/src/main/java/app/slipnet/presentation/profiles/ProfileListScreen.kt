@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import app.slipnet.presentation.common.icons.TorIcon
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Lock
@@ -237,6 +238,15 @@ fun ProfileListScreen(
                                     onNavigateToAddProfile("doh")
                                 }
                             )
+                            AddMenuOption(
+                                icon = TorIcon,
+                                title = "Tor",
+                                description = "Connect via Tor network",
+                                onClick = {
+                                    showAddMenu = false
+                                    onNavigateToAddProfile("snowflake")
+                                }
+                            )
                         }
                     }
                 }
@@ -293,15 +303,7 @@ fun ProfileListScreen(
                                 isConnected = isConnected,
                                 onClick = { viewModel.setActiveProfile(profile) },
                                 onEditClick = {
-                                    if (isConnected) {
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar(
-                                                "Disconnect VPN before editing this profile"
-                                            )
-                                        }
-                                    } else {
-                                        onNavigateToEditProfile(profile.id)
-                                    }
+                                    onNavigateToEditProfile(profile.id)
                                 },
                                 onDeleteClick = {
                                     if (isConnected) {

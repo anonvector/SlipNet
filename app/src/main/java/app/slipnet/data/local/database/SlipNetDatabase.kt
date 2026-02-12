@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class],
-    version = 12,
+    version = 14,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -55,6 +55,20 @@ abstract class SlipNetDatabase : RoomDatabase() {
         val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE server_profiles ADD COLUMN dns_transport TEXT NOT NULL DEFAULT 'udp'")
+            }
+        }
+
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN ssh_auth_type TEXT NOT NULL DEFAULT 'password'")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN ssh_private_key TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN ssh_key_passphrase TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN tor_bridge_lines TEXT NOT NULL DEFAULT ''")
             }
         }
     }

@@ -14,8 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
-val appVersionName = "1.6.0"
-val appVersionCode = 12
+val appVersionName = "1.7.0"
+val appVersionCode = 13
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -110,12 +110,16 @@ android {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            include("arm64-v8a", "armeabi-v7a")
             isUniversalApk = true
         }
     }
     ndkVersion = "29.0.14206865"
-    packagingOptions.jniLibs.useLegacyPackaging = true
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 
     // Build hev-socks5-tunnel with ndk-build
     externalNativeBuild {
@@ -365,8 +369,14 @@ tasks.named("clean") {
 }
 
 dependencies {
-    // DNSTT Go library
-    implementation(files("libs/dnstt.aar"))
+    // Combined Go library (DNSTT + Snowflake)
+    // Built via: cd gomobile-build && make build
+    implementation(files("libs/golibs.aar"))
+
+    // Tor binary for Snowflake tunnel — libtor.so extracted from
+    // info.guardianproject:tor-android:0.4.8.22 into jniLibs/
+    // (AAR excluded as Gradle dep because its Kotlin metadata 2.3.0
+    //  is incompatible with Room 2.6.1 kapt processor)
 
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2024.02.00")

@@ -32,7 +32,9 @@ object DatabaseModule {
                 SlipNetDatabase.MIGRATION_8_9,
                 SlipNetDatabase.MIGRATION_9_10,
                 SlipNetDatabase.MIGRATION_10_11,
-                SlipNetDatabase.MIGRATION_11_12
+                SlipNetDatabase.MIGRATION_11_12,
+                SlipNetDatabase.MIGRATION_12_13,
+                SlipNetDatabase.MIGRATION_13_14
             )
             .build()
     }

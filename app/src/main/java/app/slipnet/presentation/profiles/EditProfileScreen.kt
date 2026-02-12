@@ -1,5 +1,8 @@
 package app.slipnet.presentation.profiles
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -23,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -35,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -53,6 +59,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -60,6 +67,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsTransport
+import app.slipnet.domain.model.SshAuthType
 import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.tunnel.DohServer
 
@@ -73,6 +81,7 @@ fun EditProfileScreen(
     viewModel: EditProfileViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollState = rememberScrollState()
 
@@ -87,6 +96,13 @@ fun EditProfileScreen(
 
     LaunchedEffect(uiState.saveSuccess) {
         if (uiState.saveSuccess) {
+            if (uiState.showRestartVpnMessage) {
+                android.widget.Toast.makeText(
+                    context,
+                    "Profile saved. Turn VPN off and on to apply changes.",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
             onNavigateBack()
         }
     }
@@ -156,8 +172,8 @@ fun EditProfileScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Domain / SSH Server (hidden for DOH profiles)
-                if (!uiState.isDoh) {
+                // Domain / SSH Server (hidden for DOH and Snowflake profiles)
+                if (!uiState.isDoh && !uiState.isSnowflake) {
                     OutlinedTextField(
                         value = uiState.domain,
                         onValueChange = { viewModel.updateDomain(it) },
@@ -193,7 +209,9 @@ fun EditProfileScreen(
                         dohUrlError = uiState.dohUrlError,
                         onUrlChange = { viewModel.updateDohUrl(it) },
                         onPresetSelected = { viewModel.selectDohPreset(it) },
-                        onTestServers = { viewModel.testDohServers() }
+                        onTestServers = { viewModel.testDohServers() },
+                        customDohUrls = uiState.customDohUrls,
+                        onCustomDohUrlsChange = { viewModel.updateCustomDohUrls(it) }
                     )
 
                     // DoH warning
@@ -299,12 +317,14 @@ fun EditProfileScreen(
                         dohUrlError = uiState.dohUrlError,
                         onUrlChange = { viewModel.updateDohUrl(it) },
                         onPresetSelected = { viewModel.selectDohPreset(it) },
-                        onTestServers = { viewModel.testDohServers() }
+                        onTestServers = { viewModel.testDohServers() },
+                        customDohUrls = uiState.customDohUrls,
+                        onCustomDohUrlsChange = { viewModel.updateCustomDohUrls(it) }
                     )
                 }
 
                 // Resolvers (not shown for SSH-only, DOH, or DNSTT with DoH transport)
-                val showResolvers = !uiState.isSshOnly && !uiState.isDoh &&
+                val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake &&
                         !(uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOH)
                 if (showResolvers) {
                     val isDoT = uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOT
@@ -349,6 +369,222 @@ fun EditProfileScreen(
                             Icon(Icons.Default.Search, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
                             Text("Scan for Working Resolvers")
+                        }
+                    }
+                }
+
+                // Snowflake / Tor bridge config
+                if (uiState.isSnowflake) {
+                    Text(
+                        text = "Your bridges",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+
+                    // "Not sure? Ask Tor" auto-detect button
+                    OutlinedButton(
+                        onClick = { viewModel.askTor() },
+                        enabled = !uiState.isAskingTor,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (uiState.isAskingTor) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Detecting...")
+                        } else {
+                            Text("Auto-detect Best Bridge")
+                        }
+                    }
+                    Text(
+                        text = "Auto-detect the best transport for your network",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    // Bridge type selector — vertical radio list
+                    val bridgeOptions = listOf(
+                        TorBridgeType.SNOWFLAKE to Pair("Snowflake (built-in)", "Disguises your traffic as a video call"),
+                        TorBridgeType.SNOWFLAKE_AMP to Pair("Snowflake (AMP)", "Uses Google AMP cache for rendezvous"),
+                        TorBridgeType.DIRECT to Pair("Direct", "Connect directly without bridges (easiest to block)"),
+                        TorBridgeType.OBFS4 to Pair("obfs4 (built-in)", "Disguises your traffic as random data"),
+                        TorBridgeType.MEEK_AZURE to Pair("Meek (Azure)", "Disguises your traffic as cloud service requests"),
+                        TorBridgeType.SMART to Pair("Smart Connect", "Automatically tries transports until one works"),
+                        TorBridgeType.CUSTOM to Pair(
+                            "Manual selection",
+                            if (uiState.torBridgeLines.isNotBlank() && uiState.torBridgeType == TorBridgeType.CUSTOM) {
+                                val count = uiState.torBridgeLines.lines().count { it.isNotBlank() }
+                                "$count bridge${if (count != 1) "s" else ""} added"
+                            } else {
+                                "Enter your own bridge lines"
+                            }
+                        )
+                    )
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(0.dp)
+                    ) {
+                        bridgeOptions.forEach { (type, labels) ->
+                            val (title, description) = labels
+                            Surface(
+                                onClick = { viewModel.selectTorBridgeType(type) },
+                                shape = MaterialTheme.shapes.small,
+                                color = if (uiState.torBridgeType == type)
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                else
+                                    MaterialTheme.colorScheme.surface,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 12.dp, horizontal = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    RadioButton(
+                                        selected = uiState.torBridgeType == type,
+                                        onClick = { viewModel.selectTorBridgeType(type) }
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = title,
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+                                        Text(
+                                            text = description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Bridge lines text field (Custom mode only)
+                    if (uiState.torBridgeType == TorBridgeType.CUSTOM) {
+                        OutlinedTextField(
+                            value = uiState.torBridgeLines,
+                            onValueChange = { viewModel.updateTorBridgeLines(it) },
+                            label = { Text("Bridge Lines") },
+                            placeholder = {
+                                Text("obfs4 IP:PORT FINGERPRINT cert=... iat-mode=0")
+                            },
+                            isError = uiState.torBridgeLinesError != null,
+                            supportingText = {
+                                Text(
+                                    uiState.torBridgeLinesError
+                                        ?: "Supported: obfs4, webtunnel, meek, snowflake (one per line)"
+                                )
+                            },
+                            minLines = 3,
+                            maxLines = 6,
+                            textStyle = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    // Find more bridges section
+                    Text(
+                        text = "Find more bridges",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 16.dp)
+                    )
+
+                    Text(
+                        text = "Since bridge addresses aren't public, you'll need to request one from the Tor Project.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+
+                    // Request bridges button (Moat API)
+                    Surface(
+                        onClick = { if (!uiState.isRequestingBridges) viewModel.requestBridges() },
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Bridge Bot",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "Request bridges",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            }
+                            if (uiState.isRequestingBridges) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                        }
+                    }
+
+                    val context = LocalContext.current
+                    val bridgeLinks = listOf(
+                        Triple("Telegram", "Message @GetBridgesBot", "https://t.me/GetBridgesBot"),
+                        Triple("Web", "bridges.torproject.org", "https://bridges.torproject.org"),
+                        Triple("Gmail or Riseup", "bridges@torproject.org", "mailto:bridges@torproject.org")
+                    )
+                    bridgeLinks.forEach { (label, description, url) ->
+                        Surface(
+                            onClick = {
+                                val intent = android.content.Intent(
+                                    android.content.Intent.ACTION_VIEW,
+                                    android.net.Uri.parse(url)
+                                )
+                                context.startActivity(intent)
+                            },
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp, horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Spacer(Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = description,
+                                        style = MaterialTheme.typography.bodyLarge
+                                    )
+                                }
+                                Icon(
+                                    Icons.Default.OpenInNew,
+                                    contentDescription = "Open",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            }
                         }
                     }
                 }
@@ -539,28 +775,122 @@ fun EditProfileScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    var sshPasswordVisible by remember { mutableStateOf(false) }
-                    OutlinedTextField(
-                        value = uiState.sshPassword,
-                        onValueChange = { viewModel.updateSshPassword(it) },
-                        label = { Text("SSH Password") },
-                        placeholder = { Text("Enter SSH password") },
-                        isError = uiState.sshPasswordError != null,
-                        supportingText = uiState.sshPasswordError?.let { { Text(it) } },
-                        singleLine = true,
-                        visualTransformation = if (sshPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        trailingIcon = {
-                            IconButton(onClick = { sshPasswordVisible = !sshPasswordVisible }) {
-                                Text(
-                                    text = if (sshPasswordVisible) "Hide" else "Show",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
+                    // SSH Auth Type Toggle
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (uiState.sshAuthType == SshAuthType.PASSWORD) {
+                            Button(
+                                onClick = { },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Password")
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                            OutlinedButton(
+                                onClick = { viewModel.updateSshAuthType(SshAuthType.KEY) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Key")
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { viewModel.updateSshAuthType(SshAuthType.PASSWORD) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Password")
+                            }
+                            Button(
+                                onClick = { },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Key")
+                            }
+                        }
+                    }
+
+                    if (uiState.sshAuthType == SshAuthType.PASSWORD) {
+                        // Password auth
+                        var sshPasswordVisible by remember { mutableStateOf(false) }
+                        OutlinedTextField(
+                            value = uiState.sshPassword,
+                            onValueChange = { viewModel.updateSshPassword(it) },
+                            label = { Text("SSH Password") },
+                            placeholder = { Text("Enter SSH password") },
+                            isError = uiState.sshPasswordError != null,
+                            supportingText = uiState.sshPasswordError?.let { { Text(it) } },
+                            singleLine = true,
+                            visualTransformation = if (sshPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            trailingIcon = {
+                                IconButton(onClick = { sshPasswordVisible = !sshPasswordVisible }) {
+                                    Text(
+                                        text = if (sshPasswordVisible) "Hide" else "Show",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        // Key auth
+                        val context = LocalContext.current
+                        val keyFileLauncher = rememberLauncherForActivityResult(
+                            ActivityResultContracts.OpenDocument()
+                        ) { uri: Uri? ->
+                            uri?.let {
+                                try {
+                                    val content = context.contentResolver.openInputStream(it)
+                                        ?.bufferedReader()?.readText() ?: ""
+                                    viewModel.updateSshPrivateKey(content)
+                                } catch (_: Exception) {}
+                            }
+                        }
+
+                        OutlinedTextField(
+                            value = uiState.sshPrivateKey,
+                            onValueChange = { viewModel.updateSshPrivateKey(it) },
+                            label = { Text("SSH Private Key") },
+                            placeholder = { Text("-----BEGIN OPENSSH PRIVATE KEY-----") },
+                            isError = uiState.sshPrivateKeyError != null,
+                            supportingText = uiState.sshPrivateKeyError?.let { { Text(it) } },
+                            minLines = 3,
+                            maxLines = 8,
+                            textStyle = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        OutlinedButton(
+                            onClick = { keyFileLauncher.launch(arrayOf("*/*")) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Import Key File")
+                        }
+
+                        var passphraseVisible by remember { mutableStateOf(false) }
+                        OutlinedTextField(
+                            value = uiState.sshKeyPassphrase,
+                            onValueChange = { viewModel.updateSshKeyPassphrase(it) },
+                            label = { Text("Key Passphrase (optional)") },
+                            placeholder = { Text("Enter passphrase if key is encrypted") },
+                            singleLine = true,
+                            visualTransformation = if (passphraseVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            trailingIcon = {
+                                IconButton(onClick = { passphraseVisible = !passphraseVisible }) {
+                                    Text(
+                                        text = if (passphraseVisible) "Hide" else "Show",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(32.dp))
@@ -628,7 +958,9 @@ private fun DohServerSelector(
     dohUrlError: String?,
     onUrlChange: (String) -> Unit,
     onPresetSelected: (DohServer) -> Unit,
-    onTestServers: () -> Unit
+    onTestServers: () -> Unit,
+    customDohUrls: String = "",
+    onCustomDohUrlsChange: (String) -> Unit = {}
 ) {
     var expanded by remember { mutableStateOf(false) }
     val matchingPreset = DOH_SERVERS.find { it.url == dohUrl }
@@ -704,6 +1036,19 @@ private fun DohServerSelector(
         )
     }
 
+    // Multi-line custom URLs for batch testing
+    OutlinedTextField(
+        value = customDohUrls,
+        onValueChange = onCustomDohUrlsChange,
+        label = { Text("Custom DoH URLs to Test") },
+        placeholder = { Text("https://example.com/dns-query\nhttps://other.com/dns-query") },
+        supportingText = { Text("One URL per line — tested alongside presets") },
+        singleLine = false,
+        minLines = 2,
+        maxLines = 5,
+        modifier = Modifier.fillMaxWidth()
+    )
+
     // Test Servers button
     OutlinedButton(
         onClick = onTestServers,
@@ -711,7 +1056,7 @@ private fun DohServerSelector(
     ) {
         Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        Text("Test Servers")
+        Text("Test All Servers")
     }
 }
 

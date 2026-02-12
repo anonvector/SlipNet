@@ -88,5 +88,17 @@ data class ProfileEntity(
     val lastConnectedAt: Long = 0,
 
     @ColumnInfo(name = "dns_transport", defaultValue = "udp")
-    val dnsTransport: String = "udp"
+    val dnsTransport: String = "udp",
+
+    @ColumnInfo(name = "ssh_auth_type", defaultValue = "password")
+    val sshAuthType: String = "password",
+
+    @ColumnInfo(name = "ssh_private_key", defaultValue = "")
+    val sshPrivateKey: String = "",
+
+    @ColumnInfo(name = "ssh_key_passphrase", defaultValue = "")
+    val sshKeyPassphrase: String = "",
+
+    @ColumnInfo(name = "tor_bridge_lines", defaultValue = "")
+    val torBridgeLines: String = ""
 )

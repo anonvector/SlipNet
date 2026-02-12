@@ -33,7 +33,16 @@ data class ServerProfile(
     // Timestamp of last successful connection (0 = never connected)
     val lastConnectedAt: Long = 0,
     // DNS transport for DNSTT tunnel types (UDP, DoH, DoT)
-    val dnsTransport: DnsTransport = DnsTransport.UDP
+    val dnsTransport: DnsTransport = DnsTransport.UDP,
+    // SSH authentication type (password or key)
+    val sshAuthType: SshAuthType = SshAuthType.PASSWORD,
+    // SSH private key (PEM content)
+    val sshPrivateKey: String = "",
+    // SSH key passphrase (optional)
+    val sshKeyPassphrase: String = "",
+    // Custom Tor bridge lines (one per line). Empty = use built-in Snowflake.
+    // Transport is auto-detected from bridge line prefix (obfs4, webtunnel, meek_lite, etc.)
+    val torBridgeLines: String = ""
 )
 
 data class DnsResolver(
@@ -59,11 +68,23 @@ enum class TunnelType(val value: String, val displayName: String) {
     DNSTT("dnstt", "DNSTT"),
     DNSTT_SSH("dnstt_ssh", "DNSTT + SSH"),
     SSH("ssh", "SSH"),
-    DOH("doh", "DOH (DNS over HTTPS)");
+    DOH("doh", "DOH (DNS over HTTPS)"),
+    SNOWFLAKE("snowflake", "Tor");
 
     companion object {
         fun fromValue(value: String): TunnelType {
             return entries.find { it.value == value } ?: DNSTT
+        }
+    }
+}
+
+enum class SshAuthType(val value: String) {
+    PASSWORD("password"),
+    KEY("key");
+
+    companion object {
+        fun fromValue(value: String): SshAuthType {
+            return entries.find { it.value == value } ?: PASSWORD
         }
     }
 }

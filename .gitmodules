@@ -10,3 +10,6 @@
 [submodule "dnstt"]
 	path = dnstt
 	url = https://github.com/tladesignz/dnstt.git
+[submodule "lyrebird"]
+	path = lyrebird
+	url = https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird.git

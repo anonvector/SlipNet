@@ -16,7 +16,9 @@ import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.ResolverConfig
 import app.slipnet.tunnel.SlipstreamBridge
 import app.slipnet.tunnel.SlipstreamSocksBridge
+import app.slipnet.tunnel.SnowflakeBridge
 import app.slipnet.tunnel.SshTunnelBridge
+import app.slipnet.tunnel.TorSocksBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,6 +35,7 @@ import javax.inject.Singleton
 
 @Singleton
 class VpnRepositoryImpl @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
     private val preferencesDataStore: PreferencesDataStore
 ) : VpnRepository {
     companion object {
@@ -76,7 +79,11 @@ class VpnRepositoryImpl @Inject constructor(
      * Start the Slipstream SOCKS5 proxy. Call this BEFORE establishing the VPN interface.
      * This ensures the proxy is ready to handle traffic when the VPN starts routing.
      */
-    suspend fun startSlipstreamProxy(profile: ServerProfile): Result<Unit> {
+    suspend fun startSlipstreamProxy(
+        profile: ServerProfile,
+        portOverride: Int? = null,
+        hostOverride: String? = null
+    ): Result<Unit> {
         connectedProfile = profile
         val debugLogging = preferencesDataStore.debugLogging.first()
 
@@ -89,8 +96,8 @@ class VpnRepositoryImpl @Inject constructor(
             )
         }
 
-        val listenPort = preferencesDataStore.proxyListenPort.first()
-        val listenHost = preferencesDataStore.proxyListenAddress.first()
+        val listenPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
+        val listenHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
         val success = startSlipstreamClient(profile.domain, resolvers, profile, debugLogging, listenPort, listenHost)
 
         return if (success) {
@@ -111,7 +118,11 @@ class VpnRepositoryImpl @Inject constructor(
      * The VPN must be established first with addDisallowedApplication so DNSTT's
      * DNS queries bypass the VPN.
      */
-    suspend fun startDnsttProxy(profile: ServerProfile): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun startDnsttProxy(
+        profile: ServerProfile,
+        portOverride: Int? = null,
+        hostOverride: String? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
         // Format DNS server address based on transport type.
@@ -134,8 +145,8 @@ class VpnRepositoryImpl @Inject constructor(
             }
         }
 
-        val proxyPort = preferencesDataStore.proxyListenPort.first()
-        val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
+        val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
 
         val result = DnsttBridge.startClient(
             dnsServer = dnsServer,
@@ -211,6 +222,59 @@ class VpnRepositoryImpl @Inject constructor(
             Log.e(TAG, "Failed to start SlipstreamSocksBridge: ${result.exceptionOrNull()?.message}")
         }
         result
+    }
+
+    /**
+     * Start the Snowflake proxy stack: Snowflake PT + Tor + TorSocksBridge.
+     * Call this AFTER establishing the VPN interface.
+     *
+     * Port allocation:
+     * - bridgePort (proxyPort): TorSocksBridge (what hev-socks5-tunnel connects to)
+     * - torSocksPort (proxyPort+1): Tor SOCKS5 (what bridge chains CONNECT to)
+     * - snowflakePtPort (proxyPort+2): Snowflake PT SOCKS5 (what Tor connects through)
+     */
+    suspend fun startSnowflakeProxy(
+        profile: ServerProfile,
+        snowflakePtPort: Int,
+        torSocksPort: Int,
+        bridgePort: Int
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        connectedProfile = profile
+        val proxyHost = preferencesDataStore.proxyListenAddress.first()
+
+        // Step 1: Start Snowflake PT + Tor (or other PT based on bridge lines)
+        val sfResult = SnowflakeBridge.startClient(
+            context = context,
+            snowflakePort = snowflakePtPort,
+            torSocksPort = torSocksPort,
+            listenHost = proxyHost,
+            bridgeLines = profile.torBridgeLines
+        )
+
+        if (sfResult.isFailure) {
+            connectedProfile = null
+            Log.e(TAG, "Failed to start Snowflake + Tor: ${sfResult.exceptionOrNull()?.message}")
+            return@withContext Result.failure(sfResult.exceptionOrNull() ?: Exception("Failed to start Snowflake"))
+        }
+
+        // Step 2: Start TorSocksBridge
+        val bridgeResult = TorSocksBridge.start(
+            torSocksPort = torSocksPort,
+            torHost = proxyHost,
+            listenPort = bridgePort,
+            listenHost = proxyHost
+        )
+
+        if (bridgeResult.isFailure) {
+            SnowflakeBridge.stopClient()
+            connectedProfile = null
+            Log.e(TAG, "Failed to start TorSocksBridge: ${bridgeResult.exceptionOrNull()?.message}")
+            return@withContext Result.failure(bridgeResult.exceptionOrNull() ?: Exception("Failed to start TorSocksBridge"))
+        }
+
+        currentTunnelType = TunnelType.SNOWFLAKE
+        Log.i(TAG, "Snowflake proxy stack started successfully")
+        Result.success(Unit)
     }
 
     /**
@@ -308,6 +372,11 @@ class VpnRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Stopping DoH proxy")
                 DohBridge.stop()
             }
+            TunnelType.SNOWFLAKE -> {
+                Log.d(TAG, "Stopping Snowflake: TorSocksBridge first, then Snowflake+Tor")
+                TorSocksBridge.stop()
+                SnowflakeBridge.stopClient()
+            }
             null -> {
                 // Try to stop all just in case
                 Log.d(TAG, "No tunnel type set, stopping all proxies")
@@ -316,6 +385,8 @@ class VpnRepositoryImpl @Inject constructor(
                 DnsttBridge.stopClient()
                 SshTunnelBridge.stop()
                 DnsDoHProxy.stop()
+                TorSocksBridge.stop()
+                SnowflakeBridge.stopClient()
             }
         }
         currentTunnelType = null

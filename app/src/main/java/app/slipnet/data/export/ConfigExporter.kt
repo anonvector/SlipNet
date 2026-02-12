@@ -3,6 +3,7 @@ package app.slipnet.data.export
 import android.util.Base64
 import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -13,8 +14,8 @@ import javax.inject.Singleton
  * Single profile format: slipnet://[base64-encoded-profile]
  * Multiple profiles: one URI per line
  *
- * Encoded profile format v9 (pipe-delimited, extends v8 with dnsTransport):
- * v9|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport
+ * Encoded profile format v12 (pipe-delimited, extends v11 with Tor bridge lines):
+ * v12|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -23,13 +24,14 @@ class ConfigExporter @Inject constructor() {
 
     companion object {
         const val SCHEME = "slipnet://"
-        const val VERSION = "9"
+        const val VERSION = "12"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
         const val MODE_DNSTT_SSH = "dnstt_ssh"
         const val MODE_SSH = "ssh"
         const val MODE_DOH = "doh"
+        const val MODE_SNOWFLAKE = "snowflake"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -55,6 +57,7 @@ class ConfigExporter @Inject constructor() {
             TunnelType.DNSTT_SSH -> MODE_DNSTT_SSH
             TunnelType.SSH -> MODE_SSH
             TunnelType.DOH -> MODE_DOH
+            TunnelType.SNOWFLAKE -> MODE_SNOWFLAKE
         }
 
         val data = listOf(
@@ -80,7 +83,11 @@ class ConfigExporter @Inject constructor() {
             profile.sshHost,
             if (profile.useServerDns) "1" else "0",
             profile.dohUrl,
-            profile.dnsTransport.value
+            profile.dnsTransport.value,
+            profile.sshAuthType.value,
+            Base64.encodeToString(profile.sshPrivateKey.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
+            Base64.encodeToString(profile.sshKeyPassphrase.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
+            Base64.encodeToString(profile.torBridgeLines.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         ).joinToString(FIELD_DELIMITER)
 
         val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)

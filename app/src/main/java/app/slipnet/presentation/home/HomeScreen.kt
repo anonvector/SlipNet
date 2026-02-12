@@ -24,9 +24,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,6 +47,7 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -80,6 +84,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TunnelType
+import app.slipnet.presentation.profiles.EditProfileViewModel
 import app.slipnet.presentation.theme.ConnectedGreen
 import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.presentation.theme.ConnectingOrange
@@ -132,6 +137,8 @@ fun HomeScreen(
         }
     }
 
+    val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -161,12 +168,16 @@ fun HomeScreen(
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { paddingValues ->
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues),
+            contentPadding = PaddingValues(
+                bottom = navBarPadding.calculateBottomPadding()
+            ),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Hero Connection Section
@@ -174,6 +185,8 @@ fun HomeScreen(
                 ConnectionHero(
                     connectionState = uiState.connectionState,
                     hasProfile = uiState.activeProfile != null || uiState.profiles.isNotEmpty(),
+                    snowflakeBootstrapProgress = uiState.snowflakeBootstrapProgress,
+                    isProxyOnly = uiState.proxyOnlyMode,
                     onConnectClick = {
                         when (uiState.connectionState) {
                             is ConnectionState.Connected,
@@ -208,7 +221,7 @@ fun HomeScreen(
                         viewModel.setActiveProfile(profile)
                     },
                     onManageClick = onNavigateToProfiles,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                    modifier = Modifier.padding(horizontal = 20.dp)
                 )
             }
         }
@@ -255,6 +268,8 @@ fun HomeScreen(
 private fun ConnectionHero(
     connectionState: ConnectionState,
     hasProfile: Boolean,
+    snowflakeBootstrapProgress: Int = -1,
+    isProxyOnly: Boolean = false,
     onConnectClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -277,7 +292,7 @@ private fun ConnectionHero(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 32.dp),
+            .padding(top = 8.dp, bottom = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // Power Button
@@ -294,6 +309,7 @@ private fun ConnectionHero(
         // Status Text
         Text(
             text = when {
+                isConnected && isProxyOnly -> "Proxy Active"
                 isConnected -> "Connected"
                 connectionState is ConnectionState.Connecting -> "Connecting..."
                 connectionState is ConnectionState.Disconnecting -> "Disconnecting..."
@@ -304,6 +320,30 @@ private fun ConnectionHero(
             fontWeight = FontWeight.SemiBold,
             color = if (isConnected) statusColor else MaterialTheme.colorScheme.onBackground
         )
+
+        // Snowflake bootstrap progress
+        if (connectionState is ConnectionState.Connecting && snowflakeBootstrapProgress in 0..99) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(horizontal = 48.dp)
+            ) {
+                Text(
+                    text = "Tor: $snowflakeBootstrapProgress%",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ConnectingOrange
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                LinearProgressIndicator(
+                    progress = { snowflakeBootstrapProgress / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp),
+                    color = ConnectingOrange,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.height(4.dp))
 
@@ -621,6 +661,7 @@ private fun ProfileCard(
                             ?: profile.dohUrl
                         TunnelType.SSH -> "${profile.domain}:${profile.sshPort}"
                         TunnelType.DNSTT_SSH -> "${profile.domain} via SSH"
+                        TunnelType.SNOWFLAKE -> "Tor Network"
                         else -> profile.domain
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -629,7 +670,10 @@ private fun ProfileCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = profile.tunnelType.displayName,
+                    text = when (profile.tunnelType) {
+                        TunnelType.SNOWFLAKE -> EditProfileViewModel.detectBridgeType(profile.torBridgeLines).displayName
+                        else -> profile.tunnelType.displayName
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

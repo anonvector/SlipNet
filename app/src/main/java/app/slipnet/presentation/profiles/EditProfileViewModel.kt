@@ -9,10 +9,13 @@ import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.SshAuthType
+import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.usecase.GetProfileByIdUseCase
 import app.slipnet.domain.usecase.SaveProfileUseCase
 import app.slipnet.domain.usecase.SetActiveProfileUseCase
+import app.slipnet.service.VpnConnectionManager
 import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.tunnel.DohBridge
 import app.slipnet.tunnel.DohServer
@@ -32,8 +35,10 @@ import java.net.UnknownHostException
 import javax.inject.Inject
 import javax.net.ssl.SSLException
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 
 data class DohTestResult(
     val name: String,
@@ -42,6 +47,20 @@ data class DohTestResult(
     val error: String? = null
 ) {
     val isSuccess: Boolean get() = latencyMs != null && error == null
+}
+
+/**
+ * UI-only bridge type selector. Not persisted — the actual bridge lines are stored
+ * in torBridgeLines and transport is auto-detected at runtime.
+ */
+enum class TorBridgeType(val displayName: String) {
+    SNOWFLAKE("Snowflake"),
+    DIRECT("Direct"),
+    SNOWFLAKE_AMP("Snowflake (AMP)"),
+    OBFS4("obfs4"),
+    MEEK_AZURE("Meek"),
+    SMART("Smart Connect"),
+    CUSTOM("Custom")
 }
 
 data class EditProfileUiState(
@@ -71,6 +90,7 @@ data class EditProfileUiState(
     val isSaving: Boolean = false,
     val isAutoDetecting: Boolean = false,
     val saveSuccess: Boolean = false,
+    val showRestartVpnMessage: Boolean = false,
     val error: String? = null,
     val nameError: String? = null,
     val domainError: String? = null,
@@ -82,7 +102,22 @@ data class EditProfileUiState(
     val showDohTestDialog: Boolean = false,
     val dohTestResults: List<DohTestResult> = emptyList(),
     // DNS transport for DNSTT tunnel types
-    val dnsTransport: DnsTransport = DnsTransport.UDP
+    val dnsTransport: DnsTransport = DnsTransport.UDP,
+    // Custom DoH URLs for testing (one per line, raw text)
+    val customDohUrls: String = "",
+    // SSH auth type (password or key)
+    val sshAuthType: SshAuthType = SshAuthType.PASSWORD,
+    val sshPrivateKey: String = "",
+    val sshKeyPassphrase: String = "",
+    val sshPrivateKeyError: String? = null,
+    // Tor bridge type selector (UI-only, not persisted)
+    val torBridgeType: TorBridgeType = TorBridgeType.SNOWFLAKE,
+    // Custom Tor bridge lines (Snowflake profiles only, one per line)
+    val torBridgeLines: String = "",
+    val torBridgeLinesError: String? = null,
+    // Bridge request state
+    val isRequestingBridges: Boolean = false,
+    val isAskingTor: Boolean = false
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH
@@ -99,8 +134,11 @@ data class EditProfileUiState(
     val isDoh: Boolean
         get() = tunnelType == TunnelType.DOH
 
+    val isSnowflake: Boolean
+        get() = tunnelType == TunnelType.SNOWFLAKE
+
     val showConnectionMethod: Boolean
-        get() = !isSshOnly && !isDoh
+        get() = !isSshOnly && !isDoh && !isSnowflake
 }
 
 @HiltViewModel
@@ -109,7 +147,8 @@ class EditProfileViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val getProfileByIdUseCase: GetProfileByIdUseCase,
     private val saveProfileUseCase: SaveProfileUseCase,
-    private val setActiveProfileUseCase: SetActiveProfileUseCase
+    private val setActiveProfileUseCase: SetActiveProfileUseCase,
+    private val connectionManager: VpnConnectionManager
 ) : ViewModel() {
 
     private val profileId: Long? = savedStateHandle.get<Long>("profileId")
@@ -163,6 +202,11 @@ class EditProfileViewModel @Inject constructor(
                     sshPort = profile.sshPort.toString(),
                     dohUrl = profile.dohUrl,
                     dnsTransport = profile.dnsTransport,
+                    sshAuthType = profile.sshAuthType,
+                    sshPrivateKey = profile.sshPrivateKey,
+                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                    torBridgeType = detectBridgeType(profile.torBridgeLines),
+                    torBridgeLines = profile.torBridgeLines,
                     isLoading = false
                 )
             } else {
@@ -268,6 +312,234 @@ class EditProfileViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(dohUrl = url, dohUrlError = null)
     }
 
+    fun updateCustomDohUrls(text: String) {
+        _uiState.value = _uiState.value.copy(customDohUrls = text)
+    }
+
+    fun updateSshAuthType(type: SshAuthType) {
+        _uiState.value = _uiState.value.copy(
+            sshAuthType = type,
+            sshPasswordError = null,
+            sshPrivateKeyError = null
+        )
+    }
+
+    fun updateSshPrivateKey(key: String) {
+        _uiState.value = _uiState.value.copy(sshPrivateKey = key, sshPrivateKeyError = null)
+    }
+
+    fun updateSshKeyPassphrase(passphrase: String) {
+        _uiState.value = _uiState.value.copy(sshKeyPassphrase = passphrase)
+    }
+
+    fun updateTorBridgeLines(lines: String) {
+        _uiState.value = _uiState.value.copy(
+            torBridgeLines = lines,
+            torBridgeLinesError = null,
+            torBridgeType = TorBridgeType.CUSTOM
+        )
+    }
+
+    fun selectTorBridgeType(type: TorBridgeType) {
+        val lines = when (type) {
+            TorBridgeType.SNOWFLAKE -> ""
+            TorBridgeType.DIRECT -> "DIRECT"
+            TorBridgeType.SNOWFLAKE_AMP -> "SNOWFLAKE_AMP"
+            TorBridgeType.OBFS4 -> DEFAULT_OBFS4_BRIDGES
+            TorBridgeType.MEEK_AZURE -> DEFAULT_MEEK_BRIDGE
+            TorBridgeType.SMART -> "SMART"
+            TorBridgeType.CUSTOM -> _uiState.value.torBridgeLines
+        }
+        _uiState.value = _uiState.value.copy(
+            torBridgeType = type,
+            torBridgeLines = lines,
+            torBridgeLinesError = null
+        )
+    }
+
+    fun requestBridges() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isRequestingBridges = true)
+            try {
+                val bridges = withContext(Dispatchers.IO) { fetchBridgesFromMoat() }
+                if (bridges.isNotEmpty()) {
+                    val lines = bridges.joinToString("\n")
+                    _uiState.value = _uiState.value.copy(
+                        isRequestingBridges = false,
+                        torBridgeType = TorBridgeType.CUSTOM,
+                        torBridgeLines = lines,
+                        torBridgeLinesError = null
+                    )
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        isRequestingBridges = false,
+                        error = "No bridges returned. Try Telegram or email instead."
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isRequestingBridges = false,
+                    error = "Could not fetch bridges: ${e.message ?: "connection failed"}. Try Telegram or email instead."
+                )
+            }
+        }
+    }
+
+    fun askTor() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isAskingTor = true)
+            try {
+                val result = withContext(Dispatchers.IO) { fetchCircumventionSettings() }
+                if (result != null) {
+                    val (bridgeType, bridgeLines) = result
+                    _uiState.value = _uiState.value.copy(
+                        isAskingTor = false,
+                        torBridgeType = bridgeType,
+                        torBridgeLines = bridgeLines,
+                        torBridgeLinesError = null,
+                        error = null
+                    )
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        isAskingTor = false,
+                        error = "Could not reach Tor. Check your internet connection."
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isAskingTor = false,
+                    error = "Could not reach Tor. Check your internet connection."
+                )
+            }
+        }
+    }
+
+    private fun fetchCircumventionSettings(): Pair<TorBridgeType, String>? {
+        val client = OkHttpClient.Builder()
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+
+        val jsonMediaType = "application/vnd.api+json".toMediaType()
+        val requestJson = """{"transports":["obfs4","snowflake","meek_lite"]}"""
+
+        // Try direct request first
+        try {
+            val body = requestJson.toRequestBody(jsonMediaType)
+            val request = Request.Builder()
+                .url("$MOAT_BASE_URL/$MOAT_SETTINGS_PATH")
+                .post(body)
+                .header("Content-Type", "application/vnd.api+json")
+                .build()
+            client.newCall(request).execute().use { response ->
+                val result = parseSettingsResponse(response)
+                if (result != null) return result
+            }
+        } catch (_: Exception) {
+            // Direct request failed (likely blocked), try domain fronting
+        }
+
+        // Fallback: domain fronting via Azure CDN
+        val body = requestJson.toRequestBody(jsonMediaType)
+        val frontedRequest = Request.Builder()
+            .url("https://$MOAT_FRONT_DOMAIN/moat/$MOAT_SETTINGS_PATH")
+            .post(body)
+            .header("Host", MOAT_HOST)
+            .header("Content-Type", "application/vnd.api+json")
+            .build()
+        client.newCall(frontedRequest).execute().use { response ->
+            return parseSettingsResponse(response)
+        }
+    }
+
+    private fun parseSettingsResponse(response: okhttp3.Response): Pair<TorBridgeType, String>? {
+        // 404 means no bridges needed for this country
+        if (response.code == 404) {
+            return Pair(TorBridgeType.DIRECT, "DIRECT")
+        }
+
+        if (!response.isSuccessful) return null
+
+        val bodyStr = response.body?.string() ?: return null
+        val json = JSONObject(bodyStr)
+        val settings = json.optJSONArray("settings") ?: return null
+        if (settings.length() == 0) {
+            // Empty settings = no bridges needed
+            return Pair(TorBridgeType.DIRECT, "DIRECT")
+        }
+
+        val first = settings.getJSONObject(0)
+        val bridges = first.optJSONObject("bridges") ?: return null
+        val type = bridges.optString("type", "")
+        val source = bridges.optString("source", "")
+        val bridgeStrings = bridges.optJSONArray("bridge_strings")
+
+        return when (type) {
+            "snowflake" -> Pair(TorBridgeType.SNOWFLAKE, "")
+            "obfs4" -> {
+                if (source == "bridgedb" && bridgeStrings != null && bridgeStrings.length() > 0) {
+                    val lines = (0 until bridgeStrings.length()).joinToString("\n") {
+                        bridgeStrings.getString(it)
+                    }
+                    Pair(TorBridgeType.CUSTOM, lines)
+                } else {
+                    Pair(TorBridgeType.OBFS4, DEFAULT_OBFS4_BRIDGES)
+                }
+            }
+            "meek_lite" -> Pair(TorBridgeType.MEEK_AZURE, DEFAULT_MEEK_BRIDGE)
+            else -> null
+        }
+    }
+
+    private fun fetchBridgesFromMoat(): List<String> {
+        val client = OkHttpClient.Builder()
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+
+        // Try direct request first
+        try {
+            val request = Request.Builder()
+                .url("$MOAT_BASE_URL/$MOAT_BUILTIN_PATH")
+                .get()
+                .build()
+            val bridges = executeBuiltinRequest(client, request)
+            if (bridges.isNotEmpty()) return bridges
+        } catch (_: Exception) {
+            // Direct request failed (likely blocked), try domain fronting
+        }
+
+        // Fallback: domain fronting via Azure CDN
+        val frontedRequest = Request.Builder()
+            .url("https://$MOAT_FRONT_DOMAIN/$MOAT_BUILTIN_PATH")
+            .header("Host", MOAT_HOST)
+            .get()
+            .build()
+        return executeBuiltinRequest(client, frontedRequest)
+    }
+
+    /**
+     * Parse /circumvention/builtin response.
+     * Format: {"obfs4": ["obfs4 ...", ...], "snowflake": ["snowflake ...", ...]}
+     */
+    private fun executeBuiltinRequest(client: OkHttpClient, request: Request): List<String> {
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw Exception("HTTP ${response.code}")
+            }
+            val json = JSONObject(response.body?.string() ?: throw Exception("Empty response"))
+
+            val bridges = mutableListOf<String>()
+            val obfs4 = json.optJSONArray("obfs4")
+            if (obfs4 != null) {
+                for (i in 0 until obfs4.length()) {
+                    bridges.add(obfs4.getString(i))
+                }
+            }
+            return bridges
+        }
+    }
+
     fun selectDohPreset(preset: DohServer) {
         _uiState.value = _uiState.value.copy(
             dohUrl = preset.url,
@@ -275,26 +547,48 @@ class EditProfileViewModel @Inject constructor(
         )
     }
 
+    private fun parseCustomDohUrls(): List<DohServer> {
+        val state = _uiState.value
+        val presetUrls = DOH_SERVERS.map { it.url }.toSet()
+        return state.customDohUrls
+            .lines()
+            .map { it.trim() }
+            .filter { it.startsWith("https://") }
+            .filter { it !in presetUrls }
+            .distinctBy { it }
+            .map { url ->
+                val host = try {
+                    java.net.URL(url).host
+                } catch (_: Exception) {
+                    url
+                }
+                DohServer(name = host, url = url)
+            }
+    }
+
     fun testDohServers() {
         viewModelScope.launch {
+            val customServers = parseCustomDohUrls()
+            val allServers = DOH_SERVERS + customServers
+
             _uiState.value = _uiState.value.copy(
                 isTestingDoh = true,
                 showDohTestDialog = true,
-                dohTestResults = DOH_SERVERS.map { DohTestResult(it.name, it.url) }
+                dohTestResults = allServers.map { DohTestResult(it.name, it.url) }
             )
 
             val client = DohBridge.createHttpClient()
             val completed = java.util.concurrent.ConcurrentHashMap<String, DohTestResult>()
 
             // Launch all tests in parallel — results stream in as each completes
-            val jobs = DOH_SERVERS.map { preset ->
+            val jobs = allServers.map { preset ->
                 launch(Dispatchers.IO) {
                     val result = testSingleDohServer(preset, client)
                     completed[result.url] = result
 
                     // Update UI immediately with this result
                     val snapshot = completed.values.toList()
-                    val pending = DOH_SERVERS
+                    val pending = allServers
                         .filter { p -> !completed.containsKey(p.url) }
                         .map { DohTestResult(it.name, it.url) }
                     _uiState.value = _uiState.value.copy(
@@ -455,10 +749,10 @@ class EditProfileViewModel @Inject constructor(
             hasError = true
         }
 
-        if (state.tunnelType != TunnelType.DOH && state.domain.isBlank()) {
+        if (state.tunnelType != TunnelType.DOH && state.tunnelType != TunnelType.SNOWFLAKE && state.domain.isBlank()) {
             _uiState.value = _uiState.value.copy(domainError = "Domain is required")
             hasError = true
-        } else if (state.tunnelType != TunnelType.DOH && state.domain.isNotBlank()) {
+        } else if (state.tunnelType != TunnelType.DOH && state.tunnelType != TunnelType.SNOWFLAKE && state.domain.isNotBlank()) {
             val domainError = validateDomain(state.domain.trim(), state.tunnelType)
             if (domainError != null) {
                 _uiState.value = _uiState.value.copy(domainError = domainError)
@@ -481,6 +775,7 @@ class EditProfileViewModel @Inject constructor(
 
         // Resolver validation (SSH-only, DOH profiles, and DNSTT with DoH transport don't need resolvers)
         val skipResolvers = state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
+                state.tunnelType == TunnelType.SNOWFLAKE ||
                 (state.isDnsttBased && state.dnsTransport == DnsTransport.DOH)
         if (!skipResolvers) {
             if (state.resolvers.isBlank()) {
@@ -504,15 +799,33 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
+        // Tor bridge line validation (Custom bridge type requires non-empty lines)
+        if (state.tunnelType == TunnelType.SNOWFLAKE && state.torBridgeType == TorBridgeType.CUSTOM) {
+            if (state.torBridgeLines.isBlank()) {
+                _uiState.value = _uiState.value.copy(torBridgeLinesError = "Bridge lines are required")
+                hasError = true
+            }
+        }
+
         // SSH validation (SSH-only, DNSTT+SSH, and Slipstream+SSH tunnel types)
         if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH) {
             if (state.sshUsername.isBlank()) {
                 _uiState.value = _uiState.value.copy(sshUsernameError = "SSH username is required")
                 hasError = true
             }
-            if (state.sshPassword.isBlank()) {
-                _uiState.value = _uiState.value.copy(sshPasswordError = "SSH password is required")
-                hasError = true
+            if (state.sshAuthType == SshAuthType.PASSWORD) {
+                if (state.sshPassword.isBlank()) {
+                    _uiState.value = _uiState.value.copy(sshPasswordError = "SSH password is required")
+                    hasError = true
+                }
+            } else {
+                if (state.sshPrivateKey.isBlank()) {
+                    _uiState.value = _uiState.value.copy(sshPrivateKeyError = "SSH private key is required")
+                    hasError = true
+                } else if (!state.sshPrivateKey.trimStart().startsWith("-----BEGIN")) {
+                    _uiState.value = _uiState.value.copy(sshPrivateKeyError = "Invalid key format (must be PEM)")
+                    hasError = true
+                }
             }
         }
 
@@ -548,19 +861,30 @@ class EditProfileViewModel @Inject constructor(
                     tunnelType = state.tunnelType,
                     dnsttPublicKey = state.dnsttPublicKey.trim(),
                     sshUsername = if (state.useSsh) state.sshUsername.trim() else "",
-                    sshPassword = if (state.useSsh) state.sshPassword else "",
+                    sshPassword = if (state.useSsh && state.sshAuthType == SshAuthType.PASSWORD) state.sshPassword else "",
                     sshPort = state.sshPort.toIntOrNull() ?: 22,
                     sshHost = "127.0.0.1",
                     useServerDns = false,
                     dohUrl = if (state.isDoh || (state.isDnsttBased && state.dnsTransport == DnsTransport.DOH)) state.dohUrl.trim() else "",
-                    dnsTransport = if (state.isDnsttBased) state.dnsTransport else DnsTransport.UDP
+                    dnsTransport = if (state.isDnsttBased) state.dnsTransport else DnsTransport.UDP,
+                    sshAuthType = if (state.useSsh) state.sshAuthType else SshAuthType.PASSWORD,
+                    sshPrivateKey = if (state.useSsh && state.sshAuthType == SshAuthType.KEY) state.sshPrivateKey else "",
+                    sshKeyPassphrase = if (state.useSsh && state.sshAuthType == SshAuthType.KEY) state.sshKeyPassphrase else "",
+                    torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else ""
                 )
 
                 val savedId = saveProfileUseCase(profile)
                 setActiveProfileUseCase(savedId)
+
+                // Check if VPN is currently connected to this profile
+                val connState = connectionManager.connectionState.value
+                val isVpnActive = connState is ConnectionState.Connected ||
+                        connState is ConnectionState.Connecting
+
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
-                    saveSuccess = true
+                    saveSuccess = true,
+                    showRestartVpnMessage = isVpnActive
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -670,6 +994,54 @@ class EditProfileViewModel @Inject constructor(
 
     companion object {
         const val MAX_RESOLVERS = 3
+
+        // Moat API (Tor bridge distribution)
+        private const val MOAT_HOST = "bridges.torproject.org"
+        private const val MOAT_BASE_URL = "https://$MOAT_HOST/moat"
+        private const val MOAT_BUILTIN_PATH = "circumvention/builtin"
+        private const val MOAT_SETTINGS_PATH = "circumvention/settings"
+        private const val MOAT_FRONT_DOMAIN = "ajax.aspnetcdn.com"
+
+        // Built-in obfs4 bridges (from Tor Project's /circumvention/builtin API)
+        val DEFAULT_OBFS4_BRIDGES = """
+            obfs4 51.222.13.177:80 5EDAC3B810E12B01F6FD8050D2FD3E277B289A08 cert=2uplIpLQ0q9+0qMFrK5pkaYRDOe460LL9WHBvatgkuRr/SL31wBOEupaMMJ6koRE6Ld0ew iat-mode=0
+            obfs4 37.218.245.14:38224 D9A82D2F9C2F65A18407B1D2B764F130847F8B5D cert=bjRaMrr1BRiAW8IE9U5z27fQaYgOhX1UCmOpg2pFpoMvo6ZgQMzLsaTzzQNTlm7hNcb+Sg iat-mode=0
+            obfs4 45.145.95.6:27015 C5B7CD6946FF10C5B3E89691A7D3F2C122D2117C cert=TD7PbUO0/0k6xYHMPW3vJxICfkMZNdkRrb63Zhl5j9dW3iRGiCx0A7mPhe5T2EDzQ35+Zw iat-mode=0
+            obfs4 209.148.46.65:443 74FAD13168806246602538555B5521A0383A1875 cert=ssH+9rP8dG2NLDN2XuFw63hIO/9MNNinLmxQDpVa+7kTOa9/m+tGWT1SmSYpQ9uTBGa6Hw iat-mode=0
+            obfs4 146.57.248.225:22 10A6CD36A537FCE513A322361547444B393989F0 cert=K1gDtDAIcUfeLqbstggjIw2rtgIKqdIhUlHp82XRqNSq/mtAjp1BIC9vHKJ2FAEpGssTPw iat-mode=0
+            obfs4 212.83.43.95:443 BFE712113A72899AD685764B211FACD30FF52C31 cert=ayq0XzCwhpdysn5o0EyDUbmSOx3X/oTEbzDMvczHOdBJKlvIdHHLJGkZARtT4dcBFArPPg iat-mode=1
+            obfs4 212.83.43.74:443 39562501228A4D5E27FCA4C0C81A01EE23AE3EE4 cert=PBwr+S8JTVZo6MPdHnkTwXJPILWADLqfMGoVvhZClMq/Urndyd42BwX9YFJHZnBB3H0XCw iat-mode=1
+        """.trimIndent()
+
+        // Built-in meek_lite bridge (CDN77 domain fronting, from Tor Browser defaults — Bug 41508)
+        const val DEFAULT_MEEK_BRIDGE = "meek_lite 192.0.2.20:80 url=https://1603026938.rsc.cdn77.org front=www.phpmyadmin.net utls=HelloRandomizedALPN"
+
+        /**
+         * Detect the bridge type from stored bridge lines (for loading existing profiles).
+         */
+        fun detectBridgeType(torBridgeLines: String): TorBridgeType {
+            if (torBridgeLines.isBlank()) return TorBridgeType.SNOWFLAKE
+            // Check sentinel values first (all-caps single words)
+            val trimmed = torBridgeLines.trim()
+            return when (trimmed) {
+                "DIRECT" -> TorBridgeType.DIRECT
+                "SNOWFLAKE_AMP" -> TorBridgeType.SNOWFLAKE_AMP
+                "SMART" -> TorBridgeType.SMART
+                else -> {
+                    val firstWord = trimmed.lines()
+                        .firstOrNull { it.isNotBlank() }
+                        ?.trim()
+                        ?.split("\\s+".toRegex())
+                        ?.firstOrNull()
+                        ?.lowercase()
+                    when (firstWord) {
+                        "obfs4" -> TorBridgeType.OBFS4
+                        "meek_lite" -> TorBridgeType.MEEK_AZURE
+                        else -> TorBridgeType.CUSTOM
+                    }
+                }
+            }
+        }
     }
 
     private fun validateSingleResolver(resolver: String): String? {

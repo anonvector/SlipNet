@@ -1,6 +1,7 @@
 package app.slipnet.tunnel
 
 import android.util.Log
+import app.slipnet.domain.model.SshAuthType
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.ProxySOCKS5
@@ -150,7 +151,10 @@ object SshTunnelBridge {
         listenPort: Int,
         listenHost: String = "127.0.0.1",
         forwardDnsThroughSsh: Boolean = false,
-        useServerDns: Boolean = false
+        useServerDns: Boolean = false,
+        sshAuthType: SshAuthType = SshAuthType.PASSWORD,
+        sshPrivateKey: String = "",
+        sshKeyPassphrase: String = ""
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting SSH tunnel (direct mode)")
@@ -171,8 +175,20 @@ object SshTunnelBridge {
             // Connect SSH directly through the tunnel port
             // DNSTT forwards raw TCP to the remote SSH server
             val jsch = JSch()
+            if (sshAuthType == SshAuthType.KEY && sshPrivateKey.isNotBlank()) {
+                jsch.addIdentity(
+                    "ssh-key",
+                    sshPrivateKey.toByteArray(Charsets.UTF_8),
+                    null,
+                    if (sshKeyPassphrase.isNotBlank()) sshKeyPassphrase.toByteArray(Charsets.UTF_8) else null
+                )
+            }
             val newSession = jsch.getSession(sshUsername, tunnelHost, tunnelPort)
-            newSession.setPassword(sshPassword)
+            if (sshAuthType == SshAuthType.KEY) {
+                newSession.setConfig("PreferredAuthentications", "publickey")
+            } else {
+                newSession.setPassword(sshPassword)
+            }
             applySessionConfig(newSession)
             newSession.connect(CONNECT_TIMEOUT_MS)
 
@@ -181,7 +197,7 @@ object SshTunnelBridge {
             }
 
             session = newSession
-            Log.i(TAG, "SSH session connected (direct mode)")
+            Log.i(TAG, "SSH session connected (direct mode, auth=${sshAuthType.value})")
 
             startSocksServer(listenHost, listenPort)
 
@@ -227,7 +243,10 @@ object SshTunnelBridge {
         listenPort: Int,
         listenHost: String = "127.0.0.1",
         blockDirectDns: Boolean = false,
-        useServerDns: Boolean = false
+        useServerDns: Boolean = false,
+        sshAuthType: SshAuthType = SshAuthType.PASSWORD,
+        sshPrivateKey: String = "",
+        sshKeyPassphrase: String = ""
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting SSH tunnel (over tunnel)")
@@ -249,10 +268,22 @@ object SshTunnelBridge {
 
         return try {
             val jsch = JSch()
+            if (sshAuthType == SshAuthType.KEY && sshPrivateKey.isNotBlank()) {
+                jsch.addIdentity(
+                    "ssh-key",
+                    sshPrivateKey.toByteArray(Charsets.UTF_8),
+                    null,
+                    if (sshKeyPassphrase.isNotBlank()) sshKeyPassphrase.toByteArray(Charsets.UTF_8) else null
+                )
+            }
             // Connect directly to the tunnel's local port. The tunnel (DNSTT/Slipstream)
             // forwards raw TCP to the SSH server. No SOCKS5 handshake is needed.
             val newSession = jsch.getSession(sshUsername, proxyHost, proxyPort)
-            newSession.setPassword(sshPassword)
+            if (sshAuthType == SshAuthType.KEY) {
+                newSession.setConfig("PreferredAuthentications", "publickey")
+            } else {
+                newSession.setPassword(sshPassword)
+            }
             applySessionConfig(newSession)
             newSession.connect(CONNECT_TIMEOUT_MS)
 
@@ -261,7 +292,7 @@ object SshTunnelBridge {
             }
 
             session = newSession
-            Log.i(TAG, "SSH session connected (over DNSTT tunnel)")
+            Log.i(TAG, "SSH session connected (over DNSTT tunnel, auth=${sshAuthType.value})")
 
             startSocksServer(listenHost, listenPort)
 
@@ -306,7 +337,10 @@ object SshTunnelBridge {
         socksUsername: String?,
         socksPassword: String?,
         listenPort: Int,
-        listenHost: String = "127.0.0.1"
+        listenHost: String = "127.0.0.1",
+        sshAuthType: SshAuthType = SshAuthType.PASSWORD,
+        sshPrivateKey: String = "",
+        sshKeyPassphrase: String = ""
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting SSH tunnel (over Slipstream SOCKS5 proxy)")
@@ -327,9 +361,21 @@ object SshTunnelBridge {
 
         return try {
             val jsch = JSch()
+            if (sshAuthType == SshAuthType.KEY && sshPrivateKey.isNotBlank()) {
+                jsch.addIdentity(
+                    "ssh-key",
+                    sshPrivateKey.toByteArray(Charsets.UTF_8),
+                    null,
+                    if (sshKeyPassphrase.isNotBlank()) sshKeyPassphrase.toByteArray(Charsets.UTF_8) else null
+                )
+            }
             // Create session targeting the real SSH server
             val newSession = jsch.getSession(sshUsername, sshHost, sshPort)
-            newSession.setPassword(sshPassword)
+            if (sshAuthType == SshAuthType.KEY) {
+                newSession.setConfig("PreferredAuthentications", "publickey")
+            } else {
+                newSession.setPassword(sshPassword)
+            }
 
             // Set up SOCKS5 proxy through Slipstream
             val proxy = ProxySOCKS5(proxyHost, proxyPort)
@@ -345,7 +391,7 @@ object SshTunnelBridge {
             }
 
             session = newSession
-            Log.i(TAG, "SSH session connected (over Slipstream SOCKS5 proxy)")
+            Log.i(TAG, "SSH session connected (over Slipstream SOCKS5 proxy, auth=${sshAuthType.value})")
 
             startSocksServer(listenHost, listenPort)
 

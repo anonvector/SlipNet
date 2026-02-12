@@ -4,7 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.TunnelType
 import app.slipnet.data.local.datastore.PreferencesDataStore
+import app.slipnet.tunnel.SnowflakeBridge
 import app.slipnet.domain.usecase.ConnectVpnUseCase
 import app.slipnet.domain.usecase.DisconnectVpnUseCase
 import app.slipnet.domain.usecase.GetActiveProfileUseCase
@@ -16,6 +18,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -28,7 +32,8 @@ data class HomeUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val proxyOnlyMode: Boolean = false,
-    val debugLogging: Boolean = false
+    val debugLogging: Boolean = false,
+    val snowflakeBootstrapProgress: Int = -1
 )
 
 @HiltViewModel
@@ -45,6 +50,8 @@ class HomeViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
+    private var bootstrapPollingJob: Job? = null
+
     init {
         observeConnectionState()
         observeProfiles()
@@ -59,8 +66,33 @@ class HomeViewModel @Inject constructor(
                     connectionState = state,
                     error = if (state is ConnectionState.Error) state.message else null
                 )
+                // Start/stop Snowflake bootstrap progress polling
+                if (state is ConnectionState.Connecting) {
+                    startBootstrapPolling()
+                } else {
+                    stopBootstrapPolling()
+                }
             }
         }
+    }
+
+    private fun startBootstrapPolling() {
+        bootstrapPollingJob?.cancel()
+        bootstrapPollingJob = viewModelScope.launch {
+            while (true) {
+                val progress = SnowflakeBridge.torBootstrapProgress
+                _uiState.value = _uiState.value.copy(
+                    snowflakeBootstrapProgress = if (progress > 0) progress else -1
+                )
+                delay(500)
+            }
+        }
+    }
+
+    private fun stopBootstrapPolling() {
+        bootstrapPollingJob?.cancel()
+        bootstrapPollingJob = null
+        _uiState.value = _uiState.value.copy(snowflakeBootstrapProgress = -1)
     }
 
     private fun observeProxyOnlyMode() {

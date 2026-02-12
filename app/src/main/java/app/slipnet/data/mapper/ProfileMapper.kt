@@ -7,6 +7,7 @@ import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -48,7 +49,11 @@ class ProfileMapper @Inject constructor(
             useServerDns = entity.useServerDns,
             dohUrl = entity.dohUrl,
             lastConnectedAt = entity.lastConnectedAt,
-            dnsTransport = DnsTransport.fromValue(entity.dnsTransport)
+            dnsTransport = DnsTransport.fromValue(entity.dnsTransport),
+            sshAuthType = SshAuthType.fromValue(entity.sshAuthType),
+            sshPrivateKey = entity.sshPrivateKey,
+            sshKeyPassphrase = entity.sshKeyPassphrase,
+            torBridgeLines = entity.torBridgeLines
         )
     }
 
@@ -82,7 +87,11 @@ class ProfileMapper @Inject constructor(
             useServerDns = profile.useServerDns,
             dohUrl = profile.dohUrl,
             lastConnectedAt = profile.lastConnectedAt,
-            dnsTransport = profile.dnsTransport.value
+            dnsTransport = profile.dnsTransport.value,
+            sshAuthType = profile.sshAuthType.value,
+            sshPrivateKey = profile.sshPrivateKey,
+            sshKeyPassphrase = profile.sshKeyPassphrase,
+            torBridgeLines = profile.torBridgeLines
         )
     }
 

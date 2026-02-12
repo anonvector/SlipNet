@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TunnelType
+import app.slipnet.presentation.profiles.EditProfileViewModel
 import app.slipnet.presentation.theme.ConnectedGreen
 import app.slipnet.tunnel.DOH_SERVERS
 
@@ -186,6 +187,7 @@ fun ProfileListItem(
                             ?: profile.dohUrl
                         TunnelType.SSH -> "${profile.domain}:${profile.sshPort}"
                         TunnelType.DNSTT_SSH -> "${profile.domain} via SSH"
+                        TunnelType.SNOWFLAKE -> "Tor Network"
                         else -> profile.domain
                     },
                     style = MaterialTheme.typography.bodyMedium,
@@ -196,7 +198,10 @@ fun ProfileListItem(
 
                 // Detail line: tunnel type
                 Text(
-                    text = profile.tunnelType.displayName,
+                    text = when (profile.tunnelType) {
+                        TunnelType.SNOWFLAKE -> EditProfileViewModel.detectBridgeType(profile.torBridgeLines).displayName
+                        else -> profile.tunnelType.displayName
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
