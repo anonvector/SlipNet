@@ -22,6 +22,7 @@ import app.slipnet.domain.model.TunnelType
 import app.slipnet.tunnel.DnsttBridge
 import app.slipnet.tunnel.DohBridge
 import app.slipnet.tunnel.HevSocks5Tunnel
+import app.slipnet.tunnel.HttpProxyServer
 import app.slipnet.tunnel.SlipstreamBridge
 import app.slipnet.tunnel.SlipstreamSocksBridge
 import app.slipnet.tunnel.SnowflakeBridge
@@ -87,6 +88,7 @@ class SlipNetVpnService : VpnService() {
     private var lastNetworkAddresses: Set<String> = emptySet()
     private var reconnectDebounceJob: Job? = null
     private var connectJob: Job? = null
+    private var disconnectJob: Job? = null
     @Volatile
     private var isReconnecting = false
     private var isProxyOnly = false
@@ -219,6 +221,9 @@ class SlipNetVpnService : VpnService() {
     private fun connect(profileId: Long) {
         connectJob?.cancel()
         connectJob = serviceScope.launch {
+            // Wait for any in-progress disconnect to finish releasing ports
+            disconnectJob?.join()
+
             val profile = connectionManager.getProfileById(profileId)
             if (profile == null) {
                 connectionManager.onVpnError("Profile not found")
@@ -246,6 +251,7 @@ class SlipNetVpnService : VpnService() {
                 DohBridge.debugLogging = debug
                 SlipstreamSocksBridge.debugLogging = debug
                 TorSocksBridge.debugLogging = debug
+                HttpProxyServer.debugLogging = debug
 
                 // Track the tunnel type for this connection
                 currentTunnelType = profile.tunnelType
@@ -996,9 +1002,9 @@ class SlipNetVpnService : VpnService() {
                 return
             }
 
-            // Wait for Tor to bootstrap
-            if (!waitForTorReady(maxWaitMs = 90000)) {
-                connectionManager.onVpnError("Tor failed to bootstrap within timeout")
+            // Wait for Tor to bootstrap (webtunnel/obfs4 can be slow)
+            if (!waitForTorReady(maxWaitMs = 300000)) {
+                connectionManager.onVpnError("Tor failed to bootstrap within timeout (${SnowflakeBridge.torBootstrapProgress}%)")
                 stopCurrentProxy()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -1026,9 +1032,9 @@ class SlipNetVpnService : VpnService() {
             return
         }
 
-        // Step 2: Wait for Tor to bootstrap (generous timeout: 90 seconds)
+        // Step 2: Wait for Tor to bootstrap (webtunnel/obfs4 can be slow)
         Log.i(TAG, "Waiting for Tor to bootstrap...")
-        if (!waitForTorReady(maxWaitMs = 90000)) {
+        if (!waitForTorReady(maxWaitMs = 300000)) {
             connectionManager.onVpnError("Tor failed to bootstrap within timeout (${SnowflakeBridge.torBootstrapProgress}%)")
             stopCurrentProxy()
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -1222,6 +1228,29 @@ class SlipNetVpnService : VpnService() {
 
         // Save connection state for auto-restart if killed by system
         saveConnectionState(currentProfileId, connected = true)
+
+        // Start HTTP proxy if enabled (chains through existing SOCKS5 proxy)
+        serviceScope.launch {
+            try {
+                val httpEnabled = preferencesDataStore.httpProxyEnabled.first()
+                if (httpEnabled) {
+                    val httpPort = preferencesDataStore.httpProxyPort.first()
+                    val socksHost = preferencesDataStore.proxyListenAddress.first()
+                    val socksPort = preferencesDataStore.proxyListenPort.first()
+                    val result = HttpProxyServer.start(
+                        socksHost = socksHost,
+                        socksPort = socksPort,
+                        listenHost = socksHost,
+                        listenPort = httpPort
+                    )
+                    if (result.isFailure) {
+                        Log.w(TAG, "HTTP proxy failed to start: ${result.exceptionOrNull()?.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error starting HTTP proxy: ${e.message}")
+            }
+        }
 
         // Start health monitoring and network change detection
         startHealthCheck()
@@ -1880,6 +1909,9 @@ class SlipNetVpnService : VpnService() {
      * Stops SSH first if enabled, then the DNS tunnel.
      */
     private fun stopCurrentProxy() {
+        // Always stop HTTP proxy (it chains through whatever SOCKS5 proxy is running)
+        HttpProxyServer.stop()
+
         when (currentTunnelType) {
             TunnelType.SLIPSTREAM -> {
                 Log.d(TAG, "Stopping Slipstream proxy and bridge")
@@ -1936,6 +1968,11 @@ class SlipNetVpnService : VpnService() {
      * When SSH is enabled, also checks SSH tunnel health.
      */
     private fun isCurrentProxyHealthy(): Boolean {
+        // If HTTP proxy is running, it must also be healthy
+        if (HttpProxyServer.isRunning() && !HttpProxyServer.isHealthy()) {
+            return false
+        }
+
         return when (currentTunnelType) {
             TunnelType.SLIPSTREAM -> SlipstreamBridge.isClientHealthy() && SlipstreamSocksBridge.isClientHealthy()
             TunnelType.SLIPSTREAM_SSH -> SlipstreamBridge.isClientHealthy() && SshTunnelBridge.isClientHealthy()
@@ -2048,7 +2085,7 @@ class SlipNetVpnService : VpnService() {
         connectJob?.cancel()
         connectJob = null
 
-        serviceScope.launch {
+        disconnectJob = serviceScope.launch {
             Log.i(TAG, "Disconnecting VPN")
             // Clear saved state so we don't auto-reconnect on restart
             clearConnectionState()
@@ -2159,6 +2196,13 @@ class SlipNetVpnService : VpnService() {
         // Unregister network callback
         unregisterNetworkCallback()
         lastNetworkAddresses = emptySet()
+
+        // Stop HTTP proxy
+        try {
+            HttpProxyServer.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping HTTP proxy", e)
+        }
 
         // Request native tunnels to stop (non-blocking)
         // The native code will handle the actual shutdown

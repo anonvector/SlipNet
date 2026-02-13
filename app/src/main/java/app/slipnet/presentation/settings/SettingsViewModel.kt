@@ -23,6 +23,9 @@ data class SettingsUiState(
     val proxyListenAddress: String = "0.0.0.0",
     val proxyListenPort: Int = 1080,
     val proxyOnlyMode: Boolean = false,
+    // HTTP Proxy Settings
+    val httpProxyEnabled: Boolean = false,
+    val httpProxyPort: Int = 8080,
     // Network Settings
     val disableQuic: Boolean = true,
     // Split Tunneling Settings
@@ -78,7 +81,14 @@ class SettingsViewModel @Inject constructor(
 
             val proxyOnlyFlow = preferencesDataStore.proxyOnlyMode
 
-            combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow) { main, ssh, split, proxyOnly ->
+            val httpProxyFlow = combine(
+                preferencesDataStore.httpProxyEnabled,
+                preferencesDataStore.httpProxyPort
+            ) { enabled, port ->
+                Pair(enabled, port)
+            }
+
+            combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow, httpProxyFlow) { main, ssh, split, proxyOnly, httpProxy ->
                 SettingsUiState(
                     autoConnectOnBoot = main[0] as Boolean,
                     darkMode = main[1] as DarkMode,
@@ -87,6 +97,8 @@ class SettingsViewModel @Inject constructor(
                     proxyListenAddress = main[3] as String,
                     proxyListenPort = main[4] as Int,
                     proxyOnlyMode = proxyOnly,
+                    httpProxyEnabled = httpProxy.first,
+                    httpProxyPort = httpProxy.second,
                     disableQuic = main[5] as Boolean,
                     splitTunnelingEnabled = split.first,
                     splitTunnelingMode = split.second,
@@ -175,6 +187,19 @@ class SettingsViewModel @Inject constructor(
     fun setSshMaxChannels(count: Int) {
         viewModelScope.launch {
             preferencesDataStore.setSshMaxChannels(count)
+        }
+    }
+
+    // HTTP Proxy Settings
+    fun setHttpProxyEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setHttpProxyEnabled(enabled)
+        }
+    }
+
+    fun setHttpProxyPort(port: Int) {
+        viewModelScope.launch {
+            preferencesDataStore.setHttpProxyPort(port)
         }
     }
 }

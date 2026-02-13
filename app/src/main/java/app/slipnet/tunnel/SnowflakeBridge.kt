@@ -8,6 +8,8 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 import java.net.ServerSocket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Bridge to the Snowflake pluggable transport (Go library) + Tor binary.
@@ -53,6 +55,7 @@ object SnowflakeBridge {
     private const val AMP_CACHE_URL = "https://cdn.ampproject.org/"
 
     private var client: SnowflakeClient? = null
+    private var lyrebirdProcess: Process? = null
     private var torProcess: Process? = null
     @Volatile var isTorReady = false
     @Volatile var torBootstrapProgress = 0
@@ -62,7 +65,7 @@ object SnowflakeBridge {
      *
      * Transport is auto-detected from bridge lines:
      * - Empty bridgeLines → built-in Snowflake (zero-config)
-     * - Lines starting with "obfs4", "webtunnel", "meek_lite" → lyrebird (obfs4proxy) exec PT
+     * - Lines starting with "obfs4", "webtunnel", "meek_lite" → lyrebird (obfs4proxy) managed PT
      * - Lines starting with "snowflake" → Snowflake Go library PT
      *
      * @param context Android context for accessing native libs and files dir
@@ -112,6 +115,22 @@ object SnowflakeBridge {
         }
 
         return try {
+            // Determine which lyrebird transports are needed
+            val lyrebirdTransports = mutableListOf<String>()
+            if (!isDirect && !useSnowflakePt) {
+                val lines = bridgeLines.lines().filter { it.isNotBlank() }.map { it.trim() }
+                    .map { if (it.lowercase().startsWith("bridge ")) it.substring(7).trim() else it }
+                for (line in lines) {
+                    val transport = line.split("\\s+".toRegex()).firstOrNull()?.lowercase() ?: continue
+                    if (transport in listOf("obfs4", "webtunnel", "meek_lite") && transport !in lyrebirdTransports) {
+                        lyrebirdTransports.add(transport)
+                    }
+                }
+            }
+
+            // Map of transport name -> SOCKS5 address (filled by PT startup)
+            val lyrebirdMethods = mutableMapOf<String, String>()
+
             if (useSnowflakePt) {
                 // Start Snowflake PT (Go library)
                 val sfListenAddr = "$listenHost:$snowflakePort"
@@ -134,19 +153,43 @@ object SnowflakeBridge {
                     Log.w(TAG, "Snowflake PT not listening, but client reports running")
                 }
                 Log.i(TAG, "Snowflake PT started on $sfListenAddr")
-            } else if (!isDirect && detectedTransport != "snowflake") {
-                // For obfs4/webtunnel/meek_lite: verify the PT binary exists
+            } else if (lyrebirdTransports.isNotEmpty()) {
+                // Launch lyrebird ourselves using the managed transport protocol.
+                // This avoids relying on Tor's exec() which can fail on Android
+                // due to SELinux restrictions or permission issues.
                 val ptBinaryPath = getObfs4proxyPath(context)
                     ?: return Result.failure(RuntimeException(
                         "obfs4proxy (lyrebird) binary not found. " +
                         "It needs to be compiled and bundled as libobfs4proxy.so in the app's native libraries."
                     ))
-                Log.i(TAG, "PT binary found: $ptBinaryPath")
+                val ptFile = File(ptBinaryPath)
+                Log.i(TAG, "PT binary: $ptBinaryPath (size=${ptFile.length()}, exec=${ptFile.canExecute()})")
+                if (!ptFile.canExecute()) {
+                    Log.w(TAG, "PT binary is not executable, attempting chmod +x")
+                    ptFile.setExecutable(true)
+                }
+
+                val result = startLyrebird(context, ptBinaryPath, lyrebirdTransports)
+                if (result.isFailure) {
+                    return result
+                }
+                lyrebirdMethods.putAll(lyrebirdCmethods)
+                Log.i(TAG, "Lyrebird PT started with transports: $lyrebirdMethods")
             }
 
             // Setup Tor data directory and config
             val torDataDir = File(context.filesDir, "tor_data")
             torDataDir.mkdirs()
+
+            // Clear guard state and lock (not descriptor caches — those help Tor
+            // reconnect faster if the bridge connection drops mid-bootstrap)
+            listOf("state", "lock").forEach { name ->
+                val f = File(torDataDir, name)
+                if (f.exists()) {
+                    f.delete()
+                    Log.d(TAG, "Cleared Tor state: $name")
+                }
+            }
 
             extractGeoIpFiles(context, torDataDir)
             val torrcPath = writeTorrc(
@@ -155,13 +198,15 @@ object SnowflakeBridge {
                 listenHost = listenHost,
                 torSocksPort = torSocksPort,
                 snowflakePort = snowflakePort,
-                bridgeLines = bridgeLines
+                bridgeLines = bridgeLines,
+                lyrebirdMethods = lyrebirdMethods
             )
 
             // Start Tor process
             val torBinary = context.applicationInfo.nativeLibraryDir + "/libtor.so"
             if (!File(torBinary).exists()) {
                 stopSnowflakePt()
+                stopLyrebird()
                 return Result.failure(RuntimeException("Tor binary not found at $torBinary"))
             }
 
@@ -203,6 +248,176 @@ object SnowflakeBridge {
         }
     }
 
+    // --- Lyrebird managed transport ---
+
+    /** CMETHOD results from lyrebird: transport name -> "host:port" */
+    private val lyrebirdCmethods = mutableMapOf<String, String>()
+
+    /**
+     * Launch lyrebird as a managed transport process.
+     * Sets up the PT protocol environment, launches the binary, and parses
+     * CMETHOD lines to discover which SOCKS5 ports it's listening on.
+     */
+    private fun startLyrebird(
+        context: Context,
+        ptBinaryPath: String,
+        transports: List<String>
+    ): Result<Unit> {
+        lyrebirdCmethods.clear()
+
+        val torDataDir = File(context.filesDir, "tor_data")
+        val ptStateDir = File(torDataDir, "pt_state")
+        ptStateDir.mkdirs()
+
+        val transportList = transports.joinToString(",")
+        Log.i(TAG, "Launching lyrebird for transports: $transportList")
+
+        val pb = ProcessBuilder(ptBinaryPath)
+        pb.redirectErrorStream(false) // We need separate stdout/stderr
+        pb.environment().apply {
+            put("TOR_PT_MANAGED_TRANSPORT_VER", "1")
+            put("TOR_PT_CLIENT_TRANSPORTS", transportList)
+            put("TOR_PT_STATE_LOCATION", ptStateDir.absolutePath + "/")
+            // Exit when stdin is closed (parent dies)
+            put("TOR_PT_EXIT_ON_STDIN_CLOSE", "1")
+        }
+
+        val process: Process
+        try {
+            process = pb.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to launch lyrebird: ${e.message}")
+            return Result.failure(RuntimeException(
+                "Failed to launch obfs4proxy (lyrebird): ${e.message}"
+            ))
+        }
+        lyrebirdProcess = process
+
+        // Read stderr in background for diagnostics
+        Thread({
+            try {
+                val reader = BufferedReader(InputStreamReader(process.errorStream))
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    Log.d(TAG, "Lyrebird stderr: $line")
+                }
+            } catch (_: Exception) {}
+        }, "lyrebird-stderr").also { it.isDaemon = true; it.start() }
+
+        // Parse stdout for PT protocol messages (CMETHOD, VERSION, etc.)
+        val cmethodsDone = CountDownLatch(1)
+        var protocolError: String? = null
+
+        Thread({
+            try {
+                val reader = BufferedReader(InputStreamReader(process.inputStream))
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    val l = line!!.trim()
+                    Log.d(TAG, "Lyrebird PT: $l")
+
+                    when {
+                        l.startsWith("VERSION ") -> {
+                            Log.i(TAG, "Lyrebird protocol: $l")
+                        }
+                        l.startsWith("CMETHOD ") -> {
+                            // Format: CMETHOD <transport> socks5 <host:port>
+                            val parts = l.split("\\s+".toRegex())
+                            if (parts.size >= 4) {
+                                val name = parts[1]
+                                val addr = parts[3]
+                                lyrebirdCmethods[name] = addr
+                                Log.i(TAG, "Lyrebird registered: $name at $addr")
+                            }
+                        }
+                        l.startsWith("CMETHOD-ERROR ") -> {
+                            Log.e(TAG, "Lyrebird transport error: $l")
+                        }
+                        l == "CMETHODS DONE" -> {
+                            Log.i(TAG, "Lyrebird: all transports registered")
+                            cmethodsDone.countDown()
+                        }
+                        l.startsWith("ENV-ERROR ") -> {
+                            protocolError = l
+                            Log.e(TAG, "Lyrebird env error: $l")
+                            cmethodsDone.countDown()
+                        }
+                        l.startsWith("VERSION-ERROR ") -> {
+                            protocolError = l
+                            Log.e(TAG, "Lyrebird version error: $l")
+                            cmethodsDone.countDown()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (lyrebirdProcess != null) {
+                    Log.w(TAG, "Lyrebird stdout reader error: ${e.message}")
+                }
+            }
+            // If process exits without CMETHODS DONE, unblock the latch
+            cmethodsDone.countDown()
+        }, "lyrebird-stdout").also { it.isDaemon = true; it.start() }
+
+        // Wait for CMETHODS DONE (up to 10 seconds)
+        val success = cmethodsDone.await(10, TimeUnit.SECONDS)
+        if (!success) {
+            Log.e(TAG, "Lyrebird timed out waiting for CMETHODS DONE")
+            stopLyrebird()
+            return Result.failure(RuntimeException(
+                "obfs4proxy (lyrebird) timed out during PT protocol setup"
+            ))
+        }
+
+        if (protocolError != null) {
+            stopLyrebird()
+            return Result.failure(RuntimeException(
+                "obfs4proxy (lyrebird) protocol error: $protocolError"
+            ))
+        }
+
+        if (!process.isAlive) {
+            val exitCode = process.exitValue()
+            Log.e(TAG, "Lyrebird exited prematurely with code $exitCode")
+            lyrebirdProcess = null
+            return Result.failure(RuntimeException(
+                "obfs4proxy (lyrebird) exited with code $exitCode"
+            ))
+        }
+
+        // Verify all requested transports were registered
+        val missing = transports.filter { it !in lyrebirdCmethods }
+        if (missing.isNotEmpty()) {
+            Log.w(TAG, "Lyrebird did not register transports: $missing")
+        }
+
+        return Result.success(Unit)
+    }
+
+    private fun stopLyrebird() {
+        lyrebirdProcess?.let { p ->
+            try {
+                Log.d(TAG, "Stopping lyrebird process...")
+                // Close stdin to signal graceful shutdown
+                try { p.outputStream.close() } catch (_: Exception) {}
+                Thread.sleep(500)
+                if (p.isAlive) {
+                    p.destroy()
+                    Thread.sleep(300)
+                }
+                if (p.isAlive) {
+                    p.destroyForcibly()
+                }
+                Log.d(TAG, "Lyrebird process stopped")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping lyrebird", e)
+            }
+        }
+        lyrebirdProcess = null
+        lyrebirdCmethods.clear()
+    }
+
+    // --- Transport detection ---
+
     /**
      * Detect the pluggable transport type from the first bridge line's prefix.
      * Returns the transport name (e.g., "obfs4", "webtunnel", "meek_lite", "snowflake").
@@ -219,8 +434,10 @@ object SnowflakeBridge {
         }
     }
 
+    // --- Stop / status ---
+
     /**
-     * Stop the Tor process and Snowflake PT.
+     * Stop the Tor process, lyrebird, and Snowflake PT.
      */
     fun stopClient() {
         // Stop Tor first
@@ -241,8 +458,9 @@ object SnowflakeBridge {
         isTorReady = false
         torBootstrapProgress = 0
 
-        // Stop Snowflake PT
+        // Stop PTs
         stopSnowflakePt()
+        stopLyrebird()
     }
 
     private fun stopSnowflakePt() {
@@ -261,7 +479,9 @@ object SnowflakeBridge {
 
     fun isRunning(): Boolean {
         // For non-Snowflake transports, client is null — only Tor needs to be alive
-        return (client == null || client?.isRunning == true) && isTorProcessAlive()
+        // Lyrebird also needs to be alive if it was started
+        val lyrebirdOk = lyrebirdProcess == null || lyrebirdProcess?.isAlive == true
+        return (client == null || client?.isRunning == true) && lyrebirdOk && isTorProcessAlive()
     }
 
     fun isClientHealthy(): Boolean {
@@ -271,6 +491,8 @@ object SnowflakeBridge {
     private fun isTorProcessAlive(): Boolean {
         return torProcess?.isAlive == true
     }
+
+    // --- Helper functions ---
 
     /**
      * Check if the obfs4proxy (lyrebird) binary exists in the app's native library dir.
@@ -288,6 +510,9 @@ object SnowflakeBridge {
      * Write torrc config file.
      * If bridgeLines is empty, uses built-in Snowflake. Otherwise, auto-detects
      * transport from bridge line prefixes and generates appropriate ClientTransportPlugin directives.
+     *
+     * @param lyrebirdMethods Map of transport name -> "host:port" from pre-started lyrebird.
+     *                        When non-empty, uses `socks5` instead of `exec` directives.
      */
     private fun writeTorrc(
         context: Context,
@@ -295,26 +520,47 @@ object SnowflakeBridge {
         listenHost: String,
         torSocksPort: Int,
         snowflakePort: Int,
-        bridgeLines: String = ""
+        bridgeLines: String = "",
+        lyrebirdMethods: Map<String, String> = emptyMap()
     ): String {
         val torrcFile = File(torDataDir, "torrc")
         val isDirect = bridgeLines.trim() == "DIRECT"
+
+        // Detect if webtunnel or meek is involved (these have higher latency)
+        val hasSlowTransport = !isDirect && bridgeLines.lines().any { line ->
+            val cleaned = if (line.trim().lowercase().startsWith("bridge ")) line.trim().substring(7).trim() else line.trim()
+            val transport = cleaned.split("\\s+".toRegex()).firstOrNull()?.lowercase() ?: ""
+            transport in listOf("webtunnel", "meek_lite")
+        }
 
         // Common torrc settings (UseBridges omitted for direct mode)
         val common = buildString {
             appendLine("SocksPort $listenHost:$torSocksPort")
             appendLine("DataDirectory ${torDataDir.absolutePath}")
             if (!isDirect) appendLine("UseBridges 1")
-            appendLine("GeoIPFile ${torDataDir.absolutePath}/geoip")
-            appendLine("GeoIPv6File ${torDataDir.absolutePath}/geoip6")
-            appendLine("Log notice stdout")
-            appendLine("CircuitBuildTimeout 60")
+            // Only reference GeoIP files if they exist
+            val geoipFile = File(torDataDir, "geoip")
+            val geoip6File = File(torDataDir, "geoip6")
+            if (geoipFile.exists()) appendLine("GeoIPFile ${geoipFile.absolutePath}")
+            if (geoip6File.exists()) appendLine("GeoIPv6File ${geoip6File.absolutePath}")
+            appendLine("Log info stdout")
+            // Webtunnel/meek add HTTP overhead per round trip — need generous
+            // timeout for the multi-hop CREATE→EXTEND→EXTEND circuit handshake.
+            // Other transports use the default 60s.
+            val circuitTimeout = if (hasSlowTransport) 120 else 60
+            appendLine("CircuitBuildTimeout $circuitTimeout")
             appendLine("LearnCircuitBuildTimeout 0")
-            appendLine("KeepalivePeriod 60")
-            appendLine("NumEntryGuards 4")
+            // Shorter keepalive to prevent HTTP-based transport idle timeouts
+            // from closing the bridge connection between keepalive cells
+            appendLine("KeepalivePeriod 30")
+            appendLine("NumEntryGuards 1")
             appendLine("ClientUseIPv4 1")
-            appendLine("ClientUseIPv6 0")
-            appendLine("ClientPreferIPv6ORPort 0")
+            // Must allow IPv6: webtunnel bridges use 2001:db8:: placeholder
+            // addresses (PT connects via URL, not the IP, but Tor checks this
+            // when selecting bridges for circuit building)
+            appendLine("ClientUseIPv6 1")
+            appendLine("ClientPreferIPv6ORPort auto")
+            appendLine("SafeLogging 0")
         }.trim()
 
         // Transport-specific lines
@@ -334,7 +580,9 @@ object SnowflakeBridge {
 
             else -> {
                 // Auto-detect transports from bridge lines and generate config
+                // Strip "Bridge" prefix if users copy-pasted from BridgeDB
                 val lines = bridgeLines.lines().filter { it.isNotBlank() }.map { it.trim() }
+                    .map { if (it.lowercase().startsWith("bridge ")) it.substring(7).trim() else it }
                 val transportsNeeded = mutableSetOf<String>()
                 val bridgeDirectives = StringBuilder()
 
@@ -345,7 +593,6 @@ object SnowflakeBridge {
                 }
 
                 val pluginDirectives = StringBuilder()
-                val ptBinary = getObfs4proxyPath(context)
 
                 for (transport in transportsNeeded) {
                     when (transport) {
@@ -354,9 +601,12 @@ object SnowflakeBridge {
                             pluginDirectives.appendLine("ClientTransportPlugin snowflake socks5 $listenHost:$snowflakePort")
                         }
                         "obfs4", "webtunnel", "meek_lite" -> {
-                            // All handled by lyrebird (obfs4proxy)
-                            if (ptBinary != null) {
-                                pluginDirectives.appendLine("ClientTransportPlugin $transport exec $ptBinary")
+                            // Use pre-started lyrebird SOCKS5 (launched by us, not by Tor)
+                            val addr = lyrebirdMethods[transport]
+                            if (addr != null) {
+                                pluginDirectives.appendLine("ClientTransportPlugin $transport socks5 $addr")
+                            } else {
+                                Log.w(TAG, "No lyrebird CMETHOD for transport: $transport")
                             }
                         }
                     }
@@ -366,7 +616,16 @@ object SnowflakeBridge {
             }
         }
 
-        torrcFile.writeText("$common\n$transportLines\n")
+        val torrcContent = "$common\n$transportLines\n"
+        torrcFile.writeText(torrcContent)
+
+        // Log torrc for debugging PT issues
+        Log.d(TAG, "--- Generated torrc ---")
+        torrcContent.lines().forEach { line ->
+            if (line.isNotBlank()) Log.d(TAG, "torrc: $line")
+        }
+        Log.d(TAG, "--- End torrc ---")
+
         return torrcFile.absolutePath
     }
 

@@ -33,6 +33,8 @@ object TorSocksBridge {
     private const val TAG = "TorSocksBridge"
     @Volatile var debugLogging = false
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
+    private const val BIND_MAX_RETRIES = 10
+    private const val BIND_RETRY_DELAY_MS = 200L
     private const val BUFFER_SIZE = 32768
     private const val TCP_CONNECT_TIMEOUT_MS = 30000
     private const val DNS_TIMEOUT_MS = 15000
@@ -67,9 +69,7 @@ object TorSocksBridge {
         this.torSocksPort = torSocksPort
 
         return try {
-            val ss = ServerSocket()
-            ss.reuseAddress = true
-            ss.bind(InetSocketAddress(listenHost, listenPort))
+            val ss = bindServerSocket(listenHost, listenPort)
             serverSocket = ss
             running.set(true)
 
@@ -127,6 +127,27 @@ object TorSocksBridge {
     fun isClientHealthy(): Boolean {
         val ss = serverSocket ?: return false
         return running.get() && !ss.isClosed
+    }
+
+    private fun bindServerSocket(host: String, port: Int): ServerSocket {
+        val ss = ServerSocket()
+        ss.reuseAddress = true
+        var lastException: java.net.BindException? = null
+        repeat(BIND_MAX_RETRIES) { attempt ->
+            try {
+                ss.bind(InetSocketAddress(host, port))
+                if (attempt > 0) Log.i(TAG, "Port $port bound after ${attempt + 1} attempts")
+                return ss
+            } catch (e: java.net.BindException) {
+                lastException = e
+                if (attempt < BIND_MAX_RETRIES - 1) {
+                    Log.w(TAG, "Port $port in use, retrying in ${BIND_RETRY_DELAY_MS}ms (attempt ${attempt + 1}/$BIND_MAX_RETRIES)")
+                    Thread.sleep(BIND_RETRY_DELAY_MS)
+                }
+            }
+        }
+        ss.close()
+        throw lastException ?: java.net.BindException("Failed to bind to port $port")
     }
 
     private fun handleConnection(clientSocket: Socket) {

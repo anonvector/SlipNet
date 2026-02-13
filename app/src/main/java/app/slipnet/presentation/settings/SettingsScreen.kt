@@ -89,8 +89,9 @@ fun SettingsScreen(
     var showSshCipherDialog by remember { mutableStateOf(false) }
     var showSplitModeDialog by remember { mutableStateOf(false) }
 
-    // Proxy settings - local state for port text field to avoid cursor jumps from async DataStore round-trip
+    // Proxy settings - local state for port text fields to avoid cursor jumps from async DataStore round-trip
     var proxyPort by remember { mutableStateOf(uiState.proxyListenPort.toString()) }
+    var httpProxyPort by remember { mutableStateOf(uiState.httpProxyPort.toString()) }
     val addressOptions = getAddressOptions()
 
     Scaffold(
@@ -172,8 +173,39 @@ fun SettingsScreen(
                     }
                 )
 
+                SettingsDivider()
+
+                SwitchSettingItem(
+                    icon = Icons.Default.Lan,
+                    title = "HTTP proxy",
+                    description = "Enable HTTP proxy for devices that don't support SOCKS5",
+                    checked = uiState.httpProxyEnabled,
+                    onCheckedChange = { viewModel.setHttpProxyEnabled(it) }
+                )
+
+                if (uiState.httpProxyEnabled) {
+                    SettingsDivider()
+
+                    TextFieldSettingItem(
+                        icon = Icons.Default.Numbers,
+                        title = "HTTP Proxy Port",
+                        value = httpProxyPort,
+                        placeholder = "8080",
+                        supportingText = "Local HTTP proxy port",
+                        keyboardType = KeyboardType.Number,
+                        onValueChange = { text ->
+                            httpProxyPort = text
+                            text.toIntOrNull()?.let { viewModel.setHttpProxyPort(it) }
+                        }
+                    )
+                }
+
                 if (uiState.proxyListenAddress == "0.0.0.0") {
-                    HotspotInfoCard(port = uiState.proxyListenPort)
+                    HotspotInfoCard(
+                        socksPort = uiState.proxyListenPort,
+                        httpProxyEnabled = uiState.httpProxyEnabled,
+                        httpProxyPort = uiState.httpProxyPort
+                    )
                 }
             }
 
@@ -680,12 +712,18 @@ private fun detectShareableIp(): Pair<String, Boolean>? {
 }
 
 @Composable
-private fun HotspotInfoCard(port: Int) {
+private fun HotspotInfoCard(
+    socksPort: Int,
+    httpProxyEnabled: Boolean = false,
+    httpProxyPort: Int = 8080
+) {
     val shareableIp = remember { detectShareableIp() }
     if (shareableIp == null) return
 
     val (ip, isHotspot) = shareableIp
-    val proxyAddress = "$ip:$port"
+    val socksAddress = "$ip:$socksPort"
+    val httpAddress = "$ip:$httpProxyPort"
+    val copyText = if (httpProxyEnabled) "SOCKS5: $socksAddress | HTTP: $httpAddress" else socksAddress
     val clipboardManager = LocalClipboardManager.current
 
     Card(
@@ -729,16 +767,26 @@ private fun HotspotInfoCard(port: Int) {
                         MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = proxyAddress,
+                    text = "SOCKS5: $socksAddress",
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (isHotspot)
                         MaterialTheme.colorScheme.onPrimaryContainer
                     else
                         MaterialTheme.colorScheme.onSurface
                 )
+                if (httpProxyEnabled) {
+                    Text(
+                        text = "HTTP: $httpAddress",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isHotspot)
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        else
+                            MaterialTheme.colorScheme.onSurface
+                    )
+                }
                 if (isHotspot) {
                     Text(
-                        text = "Use as SOCKS5 proxy on connected devices",
+                        text = "Use as proxy on connected devices",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                     )
@@ -751,7 +799,7 @@ private fun HotspotInfoCard(port: Int) {
                 }
             }
             IconButton(
-                onClick = { clipboardManager.setText(AnnotatedString(proxyAddress)) },
+                onClick = { clipboardManager.setText(AnnotatedString(copyText)) },
                 modifier = Modifier.size(32.dp)
             ) {
                 Icon(

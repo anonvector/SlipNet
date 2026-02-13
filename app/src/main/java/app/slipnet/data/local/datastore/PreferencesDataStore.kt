@@ -51,6 +51,9 @@ class PreferencesDataStore @Inject constructor(
         val SPLIT_TUNNELING_ENABLED = booleanPreferencesKey("split_tunneling_enabled")
         val SPLIT_TUNNELING_MODE = stringPreferencesKey("split_tunneling_mode")
         val SPLIT_TUNNELING_APPS = stringPreferencesKey("split_tunneling_apps")
+        // HTTP Proxy Keys
+        val HTTP_PROXY_ENABLED = booleanPreferencesKey("http_proxy_enabled")
+        val HTTP_PROXY_PORT = intPreferencesKey("http_proxy_port")
         // Proxy-Only Mode
         val PROXY_ONLY_MODE = booleanPreferencesKey("proxy_only_mode")
         // Recent DNS Resolvers
@@ -315,6 +318,27 @@ class PreferencesDataStore @Inject constructor(
             }
             val updated = (newResolvers + existing).distinct().take(5)
             prefs[Keys.RECENT_DNS_RESOLVERS] = org.json.JSONArray(updated).toString()
+        }
+    }
+
+    // HTTP Proxy Settings
+    val httpProxyEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.HTTP_PROXY_ENABLED] ?: false
+    }
+
+    suspend fun setHttpProxyEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.HTTP_PROXY_ENABLED] = enabled
+        }
+    }
+
+    val httpProxyPort: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.HTTP_PROXY_PORT] ?: 8080
+    }
+
+    suspend fun setHttpProxyPort(port: Int) {
+        dataStore.edit { prefs ->
+            prefs[Keys.HTTP_PROXY_PORT] = port.coerceIn(1, 65535)
         }
     }
 

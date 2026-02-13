@@ -400,15 +400,23 @@ class EditProfileViewModel @Inject constructor(
                         error = null
                     )
                 } else {
+                    // API unreachable — fall back to Snowflake (uses domain fronting, harder to block)
                     _uiState.value = _uiState.value.copy(
                         isAskingTor = false,
-                        error = "Could not reach Tor. Check your internet connection."
+                        torBridgeType = TorBridgeType.SNOWFLAKE,
+                        torBridgeLines = "",
+                        torBridgeLinesError = null,
+                        error = null
                     )
                 }
             } catch (e: Exception) {
+                // API unreachable — fall back to Snowflake (uses domain fronting, harder to block)
                 _uiState.value = _uiState.value.copy(
                     isAskingTor = false,
-                    error = "Could not reach Tor. Check your internet connection."
+                    torBridgeType = TorBridgeType.SNOWFLAKE,
+                    torBridgeLines = "",
+                    torBridgeLinesError = null,
+                    error = null
                 )
             }
         }
@@ -421,7 +429,7 @@ class EditProfileViewModel @Inject constructor(
             .build()
 
         val jsonMediaType = "application/vnd.api+json".toMediaType()
-        val requestJson = """{"transports":["obfs4","snowflake","meek_lite"]}"""
+        val requestJson = """{"country":"ir","transports":["webtunnel","snowflake","obfs4","meek_lite"]}"""
 
         // Try direct request first
         try {
@@ -439,17 +447,25 @@ class EditProfileViewModel @Inject constructor(
             // Direct request failed (likely blocked), try domain fronting
         }
 
-        // Fallback: domain fronting via Azure CDN
-        val body = requestJson.toRequestBody(jsonMediaType)
-        val frontedRequest = Request.Builder()
-            .url("https://$MOAT_FRONT_DOMAIN/moat/$MOAT_SETTINGS_PATH")
-            .post(body)
-            .header("Host", MOAT_HOST)
-            .header("Content-Type", "application/vnd.api+json")
-            .build()
-        client.newCall(frontedRequest).execute().use { response ->
-            return parseSettingsResponse(response)
+        // Fallback: try domain fronting via multiple CDNs
+        for (front in MOAT_FRONT_DOMAINS) {
+            try {
+                val body = requestJson.toRequestBody(jsonMediaType)
+                val frontedRequest = Request.Builder()
+                    .url("https://$front/moat/$MOAT_SETTINGS_PATH")
+                    .post(body)
+                    .header("Host", MOAT_HOST)
+                    .header("Content-Type", "application/vnd.api+json")
+                    .build()
+                client.newCall(frontedRequest).execute().use { response ->
+                    val result = parseSettingsResponse(response)
+                    if (result != null) return result
+                }
+            } catch (_: Exception) {
+                // This front domain failed, try next
+            }
         }
+        return null
     }
 
     private fun parseSettingsResponse(response: okhttp3.Response): Pair<TorBridgeType, String>? {
@@ -476,14 +492,16 @@ class EditProfileViewModel @Inject constructor(
 
         return when (type) {
             "snowflake" -> Pair(TorBridgeType.SNOWFLAKE, "")
-            "obfs4" -> {
+            "obfs4", "webtunnel" -> {
                 if (source == "bridgedb" && bridgeStrings != null && bridgeStrings.length() > 0) {
                     val lines = (0 until bridgeStrings.length()).joinToString("\n") {
                         bridgeStrings.getString(it)
                     }
                     Pair(TorBridgeType.CUSTOM, lines)
-                } else {
+                } else if (type == "obfs4") {
                     Pair(TorBridgeType.OBFS4, DEFAULT_OBFS4_BRIDGES)
+                } else {
+                    null
                 }
             }
             "meek_lite" -> Pair(TorBridgeType.MEEK_AZURE, DEFAULT_MEEK_BRIDGE)
@@ -497,7 +515,25 @@ class EditProfileViewModel @Inject constructor(
             .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .build()
 
-        // Try direct request first
+        val allBridges = mutableListOf<String>()
+
+        // 1. Try /circumvention/settings for webtunnel bridges (not in /builtin)
+        val settingsBridges = fetchSettingsBridgeLines(client)
+        if (settingsBridges != null) allBridges.addAll(settingsBridges)
+
+        // 2. Try /circumvention/builtin for snowflake + obfs4
+        val builtinBridges = fetchBuiltinBridgeLines(client)
+        if (builtinBridges != null) allBridges.addAll(builtinBridges)
+
+        // 3. Fallback: return built-in obfs4 bridges
+        if (allBridges.isEmpty()) {
+            return DEFAULT_OBFS4_BRIDGES.lines().filter { it.isNotBlank() }
+        }
+        return allBridges
+    }
+
+    private fun fetchBuiltinBridgeLines(client: OkHttpClient): List<String>? {
+        // Try direct
         try {
             val request = Request.Builder()
                 .url("$MOAT_BASE_URL/$MOAT_BUILTIN_PATH")
@@ -505,22 +541,82 @@ class EditProfileViewModel @Inject constructor(
                 .build()
             val bridges = executeBuiltinRequest(client, request)
             if (bridges.isNotEmpty()) return bridges
-        } catch (_: Exception) {
-            // Direct request failed (likely blocked), try domain fronting
-        }
+        } catch (_: Exception) {}
 
-        // Fallback: domain fronting via Azure CDN
-        val frontedRequest = Request.Builder()
-            .url("https://$MOAT_FRONT_DOMAIN/$MOAT_BUILTIN_PATH")
-            .header("Host", MOAT_HOST)
-            .get()
-            .build()
-        return executeBuiltinRequest(client, frontedRequest)
+        // Try domain fronting
+        for (front in MOAT_FRONT_DOMAINS) {
+            try {
+                val request = Request.Builder()
+                    .url("https://$front/moat/$MOAT_BUILTIN_PATH")
+                    .header("Host", MOAT_HOST)
+                    .get()
+                    .build()
+                val bridges = executeBuiltinRequest(client, request)
+                if (bridges.isNotEmpty()) return bridges
+            } catch (_: Exception) {}
+        }
+        return null
+    }
+
+    private fun fetchSettingsBridgeLines(client: OkHttpClient): List<String>? {
+        val jsonMediaType = "application/vnd.api+json".toMediaType()
+        val requestJson = """{"country":"ir","transports":["webtunnel"]}"""
+
+        // Try direct
+        try {
+            val body = requestJson.toRequestBody(jsonMediaType)
+            val request = Request.Builder()
+                .url("$MOAT_BASE_URL/$MOAT_SETTINGS_PATH")
+                .post(body)
+                .header("Content-Type", "application/vnd.api+json")
+                .build()
+            val lines = parseSettingsBridgeLines(client, request)
+            if (lines != null) return lines
+        } catch (_: Exception) {}
+
+        // Try domain fronting
+        for (front in MOAT_FRONT_DOMAINS) {
+            try {
+                val body = requestJson.toRequestBody(jsonMediaType)
+                val request = Request.Builder()
+                    .url("https://$front/moat/$MOAT_SETTINGS_PATH")
+                    .post(body)
+                    .header("Host", MOAT_HOST)
+                    .header("Content-Type", "application/vnd.api+json")
+                    .build()
+                val lines = parseSettingsBridgeLines(client, request)
+                if (lines != null) return lines
+            } catch (_: Exception) {}
+        }
+        return null
+    }
+
+    private fun parseSettingsBridgeLines(client: OkHttpClient, request: Request): List<String>? {
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful || response.code == 404) return null
+            val json = JSONObject(response.body?.string() ?: return null)
+            val settings = json.optJSONArray("settings") ?: return null
+            if (settings.length() == 0) return null
+
+            val first = settings.getJSONObject(0)
+            val bridges = first.optJSONObject("bridges") ?: return null
+            val source = bridges.optString("source", "")
+            val bridgeStrings = bridges.optJSONArray("bridge_strings")
+
+            if (source == "bridgedb" && bridgeStrings != null && bridgeStrings.length() > 0) {
+                return (0 until minOf(bridgeStrings.length(), BRIDGES_PER_TYPE)).map {
+                    bridgeStrings.getString(it)
+                }
+            }
+            return null
+        }
     }
 
     /**
      * Parse /circumvention/builtin response.
-     * Format: {"obfs4": ["obfs4 ...", ...], "snowflake": ["snowflake ...", ...]}
+     * Format: {"obfs4": ["obfs4 ...", ...], "snowflake": ["snowflake ...", ...], "webtunnel": [...]}
+     * Takes up to 2 bridges from each type, priority: webtunnel > obfs4 > meek
+     * (snowflake excluded — uses Go library PT, not lyrebird; already available as built-in type)
      */
     private fun executeBuiltinRequest(client: OkHttpClient, request: Request): List<String> {
         client.newCall(request).execute().use { response ->
@@ -530,10 +626,12 @@ class EditProfileViewModel @Inject constructor(
             val json = JSONObject(response.body?.string() ?: throw Exception("Empty response"))
 
             val bridges = mutableListOf<String>()
-            val obfs4 = json.optJSONArray("obfs4")
-            if (obfs4 != null) {
-                for (i in 0 until obfs4.length()) {
-                    bridges.add(obfs4.getString(i))
+            for (transport in listOf("webtunnel", "obfs4", "meek-azure", "meek")) {
+                val arr = json.optJSONArray(transport)
+                if (arr != null && arr.length() > 0) {
+                    for (i in 0 until minOf(arr.length(), BRIDGES_PER_TYPE)) {
+                        bridges.add(arr.getString(i))
+                    }
                 }
             }
             return bridges
@@ -737,6 +835,7 @@ class EditProfileViewModel @Inject constructor(
         val linkProperties = connectivityManager.getLinkProperties(network) ?: return null
         return linkProperties.dnsServers.firstOrNull()?.hostAddress
     }
+
 
     fun save() {
         val state = _uiState.value
@@ -994,6 +1093,7 @@ class EditProfileViewModel @Inject constructor(
 
     companion object {
         const val MAX_RESOLVERS = 3
+        private const val BRIDGES_PER_TYPE = 2
 
         // Moat API (Tor bridge distribution)
         private const val MOAT_HOST = "bridges.torproject.org"
@@ -1001,6 +1101,10 @@ class EditProfileViewModel @Inject constructor(
         private const val MOAT_BUILTIN_PATH = "circumvention/builtin"
         private const val MOAT_SETTINGS_PATH = "circumvention/settings"
         private const val MOAT_FRONT_DOMAIN = "ajax.aspnetcdn.com"
+        private val MOAT_FRONT_DOMAINS = listOf(
+            "ajax.aspnetcdn.com",       // Azure CDN
+            "cdn.jsdelivr.net",          // Fastly CDN
+        )
 
         // Built-in obfs4 bridges (from Tor Project's /circumvention/builtin API)
         val DEFAULT_OBFS4_BRIDGES = """
@@ -1027,19 +1131,9 @@ class EditProfileViewModel @Inject constructor(
                 "DIRECT" -> TorBridgeType.DIRECT
                 "SNOWFLAKE_AMP" -> TorBridgeType.SNOWFLAKE_AMP
                 "SMART" -> TorBridgeType.SMART
-                else -> {
-                    val firstWord = trimmed.lines()
-                        .firstOrNull { it.isNotBlank() }
-                        ?.trim()
-                        ?.split("\\s+".toRegex())
-                        ?.firstOrNull()
-                        ?.lowercase()
-                    when (firstWord) {
-                        "obfs4" -> TorBridgeType.OBFS4
-                        "meek_lite" -> TorBridgeType.MEEK_AZURE
-                        else -> TorBridgeType.CUSTOM
-                    }
-                }
+                DEFAULT_OBFS4_BRIDGES -> TorBridgeType.OBFS4
+                DEFAULT_MEEK_BRIDGE -> TorBridgeType.MEEK_AZURE
+                else -> TorBridgeType.CUSTOM
             }
         }
     }
