@@ -9,7 +9,8 @@ class SaveProfileUseCase @Inject constructor(
 ) {
     suspend operator fun invoke(profile: ServerProfile): Long {
         return if (profile.id == 0L) {
-            profileRepository.saveProfile(profile)
+            val nextSortOrder = profileRepository.getMaxSortOrder() + 1
+            profileRepository.saveProfile(profile.copy(sortOrder = nextSortOrder))
         } else {
             profileRepository.updateProfile(profile.copy(updatedAt = System.currentTimeMillis()))
             profile.id

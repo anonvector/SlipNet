@@ -27,7 +27,11 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
@@ -58,8 +62,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.data.local.datastore.DarkMode
+import app.slipnet.data.local.datastore.DomainRoutingMode
 import app.slipnet.data.local.datastore.SplitTunnelingMode
 import app.slipnet.data.local.datastore.SshCipher
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Numbers
@@ -88,6 +96,8 @@ fun SettingsScreen(
     var showDarkModeDialog by remember { mutableStateOf(false) }
     var showSshCipherDialog by remember { mutableStateOf(false) }
     var showSplitModeDialog by remember { mutableStateOf(false) }
+    var showDomainRoutingModeDialog by remember { mutableStateOf(false) }
+    var showDomainManagementDialog by remember { mutableStateOf(false) }
 
     // Proxy settings - local state for port text fields to avoid cursor jumps from async DataStore round-trip
     var proxyPort by remember { mutableStateOf(uiState.proxyListenPort.toString()) }
@@ -221,6 +231,53 @@ fun SettingsScreen(
                     checked = uiState.disableQuic,
                     onCheckedChange = { viewModel.setDisableQuic(it) }
                 )
+
+                SettingsDivider()
+
+                SwitchSettingItem(
+                    icon = Icons.Default.Lan,
+                    title = "Append HTTP Proxy to VPN",
+                    description = "Route app traffic through HTTP proxy directly, bypassing TUN for better speeds (Android 10+)",
+                    checked = uiState.appendHttpProxyToVpn,
+                    onCheckedChange = { viewModel.setAppendHttpProxyToVpn(it) }
+                )
+            }
+
+            // Domain Routing Settings
+            SettingsSection(
+                title = "Domain Routing",
+                subtitle = "Changes apply on next connection"
+            ) {
+                SwitchSettingItem(
+                    icon = Icons.Default.Language,
+                    title = "Enable domain routing",
+                    description = "Route specific domains through or around the VPN",
+                    checked = uiState.domainRoutingEnabled,
+                    onCheckedChange = { viewModel.setDomainRoutingEnabled(it) }
+                )
+
+                if (uiState.domainRoutingEnabled) {
+                    SettingsDivider()
+
+                    ClickableSettingItem(
+                        icon = Icons.Default.FilterList,
+                        title = "Routing mode",
+                        description = when (uiState.domainRoutingMode) {
+                            DomainRoutingMode.BYPASS -> "Listed domains bypass VPN"
+                            DomainRoutingMode.ONLY_VPN -> "Only listed domains use VPN"
+                        },
+                        onClick = { showDomainRoutingModeDialog = true }
+                    )
+
+                    SettingsDivider()
+
+                    ClickableSettingItem(
+                        icon = Icons.Default.TravelExplore,
+                        title = "Manage domains",
+                        description = "${uiState.domainRoutingDomains.size} domains configured",
+                        onClick = { showDomainManagementDialog = true }
+                    )
+                }
             }
 
             // Split Tunneling Settings
@@ -439,6 +496,70 @@ fun SettingsScreen(
         )
     }
 
+    // Domain Routing Mode Dialog
+    if (showDomainRoutingModeDialog) {
+        AlertDialog(
+            onDismissRequest = { showDomainRoutingModeDialog = false },
+            title = { Text("Domain Routing Mode") },
+            text = {
+                Column {
+                    DomainRoutingMode.entries.forEach { mode ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    viewModel.setDomainRoutingMode(mode)
+                                    showDomainRoutingModeDialog = false
+                                }
+                                .padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = uiState.domainRoutingMode == mode,
+                                onClick = {
+                                    viewModel.setDomainRoutingMode(mode)
+                                    showDomainRoutingModeDialog = false
+                                }
+                            )
+                            Column(modifier = Modifier.padding(start = 8.dp)) {
+                                Text(
+                                    text = when (mode) {
+                                        DomainRoutingMode.BYPASS -> "Bypass VPN"
+                                        DomainRoutingMode.ONLY_VPN -> "Only VPN"
+                                    }
+                                )
+                                Text(
+                                    text = when (mode) {
+                                        DomainRoutingMode.BYPASS -> "Listed domains connect directly"
+                                        DomainRoutingMode.ONLY_VPN -> "Only listed domains use the VPN"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDomainRoutingModeDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Domain Management Dialog
+    if (showDomainManagementDialog) {
+        DomainManagementDialog(
+            domains = uiState.domainRoutingDomains,
+            onAddDomain = { viewModel.addDomainRoutingDomain(it) },
+            onRemoveDomain = { viewModel.removeDomainRoutingDomain(it) },
+            onDismiss = { showDomainManagementDialog = false }
+        )
+    }
+
     // SSH Cipher Dialog
     if (showSshCipherDialog) {
         AlertDialog(
@@ -480,6 +601,103 @@ fun SettingsScreen(
             }
         )
     }
+}
+
+@Composable
+private fun DomainManagementDialog(
+    domains: Set<String>,
+    onAddDomain: (String) -> Unit,
+    onRemoveDomain: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var newDomain by remember { mutableStateOf("") }
+    val sortedDomains = remember(domains) { domains.sorted() }
+
+    val addDomain = {
+        val trimmed = newDomain.trim().lowercase()
+        if (trimmed.isNotEmpty()) {
+            onAddDomain(trimmed)
+            newDomain = ""
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Manage Domains") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                // Add domain input
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newDomain,
+                        onValueChange = { newDomain = it },
+                        placeholder = { Text("e.g., google.com") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions.Default,
+                        keyboardActions = KeyboardActions(onDone = { addDomain() }),
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = { addDomain() }) {
+                        Icon(Icons.Default.Add, contentDescription = "Add domain")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (sortedDomains.isEmpty()) {
+                    Text(
+                        text = "No domains configured",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(240.dp)
+                    ) {
+                        items(sortedDomains) { domain ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = domain,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = { onRemoveDomain(domain) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "Remove $domain",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { addDomain(); onDismiss() }) {
+                Text("Done")
+            }
+        }
+    )
 }
 
 @Composable

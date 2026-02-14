@@ -2,8 +2,10 @@ package app.slipnet.tunnel
 
 import android.util.Log
 import java.io.BufferedOutputStream
+import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.SequenceInputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -116,6 +118,7 @@ val DOH_SERVERS = listOf(
 object DohBridge {
     private const val TAG = "DohBridge"
     @Volatile var debugLogging = false
+    @Volatile var domainRouter: DomainRouter = DomainRouter.DISABLED
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
@@ -400,6 +403,8 @@ object DohBridge {
 
     /**
      * Handle SOCKS5 CONNECT — direct TCP proxy (no encryption).
+     * With domain routing: sniffs TLS SNI / HTTP Host for routing decisions.
+     * Note: DohBridge CONNECT traffic is already direct, so routing mainly adds logging.
      */
     private fun handleConnect(
         destHost: String,
@@ -408,22 +413,84 @@ object DohBridge {
         clientInput: InputStream,
         clientOutput: OutputStream
     ) {
+        val router = domainRouter
+        if (router.enabled) {
+            handleConnectWithRouting(router, destHost, destPort, clientSocket, clientInput, clientOutput)
+            return
+        }
+
+        // Original flow — direct connect
+        connectDirect(destHost, destPort, clientSocket, clientInput, clientOutput, true)
+    }
+
+    private fun handleConnectWithRouting(
+        router: DomainRouter,
+        destHost: String,
+        destPort: Int,
+        clientSocket: Socket,
+        clientInput: InputStream,
+        clientOutput: OutputStream
+    ) {
+        var effectiveHost = destHost
+        var sniffBuffer: ByteArray? = null
+        var sniffLen = 0
+        var wasEarlyReply = false
+
+        if (DomainRouter.isIpAddress(destHost)) {
+            // IP address — sniff to recover domain
+            clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+            clientOutput.flush()
+            clientSocket.soTimeout = 3000
+            wasEarlyReply = true
+
+            val result = ProtocolSniffer.sniff(clientInput)
+            if (result.domain != null) {
+                effectiveHost = result.domain
+                logd("CONNECT: sniffed domain=$effectiveHost from IP=$destHost")
+            }
+            sniffBuffer = result.bufferedData
+            sniffLen = result.bufferedLength
+        }
+
+        if (router.shouldBypass(effectiveHost)) {
+            logd("CONNECT: domain routing bypass for $effectiveHost:$destPort (already direct)")
+        }
+
+        // DohBridge always connects directly — just handle the sniffed buffer
+        clientSocket.soTimeout = 0
+        val effectiveInput = if (sniffLen > 0)
+            SequenceInputStream(ByteArrayInputStream(sniffBuffer!!, 0, sniffLen), clientInput)
+        else clientInput
+        connectDirect(destHost, destPort, clientSocket, effectiveInput, clientOutput, !wasEarlyReply)
+    }
+
+    private fun connectDirect(
+        destHost: String,
+        destPort: Int,
+        clientSocket: Socket,
+        clientInput: InputStream,
+        clientOutput: OutputStream,
+        sendReply: Boolean
+    ) {
         val remoteSocket: Socket
         try {
             remoteSocket = Socket()
             remoteSocket.connect(InetSocketAddress(destHost, destPort), TCP_CONNECT_TIMEOUT_MS)
         } catch (e: Exception) {
             logd("CONNECT: failed to connect to $destHost:$destPort: ${e.message}")
-            clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-            clientOutput.flush()
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
             return
         }
 
         logd("CONNECT: $destHost:$destPort OK")
 
-        // Send success response
-        clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-        clientOutput.flush()
+        if (sendReply) {
+            clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+            clientOutput.flush()
+        }
 
         clientSocket.soTimeout = 0
 

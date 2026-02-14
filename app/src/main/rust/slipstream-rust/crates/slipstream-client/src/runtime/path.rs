@@ -13,7 +13,7 @@ use slipstream_ffi::picoquic::{
 use slipstream_ffi::ResolverMode;
 use std::net::SocketAddr;
 
-const AUTHORITATIVE_LOOP_MULTIPLIER: usize = 4;
+const AUTHORITATIVE_LOOP_MULTIPLIER: usize = 2;
 
 pub(crate) fn apply_path_mode(
     cnx: *mut picoquic_cnx_t,

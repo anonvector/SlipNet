@@ -6,8 +6,10 @@ import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.ProxySOCKS5
 import com.jcraft.jsch.Session
+import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.SequenceInputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -32,6 +34,7 @@ import java.util.concurrent.locks.ReentrantLock
 object SshTunnelBridge {
     private const val TAG = "SshTunnelBridge"
     @Volatile var debugLogging = false
+    @Volatile var domainRouter: DomainRouter = DomainRouter.DISABLED
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
@@ -716,68 +719,185 @@ object SshTunnelBridge {
                         return@submit
                     }
 
-                    // Open SSH direct-tcpip channel (semaphore-guarded)
-                    val currentSession = session
-                    if (currentSession == null || !currentSession.isConnected) {
-                        Log.w(TAG, "CONNECT: SSH session not available for $destHost:$destPort")
-                        output.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                        output.flush()
+                    // Domain routing check
+                    val router = domainRouter
+                    if (router.enabled) {
+                        handleConnectWithRouting(router, destHost, destPort, socket, input, output)
                         return@submit
                     }
 
-                    val channel: ChannelDirectTCPIP
-                    if (!channelSemaphore.tryAcquire(CHANNEL_ACQUIRE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                        Log.w(TAG, "CONNECT: channel semaphore timeout for $destHost:$destPort")
-                        output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                        output.flush()
-                        return@submit
-                    }
-                    try {
-                        channel = openChannelWithRetry(currentSession, destHost, destPort)
-                    } catch (e: Exception) {
-                        channelSemaphore.release()
-                        logd("CONNECT: SSH channel failed for $destHost:$destPort: ${e.message}")
-                        output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                        output.flush()
-                        return@submit
-                    }
-                    channelSemaphore.release()
-
-                    logd("CONNECT: $destHost:$destPort OK")
-
-                    // Send success response
-                    output.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                    output.flush()
-
-                    // Remove timeout for data bridge - SSH keepalive handles liveness
-                    socket.soTimeout = 0
-
-                    // Bridge data bidirectionally
-                    val channelInput = channel.inputStream
-                    val channelOutput = channel.outputStream
-
-                    val bridgePool = executor
-                    val c2sFuture = bridgePool?.submit {
-                        try {
-                            copyStream(input, channelOutput)
-                        } catch (_: Exception) {
-                        } finally {
-                            try { channelOutput.close() } catch (_: Exception) {}
-                        }
-                    }
-
-                    try {
-                        copyStream(channelInput, output)
-                    } catch (_: Exception) {
-                    } finally {
-                        try { channel.disconnect() } catch (_: Exception) {}
-                        c2sFuture?.cancel(true)
-                    }
+                    // Original flow — SSH tunnel
+                    connectViaSsh(destHost, destPort, socket, input, output, true)
                 }
             } catch (e: Exception) {
                 if (running.get()) {
                     logd("Connection handler error: ${e.message}")
                 }
+            }
+        }
+    }
+
+    private fun handleConnectWithRouting(
+        router: DomainRouter,
+        destHost: String,
+        destPort: Int,
+        clientSocket: Socket,
+        clientInput: InputStream,
+        clientOutput: OutputStream
+    ) {
+        var effectiveHost = destHost
+        var sniffBuffer: ByteArray? = null
+        var sniffLen = 0
+        var wasEarlyReply = false
+
+        if (DomainRouter.isIpAddress(destHost)) {
+            // IP address — sniff to recover domain
+            clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+            clientOutput.flush()
+            clientSocket.soTimeout = 3000
+            wasEarlyReply = true
+
+            val result = ProtocolSniffer.sniff(clientInput)
+            if (result.domain != null) {
+                effectiveHost = result.domain
+                logd("CONNECT: sniffed domain=$effectiveHost from IP=$destHost")
+            }
+            sniffBuffer = result.bufferedData
+            sniffLen = result.bufferedLength
+        }
+
+        if (router.shouldBypass(effectiveHost)) {
+            // Direct connection — bypass SSH tunnel
+            logd("CONNECT: bypassing tunnel for $effectiveHost:$destPort")
+            try {
+                val directSocket = router.createDirectConnection(destHost, destPort)
+                if (!wasEarlyReply) {
+                    clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                    clientOutput.flush()
+                }
+                clientSocket.soTimeout = 0
+                val effectiveInput = if (sniffLen > 0)
+                    SequenceInputStream(ByteArrayInputStream(sniffBuffer!!, 0, sniffLen), clientInput)
+                else clientInput
+                bridgeDirect(effectiveInput, clientOutput, directSocket)
+            } catch (e: Exception) {
+                logd("CONNECT: direct connection failed for $effectiveHost:$destPort: ${e.message}")
+                if (!wasEarlyReply) {
+                    try {
+                        clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                        clientOutput.flush()
+                    } catch (_: Exception) {}
+                }
+            }
+            return
+        }
+
+        // Tunnel path via SSH
+        clientSocket.soTimeout = 0
+        val effectiveInput = if (sniffLen > 0)
+            SequenceInputStream(ByteArrayInputStream(sniffBuffer!!, 0, sniffLen), clientInput)
+        else clientInput
+        connectViaSsh(destHost, destPort, clientSocket, effectiveInput, clientOutput, !wasEarlyReply)
+    }
+
+    /**
+     * Connect via SSH direct-tcpip channel and bridge bidirectionally.
+     * If [sendReply] is true, sends SOCKS5 success reply after channel opens.
+     */
+    private fun connectViaSsh(
+        destHost: String,
+        destPort: Int,
+        clientSocket: Socket,
+        clientInput: InputStream,
+        clientOutput: OutputStream,
+        sendReply: Boolean
+    ) {
+        val currentSession = session
+        if (currentSession == null || !currentSession.isConnected) {
+            Log.w(TAG, "CONNECT: SSH session not available for $destHost:$destPort")
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
+            return
+        }
+
+        val channel: ChannelDirectTCPIP
+        if (!channelSemaphore.tryAcquire(CHANNEL_ACQUIRE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            Log.w(TAG, "CONNECT: channel semaphore timeout for $destHost:$destPort")
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
+            return
+        }
+        try {
+            channel = openChannelWithRetry(currentSession, destHost, destPort)
+        } catch (e: Exception) {
+            channelSemaphore.release()
+            logd("CONNECT: SSH channel failed for $destHost:$destPort: ${e.message}")
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
+            return
+        }
+        channelSemaphore.release()
+
+        logd("CONNECT: $destHost:$destPort OK")
+
+        if (sendReply) {
+            clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+            clientOutput.flush()
+        }
+
+        clientSocket.soTimeout = 0
+
+        // Bridge data bidirectionally
+        val channelInput = channel.inputStream
+        val channelOutput = channel.outputStream
+
+        val bridgePool = executor
+        val c2sFuture = bridgePool?.submit {
+            try {
+                copyStream(clientInput, channelOutput)
+            } catch (_: Exception) {
+            } finally {
+                try { channelOutput.close() } catch (_: Exception) {}
+            }
+        }
+
+        try {
+            copyStream(channelInput, clientOutput)
+        } catch (_: Exception) {
+        } finally {
+            try { channel.disconnect() } catch (_: Exception) {}
+            c2sFuture?.cancel(true)
+        }
+    }
+
+    private fun bridgeDirect(clientInput: InputStream, clientOutput: OutputStream, directSocket: Socket) {
+        directSocket.use { remote ->
+            remote.tcpNoDelay = true
+            val remoteInput = remote.getInputStream()
+            val remoteOutput = remote.getOutputStream()
+
+            val bridgePool = executor
+            val c2sFuture = bridgePool?.submit {
+                try {
+                    copyStream(clientInput, remoteOutput)
+                } catch (_: Exception) {
+                } finally {
+                    try { remoteOutput.close() } catch (_: Exception) {}
+                }
+            }
+
+            try {
+                copyStream(remoteInput, clientOutput)
+            } catch (_: Exception) {
+            } finally {
+                try { remote.close() } catch (_: Exception) {}
+                c2sFuture?.cancel(true)
             }
         }
     }

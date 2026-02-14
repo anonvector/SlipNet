@@ -100,5 +100,8 @@ data class ProfileEntity(
     val sshKeyPassphrase: String = "",
 
     @ColumnInfo(name = "tor_bridge_lines", defaultValue = "")
-    val torBridgeLines: String = ""
+    val torBridgeLines: String = "",
+
+    @ColumnInfo(name = "sort_order", defaultValue = "0")
+    val sortOrder: Int = 0
 )

@@ -82,7 +82,8 @@ object SlipstreamBridge {
         tcpListenHost: String = DEFAULT_LISTEN_HOST,
         gsoEnabled: Boolean = false,
         debugPoll: Boolean = false,
-        debugStreams: Boolean = false
+        debugStreams: Boolean = false,
+        idlePollIntervalMs: Int = 2000
     ): Result<Unit> {
         if (!isLibraryLoaded) {
             return Result.failure(IllegalStateException("Native library not loaded"))
@@ -115,7 +116,8 @@ object SlipstreamBridge {
                 keepAliveInterval = keepAliveInterval,
                 gsoEnabled = gsoEnabled,
                 debugPoll = debugPoll,
-                debugStreams = debugStreams
+                debugStreams = debugStreams,
+                idlePollInterval = idlePollIntervalMs
             )
 
             when (result) {
@@ -241,7 +243,8 @@ object SlipstreamBridge {
         keepAliveInterval: Int,
         gsoEnabled: Boolean,
         debugPoll: Boolean,
-        debugStreams: Boolean
+        debugStreams: Boolean,
+        idlePollInterval: Int
     ): Int
 
     private external fun nativeStopSlipstreamClient()

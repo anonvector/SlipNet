@@ -58,6 +58,8 @@ struct Args {
     debug_poll: bool,
     #[arg(long = "debug-streams")]
     debug_streams: bool,
+    #[arg(long = "idle-poll-interval", default_value_t = 2000)]
+    idle_poll_interval: u64,
 }
 
 fn main() {
@@ -178,6 +180,17 @@ fn main() {
         keep_alive_override.unwrap_or(args.keep_alive_interval)
     };
 
+    let idle_poll_interval = if cli_provided(&matches, "idle_poll_interval") {
+        args.idle_poll_interval
+    } else {
+        let idle_poll_override = parse_idle_poll_interval(&sip003_env.plugin_options)
+            .unwrap_or_else(|err| {
+                tracing::error!("SIP003 env error: {}", err);
+                std::process::exit(2);
+            });
+        idle_poll_override.unwrap_or(args.idle_poll_interval)
+    };
+
     let config = ClientConfig {
         tcp_listen_host: &tcp_listen_host,
         tcp_listen_port,
@@ -189,6 +202,7 @@ fn main() {
         keep_alive_interval: keep_alive_interval as usize,
         debug_poll: args.debug_poll,
         debug_streams: args.debug_streams,
+        idle_poll_interval_ms: idle_poll_interval,
     };
 
     let runtime = Builder::new_current_thread()
@@ -357,6 +371,20 @@ fn parse_keep_alive_interval(options: &[sip003::Sip003Option]) -> Result<Option<
             let parsed = value
                 .parse::<u16>()
                 .map_err(|_| format!("Invalid keep-alive-interval value: {}", value))?;
+            last = Some(parsed);
+        }
+    }
+    Ok(last)
+}
+
+fn parse_idle_poll_interval(options: &[sip003::Sip003Option]) -> Result<Option<u64>, String> {
+    let mut last = None;
+    for option in options {
+        if option.key == "idle-poll-interval" {
+            let value = option.value.trim();
+            let parsed = value
+                .parse::<u64>()
+                .map_err(|_| format!("Invalid idle-poll-interval value: {}", value))?;
             last = Some(parsed);
         }
     }

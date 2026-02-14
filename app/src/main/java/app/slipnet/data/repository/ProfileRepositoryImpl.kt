@@ -57,4 +57,14 @@ class ProfileRepositoryImpl @Inject constructor(
     override suspend fun updateLastConnectedAt(id: Long) {
         profileDao.updateLastConnectedAt(id, System.currentTimeMillis())
     }
+
+    override suspend fun updateProfileOrder(orderedIds: List<Long>) {
+        orderedIds.forEachIndexed { index, id ->
+            profileDao.updateSortOrder(id, index)
+        }
+    }
+
+    override suspend fun getMaxSortOrder(): Int {
+        return profileDao.getMaxSortOrder() ?: -1
+    }
 }

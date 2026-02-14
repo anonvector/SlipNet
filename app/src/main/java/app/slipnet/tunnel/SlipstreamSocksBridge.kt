@@ -2,9 +2,11 @@ package app.slipnet.tunnel
 
 import android.util.Log
 import java.io.BufferedOutputStream
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.SequenceInputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -34,6 +36,7 @@ import javax.net.ssl.SSLSocketFactory
 object SlipstreamSocksBridge {
     private const val TAG = "SlipstreamSocksBridge"
     @Volatile var debugLogging = false
+    @Volatile var domainRouter: DomainRouter = DomainRouter.DISABLED
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
@@ -242,6 +245,7 @@ object SlipstreamSocksBridge {
 
     /**
      * Handle SOCKS5 CONNECT by chaining through Slipstream's SOCKS5 proxy.
+     * With domain routing: sniffs TLS SNI / HTTP Host to decide bypass vs tunnel.
      */
     private fun handleConnect(
         destHost: String,
@@ -252,6 +256,95 @@ object SlipstreamSocksBridge {
         clientInput: InputStream,
         clientOutput: OutputStream
     ) {
+        val router = domainRouter
+        if (router.enabled) {
+            handleConnectWithRouting(router, destHost, destPort, rawAddr, portBytes, clientSocket, clientInput, clientOutput)
+            return
+        }
+
+        // Original flow — no domain routing
+        connectViaSlipstream(destHost, destPort, rawAddr, portBytes, clientSocket, clientInput, clientOutput, true)
+    }
+
+    private fun handleConnectWithRouting(
+        router: DomainRouter,
+        destHost: String,
+        destPort: Int,
+        rawAddr: ByteArray,
+        portBytes: ByteArray,
+        clientSocket: Socket,
+        clientInput: InputStream,
+        clientOutput: OutputStream
+    ) {
+        var effectiveHost = destHost
+        var sniffBuffer: ByteArray? = null
+        var sniffLen = 0
+        var wasEarlyReply = false
+
+        if (DomainRouter.isIpAddress(destHost)) {
+            // IP address — sniff to recover domain
+            clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+            clientOutput.flush()
+            clientSocket.soTimeout = 3000
+            wasEarlyReply = true
+
+            val result = ProtocolSniffer.sniff(clientInput)
+            if (result.domain != null) {
+                effectiveHost = result.domain
+                logd("CONNECT: sniffed domain=$effectiveHost from IP=$destHost")
+            }
+            sniffBuffer = result.bufferedData
+            sniffLen = result.bufferedLength
+        }
+
+        if (router.shouldBypass(effectiveHost)) {
+            // Direct connection — bypass tunnel
+            logd("CONNECT: bypassing tunnel for $effectiveHost:$destPort")
+            try {
+                val directSocket = router.createDirectConnection(destHost, destPort)
+                if (!wasEarlyReply) {
+                    clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                    clientOutput.flush()
+                }
+                clientSocket.soTimeout = 0
+                val effectiveInput = if (sniffLen > 0)
+                    SequenceInputStream(ByteArrayInputStream(sniffBuffer!!, 0, sniffLen), clientInput)
+                else clientInput
+                bridgeDirect(effectiveInput, clientOutput, directSocket)
+            } catch (e: Exception) {
+                logd("CONNECT: direct connection failed for $effectiveHost:$destPort: ${e.message}")
+                if (!wasEarlyReply) {
+                    try {
+                        clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                        clientOutput.flush()
+                    } catch (_: Exception) {}
+                }
+            }
+            return
+        }
+
+        // Tunnel path
+        clientSocket.soTimeout = 0
+        val effectiveInput = if (sniffLen > 0)
+            SequenceInputStream(ByteArrayInputStream(sniffBuffer!!, 0, sniffLen), clientInput)
+        else clientInput
+        connectViaSlipstream(destHost, destPort, rawAddr, portBytes, clientSocket, effectiveInput, clientOutput, !wasEarlyReply)
+    }
+
+    /**
+     * Connect through Slipstream's SOCKS5 proxy and bridge bidirectionally.
+     * If [sendReply] is true, sends SOCKS5 success reply to client after upstream connects.
+     */
+    private fun connectViaSlipstream(
+        destHost: String,
+        destPort: Int,
+        rawAddr: ByteArray,
+        portBytes: ByteArray,
+        clientSocket: Socket,
+        clientInput: InputStream,
+        clientOutput: OutputStream,
+        sendReply: Boolean
+    ) {
         val remoteSocket: Socket
         try {
             remoteSocket = Socket()
@@ -259,8 +352,10 @@ object SlipstreamSocksBridge {
             remoteSocket.tcpNoDelay = true
         } catch (e: Exception) {
             logd("CONNECT: failed to connect to Slipstream: ${e.message}")
-            clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-            clientOutput.flush()
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
             return
         }
 
@@ -271,10 +366,8 @@ object SlipstreamSocksBridge {
             // SOCKS5 greeting to Slipstream → Dante (user/pass auth)
             val hasAuth = !socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()
             if (hasAuth) {
-                // Offer method 0x02 (user/pass)
                 remoteOutput.write(byteArrayOf(0x05, 0x01, 0x02))
             } else {
-                // Offer method 0x00 (no auth)
                 remoteOutput.write(byteArrayOf(0x05, 0x01, 0x00))
             }
             remoteOutput.flush()
@@ -284,8 +377,10 @@ object SlipstreamSocksBridge {
             val selectedMethod = greetResp[1].toInt() and 0xFF
             if (greetResp[0] != 0x05.toByte() || selectedMethod == 0xFF) {
                 Log.w(TAG, "CONNECT: Slipstream rejected greeting (${greetResp[0]}, ${greetResp[1]})")
-                clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                clientOutput.flush()
+                if (sendReply) {
+                    clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                    clientOutput.flush()
+                }
                 remoteSocket.close()
                 return
             }
@@ -295,7 +390,7 @@ object SlipstreamSocksBridge {
                 val user = socksUsername!!.toByteArray()
                 val pass = socksPassword!!.toByteArray()
                 val authReq = ByteArray(3 + user.size + pass.size)
-                authReq[0] = 0x01 // sub-negotiation version
+                authReq[0] = 0x01
                 authReq[1] = user.size.toByte()
                 System.arraycopy(user, 0, authReq, 2, user.size)
                 authReq[2 + user.size] = pass.size.toByte()
@@ -307,8 +402,10 @@ object SlipstreamSocksBridge {
                 remoteInput.readFully(authResp)
                 if (authResp[1] != 0x00.toByte()) {
                     Log.w(TAG, "CONNECT: Dante auth failed (status=${authResp[1]})")
-                    clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                    clientOutput.flush()
+                    if (sendReply) {
+                        clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                        clientOutput.flush()
+                    }
                     remoteSocket.close()
                     return
                 }
@@ -325,34 +422,28 @@ object SlipstreamSocksBridge {
 
             if (connRespHeader[1] != 0x00.toByte()) {
                 logd("CONNECT: Slipstream rejected to $destHost:$destPort (rep=${connRespHeader[1]})")
-                clientOutput.write(byteArrayOf(0x05, connRespHeader[1], 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                clientOutput.flush()
+                if (sendReply) {
+                    clientOutput.write(byteArrayOf(0x05, connRespHeader[1], 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                    clientOutput.flush()
+                }
                 remoteSocket.close()
                 return
             }
 
             // Read remaining response bytes based on address type
             when (connRespHeader[3].toInt() and 0xFF) {
-                0x01 -> { // IPv4: 4 addr + 2 port
-                    val rest = ByteArray(6)
-                    remoteInput.readFully(rest)
-                }
-                0x03 -> { // Domain: 1 len + domain + 2 port
-                    val len = remoteInput.read()
-                    val rest = ByteArray(len + 2)
-                    remoteInput.readFully(rest)
-                }
-                0x04 -> { // IPv6: 16 addr + 2 port
-                    val rest = ByteArray(18)
-                    remoteInput.readFully(rest)
-                }
+                0x01 -> { val rest = ByteArray(6); remoteInput.readFully(rest) }
+                0x03 -> { val len = remoteInput.read(); val rest = ByteArray(len + 2); remoteInput.readFully(rest) }
+                0x04 -> { val rest = ByteArray(18); remoteInput.readFully(rest) }
             }
 
             logd("CONNECT: $destHost:$destPort OK (via Slipstream)")
 
-            // Send success to hev-socks5-tunnel
-            clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-            clientOutput.flush()
+            // Send success to hev-socks5-tunnel (if not already sent)
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
 
             clientSocket.soTimeout = 0
 
@@ -379,11 +470,40 @@ object SlipstreamSocksBridge {
             }
         } catch (e: Exception) {
             logd("CONNECT: chain error for $destHost:$destPort: ${e.message}")
-            try {
-                clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                clientOutput.flush()
-            } catch (_: Exception) {}
+            if (sendReply) {
+                try {
+                    clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                    clientOutput.flush()
+                } catch (_: Exception) {}
+            }
             try { remoteSocket.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun bridgeDirect(clientInput: InputStream, clientOutput: OutputStream, directSocket: Socket) {
+        directSocket.use { remote ->
+            remote.tcpNoDelay = true
+            val remoteInput = remote.getInputStream()
+            val remoteOutput = remote.getOutputStream()
+
+            val t1 = Thread({
+                try {
+                    copyStream(clientInput, remoteOutput)
+                } catch (_: Exception) {
+                } finally {
+                    try { remoteOutput.close() } catch (_: Exception) {}
+                }
+            }, "slip-bridge-direct-c2s")
+            t1.isDaemon = true
+            t1.start()
+
+            try {
+                copyStream(remoteInput, clientOutput)
+            } catch (_: Exception) {
+            } finally {
+                try { remote.close() } catch (_: Exception) {}
+                t1.interrupt()
+            }
         }
     }
 

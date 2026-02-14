@@ -54,10 +54,15 @@ class PreferencesDataStore @Inject constructor(
         // HTTP Proxy Keys
         val HTTP_PROXY_ENABLED = booleanPreferencesKey("http_proxy_enabled")
         val HTTP_PROXY_PORT = intPreferencesKey("http_proxy_port")
+        val APPEND_HTTP_PROXY_TO_VPN = booleanPreferencesKey("append_http_proxy_to_vpn")
         // Proxy-Only Mode
         val PROXY_ONLY_MODE = booleanPreferencesKey("proxy_only_mode")
         // Recent DNS Resolvers
         val RECENT_DNS_RESOLVERS = stringPreferencesKey("recent_dns_resolvers")
+        // Domain Routing Keys
+        val DOMAIN_ROUTING_ENABLED = booleanPreferencesKey("domain_routing_enabled")
+        val DOMAIN_ROUTING_MODE = stringPreferencesKey("domain_routing_mode")
+        val DOMAIN_ROUTING_DOMAINS = stringPreferencesKey("domain_routing_domains")
     }
 
     // Auto-connect on boot
@@ -342,6 +347,16 @@ class PreferencesDataStore @Inject constructor(
         }
     }
 
+    val appendHttpProxyToVpn: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.APPEND_HTTP_PROXY_TO_VPN] ?: false
+    }
+
+    suspend fun setAppendHttpProxyToVpn(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.APPEND_HTTP_PROXY_TO_VPN] = enabled
+        }
+    }
+
     // Proxy-Only Mode
     val proxyOnlyMode: Flow<Boolean> = dataStore.data.map { prefs ->
         prefs[Keys.PROXY_ONLY_MODE] ?: false
@@ -350,6 +365,44 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setProxyOnlyMode(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[Keys.PROXY_ONLY_MODE] = enabled
+        }
+    }
+
+    // Domain Routing Settings
+    val domainRoutingEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.DOMAIN_ROUTING_ENABLED] ?: false
+    }
+
+    suspend fun setDomainRoutingEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.DOMAIN_ROUTING_ENABLED] = enabled
+        }
+    }
+
+    val domainRoutingMode: Flow<DomainRoutingMode> = dataStore.data.map { prefs ->
+        DomainRoutingMode.fromValue(prefs[Keys.DOMAIN_ROUTING_MODE] ?: DomainRoutingMode.BYPASS.value)
+    }
+
+    suspend fun setDomainRoutingMode(mode: DomainRoutingMode) {
+        dataStore.edit { prefs ->
+            prefs[Keys.DOMAIN_ROUTING_MODE] = mode.value
+        }
+    }
+
+    val domainRoutingDomains: Flow<Set<String>> = dataStore.data.map { prefs ->
+        val json = prefs[Keys.DOMAIN_ROUTING_DOMAINS] ?: "[]"
+        try {
+            org.json.JSONArray(json).let { arr ->
+                (0 until arr.length()).map { arr.getString(it) }.toSet()
+            }
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
+
+    suspend fun setDomainRoutingDomains(domains: Set<String>) {
+        dataStore.edit { prefs ->
+            prefs[Keys.DOMAIN_ROUTING_DOMAINS] = org.json.JSONArray(domains.toList()).toString()
         }
     }
 }
@@ -398,6 +451,17 @@ enum class SplitTunnelingMode(val value: String) {
     companion object {
         fun fromValue(value: String): SplitTunnelingMode {
             return entries.find { it.value == value } ?: DISALLOW
+        }
+    }
+}
+
+enum class DomainRoutingMode(val value: String) {
+    BYPASS("bypass"),
+    ONLY_VPN("only_vpn");
+
+    companion object {
+        fun fromValue(value: String): DomainRoutingMode {
+            return entries.find { it.value == value } ?: BYPASS
         }
     }
 }

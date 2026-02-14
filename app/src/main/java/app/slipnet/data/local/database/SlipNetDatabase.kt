@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class],
-    version = 14,
+    version = 15,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -69,6 +69,20 @@ abstract class SlipNetDatabase : RoomDatabase() {
         val MIGRATION_13_14 = object : Migration(13, 14) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE server_profiles ADD COLUMN tor_bridge_lines TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+                // Assign sequential sort_order preserving current updated_at DESC order
+                db.execSQL("""
+                    UPDATE server_profiles SET sort_order = (
+                        SELECT COUNT(*) FROM server_profiles AS sp2
+                        WHERE sp2.updated_at > server_profiles.updated_at
+                           OR (sp2.updated_at = server_profiles.updated_at AND sp2.id < server_profiles.id)
+                    )
+                """.trimIndent())
             }
         }
     }

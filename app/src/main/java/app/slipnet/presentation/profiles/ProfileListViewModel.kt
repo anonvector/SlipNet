@@ -7,6 +7,7 @@ import app.slipnet.data.export.ConfigImporter
 import app.slipnet.data.export.ImportResult
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.repository.ProfileRepository
 import app.slipnet.domain.usecase.DeleteProfileUseCase
 import app.slipnet.domain.usecase.GetProfilesUseCase
 import app.slipnet.domain.usecase.SaveProfileUseCase
@@ -46,6 +47,7 @@ class ProfileListViewModel @Inject constructor(
     private val deleteProfileUseCase: DeleteProfileUseCase,
     private val setActiveProfileUseCase: SetActiveProfileUseCase,
     private val saveProfileUseCase: SaveProfileUseCase,
+    private val profileRepository: ProfileRepository,
     private val configExporter: ConfigExporter,
     private val configImporter: ConfigImporter,
     private val connectionManager: VpnConnectionManager
@@ -81,6 +83,23 @@ class ProfileListViewModel @Inject constructor(
         }
     }
 
+    fun moveProfile(fromIndex: Int, toIndex: Int) {
+        val currentList = _uiState.value.profiles.toMutableList()
+        if (fromIndex < 0 || fromIndex >= currentList.size ||
+            toIndex < 0 || toIndex >= currentList.size) return
+
+        val item = currentList.removeAt(fromIndex)
+        currentList.add(toIndex, item)
+
+        // Instant UI update
+        _uiState.value = _uiState.value.copy(profiles = currentList)
+
+        // Persist in background
+        viewModelScope.launch {
+            profileRepository.updateProfileOrder(currentList.map { it.id })
+        }
+    }
+
     fun deleteProfile(profile: ServerProfile) {
         viewModelScope.launch {
             val result = deleteProfileUseCase(profile.id)
@@ -88,6 +107,16 @@ class ProfileListViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     error = result.exceptionOrNull()?.message ?: "Failed to delete profile"
                 )
+            }
+        }
+    }
+
+    fun deleteAllProfiles() {
+        viewModelScope.launch {
+            val connectedId = _uiState.value.connectedProfileId
+            val profilesToDelete = _uiState.value.profiles.filter { it.id != connectedId }
+            for (profile in profilesToDelete) {
+                deleteProfileUseCase(profile.id)
             }
         }
     }

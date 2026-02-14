@@ -14,8 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
-val appVersionName = "1.7.1"
-val appVersionCode = 14
+val appVersionName = "1.7.2"
+val appVersionCode = 15
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -55,7 +55,7 @@ fun isOpenSslAvailable(): Boolean {
 android {
     val javaVersion = JavaVersion.VERSION_17
     namespace = "app.slipnet"
-    compileSdk = 35
+    compileSdk = 36
     compileOptions {
         sourceCompatibility = javaVersion
         targetCompatibility = javaVersion
@@ -379,7 +379,7 @@ dependencies {
     //  is incompatible with Room 2.6.1 kapt processor)
 
     // Compose BOM
-    val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
+    val composeBom = platform("androidx.compose:compose-bom:2026.01.01")
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
@@ -393,47 +393,50 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // Activity Compose
-    implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.activity:activity-compose:1.12.4")
 
     // Lifecycle & ViewModel
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
 
     // Navigation Compose
-    implementation("androidx.navigation:navigation-compose:2.7.7")
+    implementation("androidx.navigation:navigation-compose:2.9.7")
 
     // Hilt
-    implementation("com.google.dagger:hilt-android:2.51.1")
-    kapt("com.google.dagger:hilt-compiler:2.51.1")
-    implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
+    implementation("com.google.dagger:hilt-android:2.59.1")
+    kapt("com.google.dagger:hilt-compiler:2.59.1")
+    implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
 
     // Room
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    kapt("androidx.room:room-compiler:2.6.1")
+    implementation( "androidx.room:room-runtime:2.8.4")
+    implementation("androidx.room:room-ktx:2.8.4")
+    kapt("androidx.room:room-compiler:2.8.4")
 
     // DataStore
-    implementation("androidx.datastore:datastore-preferences:1.0.0")
+    implementation("androidx.datastore:datastore-preferences:1.2.0")
 
     // Kotlin Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     // JSON serialization for Room converters
-    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("com.google.code.gson:gson:2.13.2")
 
     // SSH tunneling library (mwiede fork — supports modern ciphers: AES-GCM, ChaCha20)
-    implementation("com.github.mwiede:jsch:0.2.21")
+    implementation("com.github.mwiede:jsch:2.27.7")
 
     // OkHttp for DoH (HTTP/2, connection pooling, custom DNS resolver)
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:5.3.2")
+
+    // Drag-and-drop reorderable LazyColumn
+    implementation("sh.calvin.reorderable:reorderable:3.0.0")
 
     // QR code generation & scanning
-    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.zxing:core:3.5.4")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     // Core
-    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.core:core-ktx:1.17.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

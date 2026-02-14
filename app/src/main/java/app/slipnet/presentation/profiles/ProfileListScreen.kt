@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -60,11 +61,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ServerProfile
 import kotlinx.coroutines.launch
@@ -73,6 +76,8 @@ import app.slipnet.presentation.common.components.ProfileListItem
 import app.slipnet.presentation.common.components.QrCodeDialog
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -92,6 +97,7 @@ fun ProfileListScreen(
     var showImportDialog by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf("") }
     var showAddMenu by remember { mutableStateOf(false) }
+    var showDeleteAllDialog by remember { mutableStateOf(false) }
 
     val importFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -176,6 +182,14 @@ fun ProfileListScreen(
                                     showOverflowMenu = false
                                     showImportDialog = true
                                 }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete All Profiles") },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    showDeleteAllDialog = true
+                                },
+                                enabled = uiState.profiles.isNotEmpty()
                             )
                         }
                     }
@@ -284,7 +298,13 @@ fun ProfileListScreen(
                     )
                 }
                 else -> {
+                    val lazyListState = rememberLazyListState()
+                    val reorderableLazyListState = rememberReorderableLazyListState(lazyListState) { from, to ->
+                        viewModel.moveProfile(from.index, to.index)
+                    }
+
                     LazyColumn(
+                        state = lazyListState,
                         contentPadding = PaddingValues(
                             start = 16.dp, end = 16.dp,
                             top = 16.dp, bottom = 88.dp
@@ -297,28 +317,36 @@ fun ProfileListScreen(
                         ) { profile ->
                             val isConnected = uiState.connectedProfileId == profile.id
 
-                            ProfileListItem(
-                                profile = profile,
-                                isSelected = profile.isActive,
-                                isConnected = isConnected,
-                                onClick = { viewModel.setActiveProfile(profile) },
-                                onEditClick = {
-                                    onNavigateToEditProfile(profile.id)
-                                },
-                                onDeleteClick = {
-                                    if (isConnected) {
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar(
-                                                "Disconnect VPN before deleting this profile"
-                                            )
+                            ReorderableItem(reorderableLazyListState, key = profile.id) { isDragging ->
+                                val elevation = if (isDragging) 8.dp else 0.dp
+
+                                ProfileListItem(
+                                    profile = profile,
+                                    isSelected = profile.isActive,
+                                    isConnected = isConnected,
+                                    onClick = { viewModel.setActiveProfile(profile) },
+                                    onEditClick = {
+                                        onNavigateToEditProfile(profile.id)
+                                    },
+                                    onDeleteClick = {
+                                        if (isConnected) {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar(
+                                                    "Disconnect VPN before deleting this profile"
+                                                )
+                                            }
+                                        } else {
+                                            profileToDelete = profile
                                         }
-                                    } else {
-                                        profileToDelete = profile
-                                    }
-                                },
-                                onExportClick = { viewModel.exportProfile(profile) },
-                                onShareQrClick = { viewModel.showQrCode(profile) }
-                            )
+                                    },
+                                    onExportClick = { viewModel.exportProfile(profile) },
+                                    onShareQrClick = { viewModel.showQrCode(profile) },
+                                    modifier = Modifier
+                                        .longPressDraggableHandle()
+                                        .shadow(elevation, RoundedCornerShape(12.dp))
+                                        .zIndex(if (isDragging) 1f else 0f)
+                                )
+                            }
                         }
                     }
                 }
@@ -356,6 +384,38 @@ fun ProfileListScreen(
             },
             dismissButton = {
                 TextButton(onClick = { profileToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Delete all confirmation dialog
+    if (showDeleteAllDialog) {
+        val hasConnected = uiState.connectedProfileId != null
+        AlertDialog(
+            onDismissRequest = { showDeleteAllDialog = false },
+            title = { Text("Delete All Profiles") },
+            text = {
+                Text(
+                    if (hasConnected)
+                        "Are you sure you want to delete all profiles? The currently connected profile will be kept."
+                    else
+                        "Are you sure you want to delete all profiles? This cannot be undone."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteAllProfiles()
+                        showDeleteAllDialog = false
+                    }
+                ) {
+                    Text("Delete All")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAllDialog = false }) {
                     Text("Cancel")
                 }
             }

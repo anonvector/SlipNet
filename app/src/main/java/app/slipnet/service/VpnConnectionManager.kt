@@ -89,11 +89,12 @@ class VpnConnectionManager @Inject constructor(
     }
 
     fun onVpnDisconnected() {
-        scope.launch {
-            vpnRepository.disconnect()
-            _connectionState.value = ConnectionState.Disconnected
-            pendingProfile = null
-        }
+        // Reset repository state without going through the full disconnect flow
+        // (which would redundantly stop tunnels and emit Disconnecting state that
+        // can race with a new Connecting state if the user reconnects quickly).
+        vpnRepository.updateConnectionState(ConnectionState.Disconnected)
+        _connectionState.value = ConnectionState.Disconnected
+        pendingProfile = null
     }
 
     fun onVpnError(error: String) {

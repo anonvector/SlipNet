@@ -2,8 +2,10 @@ package app.slipnet.tunnel
 
 import android.util.Log
 import java.io.BufferedOutputStream
+import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.SequenceInputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -32,6 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 object TorSocksBridge {
     private const val TAG = "TorSocksBridge"
     @Volatile var debugLogging = false
+    @Volatile var domainRouter: DomainRouter = DomainRouter.DISABLED
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
@@ -246,6 +249,7 @@ object TorSocksBridge {
 
     /**
      * Handle SOCKS5 CONNECT by chaining through Tor's SOCKS5 proxy (no auth).
+     * With domain routing: sniffs TLS SNI / HTTP Host to decide bypass vs tunnel.
      */
     private fun handleConnect(
         destHost: String,
@@ -256,6 +260,96 @@ object TorSocksBridge {
         clientInput: InputStream,
         clientOutput: OutputStream
     ) {
+        val router = domainRouter
+        if (router.enabled) {
+            handleConnectWithRouting(router, destHost, destPort, rawAddr, portBytes, clientSocket, clientInput, clientOutput)
+            return
+        }
+
+        // Original flow — no domain routing
+        connectViaTor(destHost, destPort, rawAddr, portBytes, clientSocket, clientInput, clientOutput, sendReply = true)
+    }
+
+    private fun handleConnectWithRouting(
+        router: DomainRouter,
+        destHost: String,
+        destPort: Int,
+        rawAddr: ByteArray,
+        portBytes: ByteArray,
+        clientSocket: Socket,
+        clientInput: InputStream,
+        clientOutput: OutputStream
+    ) {
+        var effectiveHost = destHost
+        var sniffBuffer: ByteArray? = null
+        var sniffLen = 0
+        var wasEarlyReply = false
+
+        if (DomainRouter.isIpAddress(destHost)) {
+            // IP address — sniff to recover domain
+            clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+            clientOutput.flush()
+            clientSocket.soTimeout = 3000
+            wasEarlyReply = true
+
+            val result = ProtocolSniffer.sniff(clientInput)
+            if (result.domain != null) {
+                effectiveHost = result.domain
+                logd("CONNECT: sniffed domain=$effectiveHost from IP=$destHost")
+            }
+            sniffBuffer = result.bufferedData
+            sniffLen = result.bufferedLength
+        }
+
+        if (router.shouldBypass(effectiveHost)) {
+            // Direct connection — bypass tunnel
+            logd("CONNECT: bypassing tunnel for $effectiveHost:$destPort")
+            try {
+                val directSocket = router.createDirectConnection(destHost, destPort)
+                if (!wasEarlyReply) {
+                    clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                    clientOutput.flush()
+                }
+                clientSocket.soTimeout = 0
+                val effectiveInput = if (sniffLen > 0)
+                    SequenceInputStream(ByteArrayInputStream(sniffBuffer!!, 0, sniffLen), clientInput)
+                else clientInput
+                bridgeDirect(effectiveInput, clientOutput, directSocket)
+            } catch (e: Exception) {
+                logd("CONNECT: direct connection failed for $effectiveHost:$destPort: ${e.message}")
+                if (!wasEarlyReply) {
+                    try {
+                        clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                        clientOutput.flush()
+                    } catch (_: Exception) {}
+                }
+            }
+            return
+        }
+
+        // Tunnel path
+        clientSocket.soTimeout = 0
+        val effectiveInput = if (sniffLen > 0)
+            SequenceInputStream(ByteArrayInputStream(sniffBuffer!!, 0, sniffLen), clientInput)
+        else clientInput
+        connectViaTor(destHost, destPort, rawAddr, portBytes, clientSocket, effectiveInput, clientOutput, sendReply = !wasEarlyReply)
+    }
+
+    /**
+     * Connect through Tor SOCKS5 and bridge bidirectionally.
+     * If [sendReply] is true, sends SOCKS5 success/failure replies to client.
+     * If false, success reply was already sent (early reply for sniffing).
+     */
+    private fun connectViaTor(
+        destHost: String,
+        destPort: Int,
+        rawAddr: ByteArray,
+        portBytes: ByteArray,
+        clientSocket: Socket,
+        clientInput: InputStream,
+        clientOutput: OutputStream,
+        sendReply: Boolean
+    ) {
         val remoteSocket: Socket
         try {
             remoteSocket = Socket()
@@ -263,8 +357,10 @@ object TorSocksBridge {
             remoteSocket.tcpNoDelay = true
         } catch (e: Exception) {
             logd("CONNECT: failed to connect to Tor SOCKS5: ${e.message}")
-            clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-            clientOutput.flush()
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
             return
         }
 
@@ -280,8 +376,10 @@ object TorSocksBridge {
             remoteInput.readFully(greetResp)
             if (greetResp[0] != 0x05.toByte() || (greetResp[1].toInt() and 0xFF) == 0xFF) {
                 Log.w(TAG, "CONNECT: Tor rejected greeting")
-                clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                clientOutput.flush()
+                if (sendReply) {
+                    clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                    clientOutput.flush()
+                }
                 remoteSocket.close()
                 return
             }
@@ -297,8 +395,10 @@ object TorSocksBridge {
 
             if (connRespHeader[1] != 0x00.toByte()) {
                 logd("CONNECT: Tor rejected to $destHost:$destPort (rep=${connRespHeader[1]})")
-                clientOutput.write(byteArrayOf(0x05, connRespHeader[1], 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                clientOutput.flush()
+                if (sendReply) {
+                    clientOutput.write(byteArrayOf(0x05, connRespHeader[1], 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                    clientOutput.flush()
+                }
                 remoteSocket.close()
                 return
             }
@@ -312,9 +412,11 @@ object TorSocksBridge {
 
             logd("CONNECT: $destHost:$destPort OK (via Tor)")
 
-            // Send success to hev-socks5-tunnel
-            clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-            clientOutput.flush()
+            // Send success to hev-socks5-tunnel (if not already sent)
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
 
             clientSocket.soTimeout = 0
 
@@ -341,10 +443,12 @@ object TorSocksBridge {
             }
         } catch (e: Exception) {
             logd("CONNECT: chain error for $destHost:$destPort: ${e.message}")
-            try {
-                clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                clientOutput.flush()
-            } catch (_: Exception) {}
+            if (sendReply) {
+                try {
+                    clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                    clientOutput.flush()
+                } catch (_: Exception) {}
+            }
             try { remoteSocket.close() } catch (_: Exception) {}
         }
     }
@@ -589,6 +693,33 @@ object TorSocksBridge {
                 Pair(host, port)
             }
             else -> null
+        }
+    }
+
+    private fun bridgeDirect(clientInput: InputStream, clientOutput: OutputStream, directSocket: Socket) {
+        directSocket.use { remote ->
+            remote.tcpNoDelay = true
+            val remoteInput = remote.getInputStream()
+            val remoteOutput = remote.getOutputStream()
+
+            val t1 = Thread({
+                try {
+                    copyStream(clientInput, remoteOutput)
+                } catch (_: Exception) {
+                } finally {
+                    try { remoteOutput.close() } catch (_: Exception) {}
+                }
+            }, "tor-bridge-direct-c2s")
+            t1.isDaemon = true
+            t1.start()
+
+            try {
+                copyStream(remoteInput, clientOutput)
+            } catch (_: Exception) {
+            } finally {
+                try { remote.close() } catch (_: Exception) {}
+                t1.interrupt()
+            }
         }
     }
 

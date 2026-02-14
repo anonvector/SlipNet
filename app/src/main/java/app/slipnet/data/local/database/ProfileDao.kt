@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ProfileDao {
-    @Query("SELECT * FROM server_profiles ORDER BY updated_at DESC")
+    @Query("SELECT * FROM server_profiles ORDER BY sort_order ASC")
     fun getAllProfiles(): Flow<List<ProfileEntity>>
 
     @Query("SELECT * FROM server_profiles WHERE is_active = 1 LIMIT 1")
@@ -38,4 +38,10 @@ interface ProfileDao {
 
     @Query("UPDATE server_profiles SET last_connected_at = :timestamp WHERE id = :id")
     suspend fun updateLastConnectedAt(id: Long, timestamp: Long)
+
+    @Query("SELECT MAX(sort_order) FROM server_profiles")
+    suspend fun getMaxSortOrder(): Int?
+
+    @Query("UPDATE server_profiles SET sort_order = :sortOrder WHERE id = :id")
+    suspend fun updateSortOrder(id: Long, sortOrder: Int)
 }

@@ -56,6 +56,7 @@ pub(crate) fn maybe_report_debug(
     pending_polls: usize,
     inflight_polls: usize,
     pacing_snapshot: Option<PacingBudgetSnapshot>,
+    is_idle: bool,
 ) {
     let label = resolver.label();
     let debug = &mut resolver.debug;
@@ -99,7 +100,7 @@ pub(crate) fn maybe_report_debug(
         String::new()
     };
     debug!(
-        "debug: {} dns+={} send_pkts+={} send_bytes+={} polls+={} zero_send+={} zero_send_streams+={} streams={} enqueued+={} last_enqueue_ms={} pending_polls={} inflight_polls={}{}",
+        "debug: {} dns+={} send_pkts+={} send_bytes+={} polls+={} zero_send+={} zero_send_streams+={} streams={} enqueued+={} last_enqueue_ms={} pending_polls={} inflight_polls={} idle={}{}",
         label,
         dns_delta,
         send_pkt_delta,
@@ -112,6 +113,7 @@ pub(crate) fn maybe_report_debug(
         enqueue_ms,
         pending_polls,
         inflight_polls,
+        is_idle,
         pacing_summary
     );
     debug.last_report_at = now;

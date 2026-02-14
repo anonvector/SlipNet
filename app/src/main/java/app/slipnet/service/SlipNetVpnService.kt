@@ -9,13 +9,16 @@ import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.ProxyInfo
 import android.net.VpnService
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.util.Log
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.local.datastore.SplitTunnelingMode
 import app.slipnet.data.local.datastore.SshCipher
+import app.slipnet.tunnel.DomainRouter
 import app.slipnet.data.repository.VpnRepositoryImpl
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.TunnelType
@@ -89,6 +92,7 @@ class SlipNetVpnService : VpnService() {
     private var reconnectDebounceJob: Job? = null
     private var connectJob: Job? = null
     private var disconnectJob: Job? = null
+    private var stateObserverJob: Job? = null
     @Volatile
     private var isReconnecting = false
     private var isProxyOnly = false
@@ -219,6 +223,11 @@ class SlipNetVpnService : VpnService() {
     }
 
     private fun connect(profileId: Long) {
+        // Cancel stale state observer from a previous connection to prevent it
+        // from calling stopSelf() while the new connection is starting.
+        stateObserverJob?.cancel()
+        stateObserverJob = null
+
         connectJob?.cancel()
         connectJob = serviceScope.launch {
             // Wait for any in-progress disconnect to finish releasing ports
@@ -252,6 +261,13 @@ class SlipNetVpnService : VpnService() {
                 SlipstreamSocksBridge.debugLogging = debug
                 TorSocksBridge.debugLogging = debug
                 HttpProxyServer.debugLogging = debug
+
+                // Configure domain routing on bridges
+                val domainRouter = buildDomainRouter()
+                SshTunnelBridge.domainRouter = domainRouter
+                DohBridge.domainRouter = domainRouter
+                SlipstreamSocksBridge.domainRouter = domainRouter
+                TorSocksBridge.domainRouter = domainRouter
 
                 // Track the tunnel type for this connection
                 currentTunnelType = profile.tunnelType
@@ -408,6 +424,18 @@ class SlipNetVpnService : VpnService() {
      *   -> SSH direct-tcpip -> Slipstream (proxyPort+1, 127.0.0.1, raw TCP tunnel)
      *   -> DNS tunnel (UDP 53) -> Slipstream Server -> SSH Server -> Internet
      */
+    /**
+     * Build a DomainRouter from DataStore preferences.
+     */
+    private suspend fun buildDomainRouter(): DomainRouter {
+        val enabled = preferencesDataStore.domainRoutingEnabled.first()
+        if (!enabled) return DomainRouter.DISABLED
+        val mode = preferencesDataStore.domainRoutingMode.first()
+        val domains = preferencesDataStore.domainRoutingDomains.first()
+        Log.i(TAG, "Domain routing enabled: mode=$mode, ${domains.size} domains")
+        return DomainRouter(enabled = true, mode = mode, domains = domains)
+    }
+
     /**
      * Read SSH tunnel settings from DataStore and apply to SshTunnelBridge.
      * Must be called before any SshTunnelBridge.start* method.
@@ -1229,22 +1257,25 @@ class SlipNetVpnService : VpnService() {
         // Save connection state for auto-restart if killed by system
         saveConnectionState(currentProfileId, connected = true)
 
-        // Start HTTP proxy if enabled (chains through existing SOCKS5 proxy)
+        // Start HTTP proxy if enabled (chains through existing SOCKS5 proxy).
+        // Skip if already running (started earlier by establishVpnInterface for VPN append).
         serviceScope.launch {
             try {
-                val httpEnabled = preferencesDataStore.httpProxyEnabled.first()
-                if (httpEnabled) {
-                    val httpPort = preferencesDataStore.httpProxyPort.first()
-                    val socksHost = preferencesDataStore.proxyListenAddress.first()
-                    val socksPort = preferencesDataStore.proxyListenPort.first()
-                    val result = HttpProxyServer.start(
-                        socksHost = socksHost,
-                        socksPort = socksPort,
-                        listenHost = socksHost,
-                        listenPort = httpPort
-                    )
-                    if (result.isFailure) {
-                        Log.w(TAG, "HTTP proxy failed to start: ${result.exceptionOrNull()?.message}")
+                if (!HttpProxyServer.isRunning()) {
+                    val httpEnabled = preferencesDataStore.httpProxyEnabled.first()
+                    if (httpEnabled) {
+                        val httpPort = preferencesDataStore.httpProxyPort.first()
+                        val socksHost = preferencesDataStore.proxyListenAddress.first()
+                        val socksPort = preferencesDataStore.proxyListenPort.first()
+                        val result = HttpProxyServer.start(
+                            socksHost = socksHost,
+                            socksPort = socksPort,
+                            listenHost = socksHost,
+                            listenPort = httpPort
+                        )
+                        if (result.isFailure) {
+                            Log.w(TAG, "HTTP proxy failed to start: ${result.exceptionOrNull()?.message}")
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -2047,11 +2078,41 @@ class SlipNetVpnService : VpnService() {
             }
         }
 
+        // Append HTTP proxy to VPN so apps route HTTP/HTTPS through it directly,
+        // bypassing TUN/tun2socks overhead. Requires API 29+.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val appendProxy = preferencesDataStore.appendHttpProxyToVpn.first()
+            if (appendProxy) {
+                val httpPort = preferencesDataStore.httpProxyPort.first()
+                val socksHost = preferencesDataStore.proxyListenAddress.first()
+                val socksPort = preferencesDataStore.proxyListenPort.first()
+
+                // Start HTTP proxy now (before VPN) so it's ready when apps connect
+                if (!HttpProxyServer.isRunning()) {
+                    val result = HttpProxyServer.start(
+                        socksHost = socksHost,
+                        socksPort = socksPort,
+                        listenHost = "127.0.0.1",
+                        listenPort = httpPort
+                    )
+                    if (result.isFailure) {
+                        Log.w(TAG, "HTTP proxy failed to start for VPN append: ${result.exceptionOrNull()?.message}")
+                    }
+                }
+
+                if (HttpProxyServer.isRunning()) {
+                    builder.setHttpProxy(ProxyInfo.buildDirectProxy("127.0.0.1", httpPort))
+                    Log.i(TAG, "HTTP proxy appended to VPN on 127.0.0.1:$httpPort")
+                }
+            }
+        }
+
         return builder.establish()
     }
 
     private fun observeConnectionState() {
-        serviceScope.launch {
+        stateObserverJob?.cancel()
+        stateObserverJob = serviceScope.launch {
             vpnRepository.connectionState.collect { state ->
                 val notification = notificationHelper.createVpnNotification(state, isProxyOnly)
                 val notificationManager = getSystemService(NotificationManager::class.java)
@@ -2070,10 +2131,11 @@ class SlipNetVpnService : VpnService() {
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf()
                     }
-                    is ConnectionState.Disconnected -> {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
-                    }
+                    // Disconnected is handled by the disconnect() coroutine which already
+                    // calls stopForeground/stopSelf. Do NOT call stopSelf() here — if the
+                    // user reconnects quickly on the same service instance, this observer
+                    // may still be processing the old Disconnected state and would kill
+                    // the new connection.
                     else -> { }
                 }
             }
@@ -2084,6 +2146,10 @@ class SlipNetVpnService : VpnService() {
         // Cancel any in-progress connection attempt
         connectJob?.cancel()
         connectJob = null
+
+        // Cancel state observer to prevent stale stopSelf() calls
+        stateObserverJob?.cancel()
+        stateObserverJob = null
 
         disconnectJob = serviceScope.launch {
             Log.i(TAG, "Disconnecting VPN")

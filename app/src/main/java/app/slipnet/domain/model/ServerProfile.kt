@@ -42,7 +42,9 @@ data class ServerProfile(
     val sshKeyPassphrase: String = "",
     // Custom Tor bridge lines (one per line). Empty = use built-in Snowflake.
     // Transport is auto-detected from bridge line prefix (obfs4, webtunnel, meek_lite, etc.)
-    val torBridgeLines: String = ""
+    val torBridgeLines: String = "",
+    // User-defined sort order for profile list (lower = higher in list)
+    val sortOrder: Int = 0
 )
 
 data class DnsResolver(

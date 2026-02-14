@@ -75,6 +75,7 @@ const DNS_POLL_SLICE_US: u64 = 50_000;
 const RECONNECT_SLEEP_MIN_MS: u64 = 250;
 const RECONNECT_SLEEP_MAX_MS: u64 = 5_000;
 const FLOW_BLOCKED_LOG_INTERVAL_US: u64 = 1_000_000;
+const IDLE_THRESHOLD_US: u64 = 2_000_000; // 2s without streams → idle
 
 fn is_ipv6_unspecified(host: &str) -> bool {
     host.parse::<Ipv6Addr>()
@@ -259,6 +260,9 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
         let mut zero_send_with_streams = 0u64;
         let mut last_flow_block_log_at = 0u64;
         let mut quic_ready_signaled = false;
+        let idle_poll_interval_us = config.idle_poll_interval_ms.saturating_mul(1000);
+        let mut last_active_at: u64 = 0;
+        let mut last_idle_poll_at: u64 = 0;
 
         loop {
             // Check for shutdown signal from Android
@@ -308,6 +312,13 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                 unsafe { picoquic_get_next_wake_delay(quic, current_time, DNS_WAKE_DELAY_MAX_US) };
             let delay_us = if delay_us < 0 { 0 } else { delay_us as u64 };
             let streams_len_for_sleep = unsafe { (*state_ptr).streams_len() };
+            let current_time_for_idle = unsafe { picoquic_current_time() };
+            if streams_len_for_sleep > 0 {
+                last_active_at = current_time_for_idle;
+            }
+            let is_idle = idle_poll_interval_us > 0
+                && current_time_for_idle.saturating_sub(last_active_at) >= IDLE_THRESHOLD_US;
+
             let mut has_work = streams_len_for_sleep > 0;
             for resolver in resolvers.iter_mut() {
                 if !refresh_resolver_path(cnx, resolver) {
@@ -331,12 +342,24 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                     ResolverMode::Recursive => resolver.pending_polls,
                 };
                 if pending_for_sleep > 0 {
-                    has_work = true;
+                    if is_idle && resolver.mode == ResolverMode::Authoritative {
+                        // When idle, only wake for the next idle poll interval
+                        if current_time_for_idle.saturating_sub(last_idle_poll_at)
+                            >= idle_poll_interval_us
+                        {
+                            has_work = true;
+                        }
+                    } else {
+                        has_work = true;
+                    }
                 }
                 if resolver.mode == ResolverMode::Authoritative
                     && !resolver.inflight_poll_ids.is_empty()
                 {
-                    has_work = true;
+                    // Don't let lingering inflight_poll_ids force the tight loop when idle
+                    if !is_idle {
+                        has_work = true;
+                    }
                 }
             }
             // Avoid a tight poll loop when idle, but keep the short slice during active transfers.
@@ -531,15 +554,27 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                         if has_ready_stream && !flow_blocked {
                             poll_deficit = 0;
                         }
+                        // Idle throttling: suppress polls until interval elapses, then allow 1
+                        if is_idle && poll_deficit > 0 {
+                            let now_for_idle = unsafe { picoquic_current_time() };
+                            if now_for_idle.saturating_sub(last_idle_poll_at)
+                                < idle_poll_interval_us
+                            {
+                                poll_deficit = 0;
+                            } else {
+                                poll_deficit = 1;
+                            }
+                        }
                         if poll_deficit > 0 && resolver.debug.enabled {
                             debug!(
-                                "cc_state: {} cwnd={} in_transit={} rtt_us={} flow_blocked={} deficit={}",
+                                "cc_state: {} cwnd={} in_transit={} rtt_us={} flow_blocked={} deficit={} idle={}",
                                 resolver.label(),
                                 quality.cwin,
                                 quality.bytes_in_transit,
                                 quality.rtt,
                                 flow_blocked,
-                                poll_deficit
+                                poll_deficit,
+                                is_idle
                             );
                         }
                         if poll_deficit > 0 {
@@ -556,6 +591,9 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                                 &mut send_buf,
                             )
                             .await?;
+                            if is_idle {
+                                last_idle_poll_at = unsafe { picoquic_current_time() };
+                            }
                         }
                     }
                     ResolverMode::Recursive => {
@@ -632,6 +670,7 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                     pending_for_debug,
                     inflight_polls,
                     resolver.last_pacing_snapshot,
+                    is_idle,
                 );
             }
         }

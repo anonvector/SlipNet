@@ -591,17 +591,19 @@ fun EditProfileScreen(
 
                 // Slipstream-specific settings
                 if (uiState.isSlipstreamBased) {
-                    // Keep-Alive Interval
-                    OutlinedTextField(
-                        value = uiState.keepAliveInterval,
-                        onValueChange = { viewModel.updateKeepAliveInterval(it) },
-                        label = { Text("Keep-Alive Interval (ms)") },
-                        placeholder = { Text("200") },
-                        supportingText = { Text("QUIC keep-alive interval in milliseconds") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    // Keep-Alive Interval (hidden in authoritative mode — polling subsumes keep-alive)
+                    if (!uiState.authoritativeMode) {
+                        OutlinedTextField(
+                            value = uiState.keepAliveInterval,
+                            onValueChange = { viewModel.updateKeepAliveInterval(it) },
+                            label = { Text("Keep-Alive Interval (ms)") },
+                            placeholder = { Text("200") },
+                            supportingText = { Text("QUIC keep-alive interval in milliseconds") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
 
                     // Congestion Control
                     CongestionControlDropdown(

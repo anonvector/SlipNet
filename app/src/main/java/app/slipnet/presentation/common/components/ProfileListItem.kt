@@ -12,16 +12,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -37,7 +33,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -59,7 +54,7 @@ fun ProfileListItem(
     onShareQrClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var showMenu by remember { mutableStateOf(false) }
+    var showExportMenu by remember { mutableStateOf(false) }
 
     val cardShape = RoundedCornerShape(12.dp)
 
@@ -73,24 +68,6 @@ fun ProfileListItem(
         isConnected -> ConnectedGreen.copy(alpha = 0.08f)
         isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
         else -> MaterialTheme.colorScheme.surface
-    }
-
-    val iconBackground = when {
-        isConnected -> ConnectedGreen.copy(alpha = 0.15f)
-        isSelected -> MaterialTheme.colorScheme.primaryContainer
-        else -> MaterialTheme.colorScheme.surfaceVariant
-    }
-
-    val iconImage = when {
-        isConnected -> Icons.Default.Check
-        isSelected -> Icons.Default.Check
-        else -> Icons.Default.VpnKey
-    }
-
-    val iconTint = when {
-        isConnected -> ConnectedGreen
-        isSelected -> MaterialTheme.colorScheme.primary
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Card(
@@ -115,31 +92,13 @@ fun ProfileListItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Profile icon
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(iconBackground),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = iconImage,
-                    contentDescription = null,
-                    tint = iconTint,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(16.dp))
-
             // Profile info
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically
@@ -209,59 +168,76 @@ fun ProfileListItem(
                 )
             }
 
-            // Menu button
-            Box {
-                IconButton(onClick = { showMenu = true }) {
+            // Action buttons (compact)
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onEditClick,
+                    modifier = Modifier.size(36.dp)
+                ) {
                     Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "More options"
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Edit",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
-                DropdownMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
+                // Export with submenu (Export file + Share QR Code)
+                Box {
+                    IconButton(
+                        onClick = { showExportMenu = true },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Export",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showExportMenu,
+                        onDismissRequest = { showExportMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Export") },
+                            onClick = {
+                                showExportMenu = false
+                                onExportClick()
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.Share, contentDescription = null)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Share QR Code") },
+                            onClick = {
+                                showExportMenu = false
+                                onShareQrClick()
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.QrCode2, contentDescription = null)
+                            }
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onDeleteClick,
+                    enabled = !isConnected,
+                    modifier = Modifier.size(36.dp)
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("Edit") },
-                        onClick = {
-                            showMenu = false
-                            onEditClick()
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Edit, contentDescription = null)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Export") },
-                        onClick = {
-                            showMenu = false
-                            onExportClick()
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Share, contentDescription = null)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Share QR Code") },
-                        onClick = {
-                            showMenu = false
-                            onShareQrClick()
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.QrCode2, contentDescription = null)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Delete") },
-                        onClick = {
-                            showMenu = false
-                            onDeleteClick()
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Delete, contentDescription = null)
-                        },
-                        enabled = !isConnected
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete",
+                        modifier = Modifier.size(18.dp),
+                        tint = if (!isConnected)
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
                     )
                 }
             }

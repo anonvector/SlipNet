@@ -3,6 +3,7 @@ package app.slipnet.presentation.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.slipnet.data.local.datastore.DarkMode
+import app.slipnet.data.local.datastore.DomainRoutingMode
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.local.datastore.SplitTunnelingMode
 import app.slipnet.data.local.datastore.SshCipher
@@ -26,6 +27,7 @@ data class SettingsUiState(
     // HTTP Proxy Settings
     val httpProxyEnabled: Boolean = false,
     val httpProxyPort: Int = 8080,
+    val appendHttpProxyToVpn: Boolean = false,
     // Network Settings
     val disableQuic: Boolean = true,
     // Split Tunneling Settings
@@ -35,7 +37,11 @@ data class SettingsUiState(
     // SSH Tunnel Settings
     val sshCipher: SshCipher = SshCipher.AUTO,
     val sshCompression: Boolean = false,
-    val sshMaxChannels: Int = 16
+    val sshMaxChannels: Int = 16,
+    // Domain Routing Settings
+    val domainRoutingEnabled: Boolean = false,
+    val domainRoutingMode: DomainRoutingMode = DomainRoutingMode.BYPASS,
+    val domainRoutingDomains: Set<String> = emptySet()
 )
 
 @HiltViewModel
@@ -83,12 +89,21 @@ class SettingsViewModel @Inject constructor(
 
             val httpProxyFlow = combine(
                 preferencesDataStore.httpProxyEnabled,
-                preferencesDataStore.httpProxyPort
-            ) { enabled, port ->
-                Pair(enabled, port)
+                preferencesDataStore.httpProxyPort,
+                preferencesDataStore.appendHttpProxyToVpn
+            ) { enabled, port, appendToVpn ->
+                Triple(enabled, port, appendToVpn)
             }
 
-            combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow, httpProxyFlow) { main, ssh, split, proxyOnly, httpProxy ->
+            val domainRoutingFlow = combine(
+                preferencesDataStore.domainRoutingEnabled,
+                preferencesDataStore.domainRoutingMode,
+                preferencesDataStore.domainRoutingDomains
+            ) { enabled, mode, domains ->
+                Triple(enabled, mode, domains)
+            }
+
+            val baseFlow = combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow, httpProxyFlow) { main, ssh, split, proxyOnly, httpProxy ->
                 SettingsUiState(
                     autoConnectOnBoot = main[0] as Boolean,
                     darkMode = main[1] as DarkMode,
@@ -99,6 +114,7 @@ class SettingsViewModel @Inject constructor(
                     proxyOnlyMode = proxyOnly,
                     httpProxyEnabled = httpProxy.first,
                     httpProxyPort = httpProxy.second,
+                    appendHttpProxyToVpn = httpProxy.third,
                     disableQuic = main[5] as Boolean,
                     splitTunnelingEnabled = split.first,
                     splitTunnelingMode = split.second,
@@ -106,6 +122,14 @@ class SettingsViewModel @Inject constructor(
                     sshCipher = ssh.first,
                     sshCompression = ssh.second,
                     sshMaxChannels = ssh.third
+                )
+            }
+
+            combine(baseFlow, domainRoutingFlow) { base, domainRouting ->
+                base.copy(
+                    domainRoutingEnabled = domainRouting.first,
+                    domainRoutingMode = domainRouting.second,
+                    domainRoutingDomains = domainRouting.third
                 )
             }.collect { newState ->
                 _uiState.value = newState
@@ -200,6 +224,42 @@ class SettingsViewModel @Inject constructor(
     fun setHttpProxyPort(port: Int) {
         viewModelScope.launch {
             preferencesDataStore.setHttpProxyPort(port)
+        }
+    }
+
+    fun setAppendHttpProxyToVpn(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setAppendHttpProxyToVpn(enabled)
+        }
+    }
+
+    // Domain Routing Settings
+    fun setDomainRoutingEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setDomainRoutingEnabled(enabled)
+        }
+    }
+
+    fun setDomainRoutingMode(mode: DomainRoutingMode) {
+        viewModelScope.launch {
+            preferencesDataStore.setDomainRoutingMode(mode)
+        }
+    }
+
+    fun addDomainRoutingDomain(domain: String) {
+        viewModelScope.launch {
+            val current = _uiState.value.domainRoutingDomains
+            val normalized = domain.lowercase().trim().trimEnd('.')
+            if (normalized.isNotEmpty()) {
+                preferencesDataStore.setDomainRoutingDomains(current + normalized)
+            }
+        }
+    }
+
+    fun removeDomainRoutingDomain(domain: String) {
+        viewModelScope.launch {
+            val current = _uiState.value.domainRoutingDomains
+            preferencesDataStore.setDomainRoutingDomains(current - domain)
         }
     }
 }

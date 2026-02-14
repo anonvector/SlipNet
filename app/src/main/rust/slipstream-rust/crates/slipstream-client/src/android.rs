@@ -231,6 +231,7 @@ pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSlips
     gso_enabled: jboolean,
     debug_poll: jboolean,
     debug_streams: jboolean,
+    idle_poll_interval: jint,
 ) -> jint {
     // Catch panics to prevent crashes
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
@@ -247,6 +248,7 @@ pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSlips
             gso_enabled,
             debug_poll,
             debug_streams,
+            idle_poll_interval,
         )
     }));
 
@@ -273,6 +275,7 @@ fn start_client_impl<'local>(
     gso_enabled: jboolean,
     debug_poll: jboolean,
     debug_streams: jboolean,
+    idle_poll_interval: jint,
 ) -> jint {
     info!("nativeStartSlipstreamClient called");
 
@@ -432,6 +435,7 @@ fn start_client_impl<'local>(
     let gso = gso_enabled != JNI_FALSE;
     let dbg_poll = debug_poll != JNI_FALSE;
     let dbg_streams = debug_streams != JNI_FALSE;
+    let idle_poll_ms = idle_poll_interval.max(0) as u64;
 
     let handle = thread::Builder::new()
         .name("slipstream-client".to_string())
@@ -446,6 +450,7 @@ fn start_client_impl<'local>(
                 gso,
                 dbg_poll,
                 dbg_streams,
+                idle_poll_ms,
             );
         });
 
@@ -494,6 +499,7 @@ fn run_client_thread(
     gso: bool,
     debug_poll: bool,
     debug_streams: bool,
+    idle_poll_interval_ms: u64,
 ) {
     info!("Client thread started");
 
@@ -509,6 +515,7 @@ fn run_client_thread(
             keep_alive_interval,
             debug_poll,
             debug_streams,
+            idle_poll_interval_ms,
         };
 
         // Build tokio runtime
