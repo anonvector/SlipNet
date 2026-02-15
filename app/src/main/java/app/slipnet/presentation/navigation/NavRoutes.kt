@@ -2,7 +2,6 @@ package app.slipnet.presentation.navigation
 
 sealed class NavRoutes(val route: String) {
     data object Home : NavRoutes("home")
-    data object Profiles : NavRoutes("profiles")
     data object AddProfile : NavRoutes("add_profile/{tunnelType}") {
         fun createRoute(tunnelType: String) = "add_profile/$tunnelType"
     }

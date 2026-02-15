@@ -5,15 +5,13 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
-import app.slipnet.presentation.home.HomeScreen
+import app.slipnet.presentation.main.MainScreen
 import app.slipnet.presentation.profiles.EditProfileScreen
-import app.slipnet.presentation.profiles.ProfileListScreen
 import app.slipnet.presentation.scanner.DnsScannerScreen
 import app.slipnet.presentation.scanner.ScanResultsScreen
 import app.slipnet.presentation.settings.AppSelectorScreen
@@ -34,26 +32,15 @@ fun NavGraph(
         popExitTransition = { ExitTransition.None }
     ) {
         composable(NavRoutes.Home.route) {
-            HomeScreen(
-                onNavigateToProfiles = {
-                    navController.navigate(NavRoutes.Profiles.route)
-                },
-                onNavigateToSettings = {
-                    navController.navigate(NavRoutes.Settings.route)
-                }
-            )
-        }
-
-        composable(NavRoutes.Profiles.route) {
-            ProfileListScreen(
-                onNavigateBack = {
-                    navController.popBackStack()
-                },
+            MainScreen(
                 onNavigateToAddProfile = { tunnelType ->
                     navController.navigate(NavRoutes.AddProfile.createRoute(tunnelType))
                 },
                 onNavigateToEditProfile = { profileId ->
                     navController.navigate(NavRoutes.EditProfile.createRoute(profileId))
+                },
+                onNavigateToSettings = {
+                    navController.navigate(NavRoutes.Settings.route)
                 }
             )
         }
@@ -147,7 +134,6 @@ fun NavGraph(
                     navController.navigate(NavRoutes.ScanResults.createRoute(profileId, fromProfile))
                 },
                 onResolversSelected = { resolvers ->
-                    // Pass selected resolvers back through saved state
                     navController.previousBackStackEntry?.savedStateHandle?.set("selected_resolvers", resolvers)
                 }
             )
@@ -168,8 +154,6 @@ fun NavGraph(
         ) { backStackEntry ->
             val profileId = backStackEntry.arguments?.getLong("profileId")?.takeIf { it != -1L }
             val fromProfile = backStackEntry.arguments?.getBoolean("fromProfile") ?: false
-            // Get the parent (DnsScanner) back stack entry to share ViewModel
-            // Use remember to cache it so it doesn't crash during recomposition after navigation
             val parentEntry = remember { navController.getBackStackEntry(NavRoutes.DnsScanner.route) }
             ScanResultsScreen(
                 profileId = profileId,
@@ -179,14 +163,12 @@ fun NavGraph(
                     navController.popBackStack()
                 },
                 onResolversSelected = { resolvers ->
-                    // Find the profile screen (EditProfile or AddProfile) and set the data there
                     val profileRoute = if (profileId != null) {
                         NavRoutes.EditProfile.createRoute(profileId)
                     } else {
                         NavRoutes.AddProfile.route
                     }
                     navController.getBackStackEntry(profileRoute).savedStateHandle["selected_resolvers"] = resolvers
-                    // Pop back directly to the profile screen, skipping DnsScanner
                     navController.popBackStack(profileRoute, inclusive = false)
                 }
             )

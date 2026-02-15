@@ -1,19 +1,26 @@
-package app.slipnet.presentation.profiles
+package app.slipnet.presentation.main
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.slipnet.data.export.ConfigExporter
 import app.slipnet.data.export.ConfigImporter
 import app.slipnet.data.export.ImportResult
+import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.repository.ProfileRepository
+import app.slipnet.domain.usecase.ConnectVpnUseCase
 import app.slipnet.domain.usecase.DeleteProfileUseCase
+import app.slipnet.domain.usecase.DisconnectVpnUseCase
+import app.slipnet.domain.usecase.GetActiveProfileUseCase
 import app.slipnet.domain.usecase.GetProfilesUseCase
 import app.slipnet.domain.usecase.SaveProfileUseCase
 import app.slipnet.domain.usecase.SetActiveProfileUseCase
 import app.slipnet.service.VpnConnectionManager
+import app.slipnet.tunnel.SnowflakeBridge
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,7 +38,14 @@ data class QrCodeData(
     val configUri: String
 )
 
-data class ProfileListUiState(
+data class MainUiState(
+    // Connection state
+    val connectionState: ConnectionState = ConnectionState.Disconnected,
+    val activeProfile: ServerProfile? = null,
+    val proxyOnlyMode: Boolean = false,
+    val debugLogging: Boolean = false,
+    val snowflakeBootstrapProgress: Int = -1,
+    // Profile list state
     val profiles: List<ServerProfile> = emptyList(),
     val connectedProfileId: Long? = null,
     val isLoading: Boolean = false,
@@ -42,46 +56,141 @@ data class ProfileListUiState(
 )
 
 @HiltViewModel
-class ProfileListViewModel @Inject constructor(
+class MainViewModel @Inject constructor(
+    private val connectionManager: VpnConnectionManager,
     private val getProfilesUseCase: GetProfilesUseCase,
-    private val deleteProfileUseCase: DeleteProfileUseCase,
+    private val getActiveProfileUseCase: GetActiveProfileUseCase,
+    private val connectVpnUseCase: ConnectVpnUseCase,
+    private val disconnectVpnUseCase: DisconnectVpnUseCase,
     private val setActiveProfileUseCase: SetActiveProfileUseCase,
+    private val deleteProfileUseCase: DeleteProfileUseCase,
     private val saveProfileUseCase: SaveProfileUseCase,
     private val profileRepository: ProfileRepository,
     private val configExporter: ConfigExporter,
     private val configImporter: ConfigImporter,
-    private val connectionManager: VpnConnectionManager
+    private val preferencesDataStore: PreferencesDataStore
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(ProfileListUiState())
-    val uiState: StateFlow<ProfileListUiState> = _uiState.asStateFlow()
+    private val _uiState = MutableStateFlow(MainUiState())
+    val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    private var bootstrapPollingJob: Job? = null
 
     init {
-        loadProfiles()
+        observeConnectionState()
+        observeProfiles()
+        observeProxyOnlyMode()
+        observeDebugLogging()
     }
 
-    private fun loadProfiles() {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true)
+    // ── Connection ──────────────────────────────────────────────────────
 
-            combine(
-                getProfilesUseCase(),
-                connectionManager.connectionState
-            ) { profiles, connectionState ->
-                val connectedId = when (connectionState) {
-                    is ConnectionState.Connected -> connectionState.profile.id
+    private fun observeConnectionState() {
+        viewModelScope.launch {
+            connectionManager.connectionState.collect { state ->
+                val connectedId = when (state) {
+                    is ConnectionState.Connected -> state.profile.id
                     else -> null
                 }
-                Pair(profiles, connectedId)
-            }.collect { (profiles, connectedId) ->
+                _uiState.value = _uiState.value.copy(
+                    connectionState = state,
+                    connectedProfileId = connectedId,
+                    error = if (state is ConnectionState.Error) state.message else _uiState.value.error
+                )
+                if (state is ConnectionState.Connecting) {
+                    startBootstrapPolling()
+                } else {
+                    stopBootstrapPolling()
+                }
+            }
+        }
+    }
+
+    private fun startBootstrapPolling() {
+        bootstrapPollingJob?.cancel()
+        bootstrapPollingJob = viewModelScope.launch {
+            while (true) {
+                val progress = SnowflakeBridge.torBootstrapProgress
+                _uiState.value = _uiState.value.copy(
+                    snowflakeBootstrapProgress = if (progress > 0) progress else -1
+                )
+                delay(500)
+            }
+        }
+    }
+
+    private fun stopBootstrapPolling() {
+        bootstrapPollingJob?.cancel()
+        bootstrapPollingJob = null
+        _uiState.value = _uiState.value.copy(snowflakeBootstrapProgress = -1)
+    }
+
+    private fun observeProxyOnlyMode() {
+        viewModelScope.launch {
+            preferencesDataStore.proxyOnlyMode.collect { enabled ->
+                _uiState.value = _uiState.value.copy(proxyOnlyMode = enabled)
+            }
+        }
+    }
+
+    private fun observeDebugLogging() {
+        viewModelScope.launch {
+            preferencesDataStore.debugLogging.collect { enabled ->
+                _uiState.value = _uiState.value.copy(debugLogging = enabled)
+            }
+        }
+    }
+
+    private fun observeProfiles() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true)
+            combine(
+                getProfilesUseCase(),
+                getActiveProfileUseCase()
+            ) { profiles, activeProfile ->
+                Pair(profiles, activeProfile)
+            }.collect { (profiles, activeProfile) ->
                 _uiState.value = _uiState.value.copy(
                     profiles = profiles,
-                    connectedProfileId = connectedId,
+                    activeProfile = activeProfile,
                     isLoading = false
                 )
             }
         }
     }
+
+    fun connect(profile: ServerProfile? = null) {
+        val targetProfile = profile ?: _uiState.value.activeProfile ?: _uiState.value.profiles.firstOrNull()
+        if (targetProfile == null) {
+            _uiState.value = _uiState.value.copy(error = "No profile available to connect")
+            return
+        }
+        connectionManager.connect(targetProfile)
+    }
+
+    fun disconnect() {
+        connectionManager.disconnect()
+    }
+
+    fun toggleConnection() {
+        when (_uiState.value.connectionState) {
+            is ConnectionState.Connected,
+            is ConnectionState.Connecting -> disconnect()
+            else -> connect()
+        }
+    }
+
+    fun setActiveProfile(profile: ServerProfile) {
+        viewModelScope.launch {
+            setActiveProfileUseCase(profile.id)
+        }
+    }
+
+    fun clearError() {
+        _uiState.value = _uiState.value.copy(error = null)
+    }
+
+    // ── Profile Management ──────────────────────────────────────────────
 
     fun moveProfile(fromIndex: Int, toIndex: Int) {
         val currentList = _uiState.value.profiles.toMutableList()
@@ -90,11 +199,8 @@ class ProfileListViewModel @Inject constructor(
 
         val item = currentList.removeAt(fromIndex)
         currentList.add(toIndex, item)
-
-        // Instant UI update
         _uiState.value = _uiState.value.copy(profiles = currentList)
 
-        // Persist in background
         viewModelScope.launch {
             profileRepository.updateProfileOrder(currentList.map { it.id })
         }
@@ -121,19 +227,7 @@ class ProfileListViewModel @Inject constructor(
         }
     }
 
-    fun setActiveProfile(profile: ServerProfile) {
-        viewModelScope.launch {
-            setActiveProfileUseCase(profile.id)
-        }
-    }
-
-    fun connectToProfile(profile: ServerProfile) {
-        connectionManager.connect(profile)
-    }
-
-    fun clearError() {
-        _uiState.value = _uiState.value.copy(error = null)
-    }
+    // ── Import / Export ─────────────────────────────────────────────────
 
     fun exportProfile(profile: ServerProfile) {
         val json = configExporter.exportSingleProfile(profile)
@@ -171,10 +265,8 @@ class ProfileListViewModel @Inject constructor(
         val preview = _uiState.value.importPreview ?: return
         viewModelScope.launch {
             try {
-                var importedCount = 0
                 for (profile in preview.profiles) {
                     saveProfileUseCase(profile)
-                    importedCount++
                 }
                 _uiState.value = _uiState.value.copy(
                     importPreview = null,

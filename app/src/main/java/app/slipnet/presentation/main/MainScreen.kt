@@ -1,49 +1,68 @@
-package app.slipnet.presentation.profiles
+package app.slipnet.presentation.main
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.net.VpnService
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import app.slipnet.presentation.common.icons.TorIcon
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Dns
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Waves
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -51,6 +70,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -61,43 +81,85 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
+import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
-import kotlinx.coroutines.launch
-
 import app.slipnet.presentation.common.components.ProfileListItem
 import app.slipnet.presentation.common.components.QrCodeDialog
+import app.slipnet.presentation.common.icons.TorIcon
+import app.slipnet.presentation.home.DebugLogSheet
+import app.slipnet.presentation.theme.ConnectedGreen
+import app.slipnet.presentation.theme.ConnectingOrange
+import app.slipnet.presentation.theme.DisconnectedRed
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.launch
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
+private fun Context.findActivity(): Activity? {
+    var context = this
+    while (context is ContextWrapper) {
+        if (context is Activity) return context
+        context = context.baseContext
+    }
+    return null
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProfileListScreen(
-    onNavigateBack: () -> Unit,
+fun MainScreen(
     onNavigateToAddProfile: (tunnelType: String) -> Unit,
     onNavigateToEditProfile: (Long) -> Unit,
-    viewModel: ProfileListViewModel = hiltViewModel()
+    onNavigateToSettings: () -> Unit,
+    viewModel: MainViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val activity = context.findActivity()
 
-    var profileToDelete by remember { mutableStateOf<ServerProfile?>(null) }
+    // VPN permission flow
+    var pendingConnect by remember { mutableStateOf(false) }
+    var pendingProfile by remember { mutableStateOf<ServerProfile?>(null) }
+
+    // Dialog/sheet state
+    var showShareDialog by remember { mutableStateOf(false) }
+    var showLogSheet by remember { mutableStateOf(false) }
     var showOverflowMenu by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf("") }
     var showAddMenu by remember { mutableStateOf(false) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
+    var profileToDelete by remember { mutableStateOf<ServerProfile?>(null) }
+
+    val vpnPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK && pendingConnect) {
+            if (pendingProfile != null) {
+                viewModel.connect(pendingProfile)
+            } else {
+                viewModel.connect()
+            }
+        }
+        pendingConnect = false
+        pendingProfile = null
+    }
 
     val importFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -108,9 +170,7 @@ fun ProfileListScreen(
                     val json = inputStream.bufferedReader().readText()
                     viewModel.parseImportConfig(json)
                 }
-            } catch (e: Exception) {
-                viewModel.clearError()
-            }
+            } catch (_: Exception) {}
         }
     }
 
@@ -129,7 +189,7 @@ fun ProfileListScreen(
         }
     }
 
-    // Handle export - launch share sheet
+    // Handle export
     LaunchedEffect(uiState.exportedJson) {
         uiState.exportedJson?.let { json ->
             val sendIntent = Intent().apply {
@@ -150,19 +210,53 @@ fun ProfileListScreen(
         }
     }
 
+    val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
+
+    // Helper to request VPN permission and connect
+    fun requestConnectOrToggle() {
+        when (uiState.connectionState) {
+            is ConnectionState.Connected,
+            is ConnectionState.Connecting -> viewModel.disconnect()
+            else -> {
+                if (uiState.proxyOnlyMode) {
+                    viewModel.connect()
+                } else if (activity != null) {
+                    val vpnIntent = VpnService.prepare(activity)
+                    if (vpnIntent != null) {
+                        pendingConnect = true
+                        pendingProfile = null
+                        vpnPermissionLauncher.launch(vpnIntent)
+                    } else {
+                        viewModel.connect()
+                    }
+                }
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Profiles") },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
+                title = {
+                    Text(
+                        text = "SlipNet",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
                 },
                 actions = {
+                    if (uiState.debugLogging) {
+                        IconButton(onClick = { showLogSheet = true }) {
+                            Icon(Icons.Default.BugReport, contentDescription = "Debug Logs")
+                        }
+                    }
+                    IconButton(onClick = { showShareDialog = true }) {
+                        Icon(Icons.Default.Share, contentDescription = "Share App")
+                    }
+                    // Overflow menu
                     Box {
                         IconButton(onClick = { showOverflowMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                            Icon(Icons.Default.DriveFileMove, contentDescription = "Import & Export")
                         }
                         DropdownMenu(
                             expanded = showOverflowMenu,
@@ -193,7 +287,13 @@ fun ProfileListScreen(
                             )
                         }
                     }
-                }
+                    IconButton(onClick = onNavigateToSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent
+                )
             )
         },
         floatingActionButton = {
@@ -267,35 +367,66 @@ fun ProfileListScreen(
                 FloatingActionButton(
                     onClick = { showAddMenu = !showAddMenu },
                     containerColor = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(bottom = 16.dp, end = 8.dp)
+                    modifier = Modifier.padding(end = 8.dp)
                 ) {
                     Icon(Icons.Default.Add, contentDescription = "Add Profile")
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Connect / Disconnect FAB
+                ConnectFab(
+                    connectionState = uiState.connectionState,
+                    hasProfile = uiState.activeProfile != null || uiState.profiles.isNotEmpty(),
+                    snowflakeBootstrapProgress = uiState.snowflakeBootstrapProgress,
+                    onToggleConnection = { requestConnectOrToggle() },
+                    modifier = Modifier.padding(
+                        bottom = 24.dp + navBarPadding.calculateBottomPadding(),
+                        end = 8.dp
+                    )
+                )
             }
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { paddingValues ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
+            // ── Profile List ────────────────────────────────────────
             when {
                 uiState.isLoading -> {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center)
-                    )
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        androidx.compose.material3.CircularProgressIndicator()
+                    }
                 }
                 uiState.profiles.isEmpty() -> {
-                    Text(
-                        text = "No profiles yet.\nTap + to add your first profile.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(32.dp)
-                    )
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(32.dp)
+                        ) {
+                            Text(
+                                text = "No profiles yet",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "Tap + to add your first profile",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
                 else -> {
                     val lazyListState = rememberLazyListState()
@@ -307,9 +438,11 @@ fun ProfileListScreen(
                         state = lazyListState,
                         contentPadding = PaddingValues(
                             start = 16.dp, end = 16.dp,
-                            top = 16.dp, bottom = 88.dp
+                            top = 8.dp,
+                            bottom = 120.dp + navBarPadding.calculateBottomPadding()
                         ),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxSize()
                     ) {
                         items(
                             items = uiState.profiles,
@@ -325,9 +458,7 @@ fun ProfileListScreen(
                                     isSelected = profile.isActive,
                                     isConnected = isConnected,
                                     onClick = { viewModel.setActiveProfile(profile) },
-                                    onEditClick = {
-                                        onNavigateToEditProfile(profile.id)
-                                    },
+                                    onEditClick = { onNavigateToEditProfile(profile.id) },
                                     onDeleteClick = {
                                         if (isConnected) {
                                             scope.launch {
@@ -352,18 +483,66 @@ fun ProfileListScreen(
                 }
             }
 
-            // Scrim to dismiss the FAB menu
+            // ── Connection Status Strip (bottom, behind FAB) ────────
+            ConnectionStatusStrip(
+                connectionState = uiState.connectionState,
+                activeProfile = uiState.activeProfile,
+                isProxyOnly = uiState.proxyOnlyMode,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = navBarPadding.calculateBottomPadding())
+            )
+
+            // Scrim to dismiss FAB menu
             if (showAddMenu) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .clickable(
                             indication = null,
-                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                            interactionSource = remember { MutableInteractionSource() }
                         ) { showAddMenu = false }
                 )
             }
         }
+    }
+
+    // ── Dialogs ─────────────────────────────────────────────────────────
+
+    // Debug log sheet
+    if (showLogSheet) {
+        DebugLogSheet(onDismiss = { showLogSheet = false })
+    }
+
+    // Share dialog
+    if (showShareDialog) {
+        AlertDialog(
+            onDismissRequest = { showShareDialog = false },
+            title = { Text("Share SlipNet") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "How would you like to share the app?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    TextButton(
+                        onClick = { showShareDialog = false; shareApk(context) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("APK File") }
+                    TextButton(
+                        onClick = { showShareDialog = false; shareGithubLink(context) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("GitHub Link") }
+                    TextButton(
+                        onClick = { showShareDialog = false; shareTelegramLink(context) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Telegram Channel") }
+                }
+            },
+            confirmButton = {}
+        )
     }
 
     // Delete confirmation dialog
@@ -378,14 +557,10 @@ fun ProfileListScreen(
                         viewModel.deleteProfile(profile)
                         profileToDelete = null
                     }
-                ) {
-                    Text("Delete")
-                }
+                ) { Text("Delete") }
             },
             dismissButton = {
-                TextButton(onClick = { profileToDelete = null }) {
-                    Text("Cancel")
-                }
+                TextButton(onClick = { profileToDelete = null }) { Text("Cancel") }
             }
         )
     }
@@ -410,14 +585,10 @@ fun ProfileListScreen(
                         viewModel.deleteAllProfiles()
                         showDeleteAllDialog = false
                     }
-                ) {
-                    Text("Delete All")
-                }
+                ) { Text("Delete All") }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteAllDialog = false }) {
-                    Text("Cancel")
-                }
+                TextButton(onClick = { showDeleteAllDialog = false }) { Text("Cancel") }
             }
         )
     }
@@ -438,7 +609,7 @@ fun ProfileListScreen(
                     )
                     preview.profiles.forEach { profile ->
                         Text(
-                            text = "• ${profile.name}",
+                            text = "\u2022 ${profile.name}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -452,7 +623,7 @@ fun ProfileListScreen(
                         )
                         preview.warnings.forEach { warning ->
                             Text(
-                                text = "• $warning",
+                                text = "\u2022 $warning",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error
                             )
@@ -461,14 +632,10 @@ fun ProfileListScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmImport() }) {
-                    Text("Import")
-                }
+                TextButton(onClick = { viewModel.confirmImport() }) { Text("Import") }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.cancelImport() }) {
-                    Text("Cancel")
-                }
+                TextButton(onClick = { viewModel.cancelImport() }) { Text("Cancel") }
             }
         )
     }
@@ -519,9 +686,7 @@ fun ProfileListScreen(
                                 showImportDialog = false
                                 importText = ""
                             }
-                        ) {
-                            Text("Import from File")
-                        }
+                        ) { Text("Import from File") }
                         TextButton(
                             onClick = {
                                 showImportDialog = false
@@ -532,9 +697,7 @@ fun ProfileListScreen(
                                     setBeepEnabled(false)
                                 })
                             }
-                        ) {
-                            Text("Scan QR Code")
-                        }
+                        ) { Text("Scan QR Code") }
                     }
                 }
             },
@@ -548,9 +711,7 @@ fun ProfileListScreen(
                         }
                     },
                     enabled = importText.isNotBlank()
-                ) {
-                    Text("Import")
-                }
+                ) { Text("Import") }
             },
             dismissButton = {
                 TextButton(
@@ -558,13 +719,165 @@ fun ProfileListScreen(
                         showImportDialog = false
                         importText = ""
                     }
-                ) {
-                    Text("Cancel")
-                }
+                ) { Text("Cancel") }
             }
         )
     }
 }
+
+// ── ConnectionStatusStrip ───────────────────────────────────────────────
+
+@Composable
+private fun ConnectionStatusStrip(
+    connectionState: ConnectionState,
+    activeProfile: ServerProfile?,
+    isProxyOnly: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val isConnected = connectionState is ConnectionState.Connected
+    val isConnecting = connectionState is ConnectionState.Connecting ||
+            connectionState is ConnectionState.Disconnecting
+    val isError = connectionState is ConnectionState.Error
+
+    val statusColor by animateColorAsState(
+        targetValue = when {
+            isConnected -> ConnectedGreen
+            isConnecting -> ConnectingOrange
+            isError -> DisconnectedRed
+            else -> MaterialTheme.colorScheme.outline
+        },
+        animationSpec = tween(300),
+        label = "statusColor"
+    )
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        tonalElevation = 2.dp,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Status indicator dot
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(statusColor)
+            )
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            // Status text + profile name
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = when {
+                        isConnected && isProxyOnly -> "Proxy Active"
+                        isConnected -> "Connected"
+                        connectionState is ConnectionState.Connecting -> "Connecting..."
+                        connectionState is ConnectionState.Disconnecting -> "Disconnecting..."
+                        isError -> "Connection Failed"
+                        else -> "Not Connected"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isConnected || isConnecting) statusColor
+                    else MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = when {
+                        isConnected && connectionState is ConnectionState.Connected ->
+                            connectionState.profile.name
+                        isError && connectionState is ConnectionState.Error ->
+                            connectionState.message
+                        activeProfile != null -> activeProfile.name
+                        else -> "No profile selected"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isError) DisconnectedRed
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+// ── Connect FAB ─────────────────────────────────────────────────────────
+
+@Composable
+private fun ConnectFab(
+    connectionState: ConnectionState,
+    hasProfile: Boolean,
+    snowflakeBootstrapProgress: Int,
+    onToggleConnection: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isConnected = connectionState is ConnectionState.Connected
+    val isConnecting = connectionState is ConnectionState.Connecting ||
+            connectionState is ConnectionState.Disconnecting
+
+    val statusColor by animateColorAsState(
+        targetValue = when {
+            isConnected -> ConnectedGreen
+            isConnecting -> ConnectingOrange
+            connectionState is ConnectionState.Error -> DisconnectedRed
+            else -> MaterialTheme.colorScheme.primary
+        },
+        animationSpec = tween(300),
+        label = "connectFabColor"
+    )
+
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseScale"
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+    ) {
+        // Snowflake bootstrap progress above the FAB
+        if (connectionState is ConnectionState.Connecting && snowflakeBootstrapProgress in 0..99) {
+            Text(
+                text = "Tor: $snowflakeBootstrapProgress%",
+                style = MaterialTheme.typography.labelSmall,
+                color = ConnectingOrange,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+        }
+
+        FloatingActionButton(
+            onClick = onToggleConnection,
+            containerColor = statusColor,
+            modifier = Modifier
+                .size(56.dp)
+                .then(if (isConnecting) Modifier.scale(pulseScale) else Modifier),
+        ) {
+            Icon(
+                imageVector = Icons.Default.PowerSettingsNew,
+                contentDescription = if (isConnected) "Disconnect" else "Connect",
+                tint = when {
+                    isConnected || isConnecting -> Color.White
+                    hasProfile -> MaterialTheme.colorScheme.onPrimary
+                    else -> MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.5f)
+                }
+            )
+        }
+    }
+}
+
+// ── FAB menu option ─────────────────────────────────────────────────────
 
 @Composable
 private fun AddMenuOption(
@@ -599,4 +912,66 @@ private fun AddMenuOption(
             )
         }
     }
+}
+
+// ── Share helpers ────────────────────────────────────────────────────────
+
+private fun shareGithubLink(context: Context) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, "SlipNet VPN")
+        putExtra(Intent.EXTRA_TEXT, "Download SlipNet VPN:\nhttps://github.com/anonvector/SlipNet/releases/latest")
+    }
+    context.startActivity(Intent.createChooser(intent, "Share SlipNet"))
+}
+
+private fun shareTelegramLink(context: Context) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, "SlipNet VPN")
+        putExtra(Intent.EXTRA_TEXT, "Join SlipNet VPN on Telegram:\nhttps://t.me/SlipNet_app")
+    }
+    context.startActivity(Intent.createChooser(intent, "Share SlipNet"))
+}
+
+private fun shareApk(context: Context) {
+    try {
+        val appInfo = context.applicationInfo
+        val sharedDir = java.io.File(context.cacheDir, "shared")
+        sharedDir.mkdirs()
+
+        val splits = appInfo.splitSourceDirs
+        if (splits.isNullOrEmpty()) {
+            val sourceApk = java.io.File(appInfo.sourceDir)
+            val sharedApk = java.io.File(sharedDir, "SlipNet-v${app.slipnet.BuildConfig.VERSION_NAME}.apk")
+            sourceApk.copyTo(sharedApk, overwrite = true)
+
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", sharedApk)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/vnd.android.package-archive"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Share SlipNet"))
+        } else {
+            val apksFile = java.io.File(sharedDir, "SlipNet-v${app.slipnet.BuildConfig.VERSION_NAME}.apks")
+            java.util.zip.ZipOutputStream(apksFile.outputStream().buffered()).use { zip ->
+                val allApks = listOf(appInfo.sourceDir) + splits
+                for (path in allApks) {
+                    val file = java.io.File(path)
+                    zip.putNextEntry(java.util.zip.ZipEntry(file.name))
+                    file.inputStream().buffered().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                }
+            }
+
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apksFile)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Share SlipNet"))
+        }
+    } catch (_: Exception) { }
 }
