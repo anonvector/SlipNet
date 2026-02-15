@@ -59,6 +59,8 @@ class PreferencesDataStore @Inject constructor(
         val PROXY_ONLY_MODE = booleanPreferencesKey("proxy_only_mode")
         // Recent DNS Resolvers
         val RECENT_DNS_RESOLVERS = stringPreferencesKey("recent_dns_resolvers")
+        // First Launch
+        val FIRST_LAUNCH_DONE = booleanPreferencesKey("first_launch_done")
         // Domain Routing Keys
         val DOMAIN_ROUTING_ENABLED = booleanPreferencesKey("domain_routing_enabled")
         val DOMAIN_ROUTING_MODE = stringPreferencesKey("domain_routing_mode")
@@ -365,6 +367,17 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setProxyOnlyMode(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[Keys.PROXY_ONLY_MODE] = enabled
+        }
+    }
+
+    // First Launch
+    val firstLaunchDone: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.FIRST_LAUNCH_DONE] ?: false
+    }
+
+    suspend fun setFirstLaunchDone() {
+        dataStore.edit { prefs ->
+            prefs[Keys.FIRST_LAUNCH_DONE] = true
         }
     }
 

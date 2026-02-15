@@ -9,16 +9,19 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -45,6 +48,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
@@ -58,6 +62,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -87,7 +92,10 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -97,6 +105,7 @@ import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.TrafficStats
 import app.slipnet.presentation.common.components.ProfileListItem
 import app.slipnet.presentation.common.components.QrCodeDialog
 import app.slipnet.presentation.common.icons.TorIcon
@@ -212,15 +221,30 @@ fun MainScreen(
 
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
 
+    val showTorProgressFab = uiState.connectionState is ConnectionState.Connecting &&
+            uiState.snowflakeBootstrapProgress in 0..99
+
+    val fabExtraPadding by animateDpAsState(
+        targetValue = when {
+            uiState.connectionState is ConnectionState.Connected -> 28.dp
+            showTorProgressFab -> 30.dp
+            else -> 0.dp
+        },
+        animationSpec = tween(300),
+        label = "fabPadding"
+    )
+
     // Helper to request VPN permission and connect
     fun requestConnectOrToggle() {
         when (uiState.connectionState) {
             is ConnectionState.Connected,
             is ConnectionState.Connecting -> viewModel.disconnect()
             else -> {
-                if (uiState.proxyOnlyMode) {
-                    viewModel.connect()
-                } else if (activity != null) {
+                if (activity != null) {
+                    // Always check VpnService.prepare() — even in proxy-only mode.
+                    // This detects if another VPN (e.g. v2ray) is active. Without this,
+                    // our tunnel sockets route through the other VPN and fail silently.
+                    // Granting permission revokes the other VPN, unblocking our tunnel.
                     val vpnIntent = VpnService.prepare(activity)
                     if (vpnIntent != null) {
                         pendingConnect = true
@@ -381,7 +405,7 @@ fun MainScreen(
                     snowflakeBootstrapProgress = uiState.snowflakeBootstrapProgress,
                     onToggleConnection = { requestConnectOrToggle() },
                     modifier = Modifier.padding(
-                        bottom = 24.dp + navBarPadding.calculateBottomPadding(),
+                        bottom = 24.dp + navBarPadding.calculateBottomPadding() + fabExtraPadding,
                         end = 8.dp
                     )
                 )
@@ -488,6 +512,9 @@ fun MainScreen(
                 connectionState = uiState.connectionState,
                 activeProfile = uiState.activeProfile,
                 isProxyOnly = uiState.proxyOnlyMode,
+                snowflakeBootstrapProgress = uiState.snowflakeBootstrapProgress,
+                uploadSpeed = uiState.uploadSpeed,
+                downloadSpeed = uiState.downloadSpeed,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = navBarPadding.calculateBottomPadding())
@@ -723,6 +750,94 @@ fun MainScreen(
             }
         )
     }
+
+    // First launch About dialog
+    if (uiState.showFirstLaunchAbout) {
+        val clipboardManager = LocalClipboardManager.current
+        val uriHandler = LocalUriHandler.current
+        val donationAddress = ""
+
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissFirstLaunchAbout() },
+            title = { Text("Welcome to SlipNet") },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "SlipNet VPN v${app.slipnet.BuildConfig.VERSION_NAME}",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "A free, source-available anti-censorship VPN tool designed to bypass internet restrictions. SlipNet tunnels your traffic through DNS, SSH, Tor, and other protocols to keep you connected when access is blocked.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    // GitHub
+                    Text(
+                        text = "GitHub",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "github.com/anonvector/SlipNet",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable {
+                            uriHandler.openUri("https://github.com/anonvector/SlipNet")
+                        }
+                    )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    // Donate
+                    Text(
+                        text = "Donate (USDT \u2013 BEP20 / ERC20)",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = donationAddress,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        IconButton(
+                            onClick = {
+                                clipboardManager.setText(AnnotatedString(donationAddress))
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.ContentCopy,
+                                contentDescription = "Copy donation address",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Your support helps keep this project alive and free for everyone.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.dismissFirstLaunchAbout() }) {
+                    Text("Get Started")
+                }
+            }
+        )
+    }
 }
 
 // ── ConnectionStatusStrip ───────────────────────────────────────────────
@@ -732,12 +847,17 @@ private fun ConnectionStatusStrip(
     connectionState: ConnectionState,
     activeProfile: ServerProfile?,
     isProxyOnly: Boolean,
+    snowflakeBootstrapProgress: Int,
+    uploadSpeed: Long = 0,
+    downloadSpeed: Long = 0,
     modifier: Modifier = Modifier
 ) {
     val isConnected = connectionState is ConnectionState.Connected
     val isConnecting = connectionState is ConnectionState.Connecting ||
             connectionState is ConnectionState.Disconnecting
     val isError = connectionState is ConnectionState.Error
+    val showTorProgress = connectionState is ConnectionState.Connecting &&
+            snowflakeBootstrapProgress in 0..99
 
     val statusColor by animateColorAsState(
         targetValue = when {
@@ -753,55 +873,119 @@ private fun ConnectionStatusStrip(
     Surface(
         modifier = modifier.fillMaxWidth(),
         tonalElevation = 2.dp,
-        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+        shape = RoundedCornerShape(16.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 16.dp, vertical = 16.dp)
         ) {
-            // Status indicator dot
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(statusColor)
-            )
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            // Status text + profile name
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = when {
-                        isConnected && isProxyOnly -> "Proxy Active"
-                        isConnected -> "Connected"
-                        connectionState is ConnectionState.Connecting -> "Connecting..."
-                        connectionState is ConnectionState.Disconnecting -> "Disconnecting..."
-                        isError -> "Connection Failed"
-                        else -> "Not Connected"
-                    },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isConnected || isConnecting) statusColor
-                    else MaterialTheme.colorScheme.onBackground
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Status indicator dot
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(statusColor)
                 )
-                Text(
-                    text = when {
-                        isConnected && connectionState is ConnectionState.Connected ->
-                            connectionState.profile.name
-                        isError && connectionState is ConnectionState.Error ->
-                            connectionState.message
-                        activeProfile != null -> activeProfile.name
-                        else -> "No profile selected"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (isError) DisconnectedRed
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                // Status text + profile name
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = when {
+                            isConnected && isProxyOnly -> "Proxy Active"
+                            isConnected -> "Connected"
+                            connectionState is ConnectionState.Connecting -> "Connecting..."
+                            connectionState is ConnectionState.Disconnecting -> "Disconnecting..."
+                            isError -> "Connection Failed"
+                            else -> "Not Connected"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isConnected || isConnecting) statusColor
+                        else MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = when {
+                            isConnected && connectionState is ConnectionState.Connected ->
+                                connectionState.profile.name
+                            isError && connectionState is ConnectionState.Error ->
+                                connectionState.message
+                            activeProfile != null -> activeProfile.name
+                            else -> "No profile selected"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (isError) DisconnectedRed
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Traffic stats
+            AnimatedVisibility(
+                visible = isConnected,
+                enter = expandVertically(animationSpec = tween(300)) + fadeIn(animationSpec = tween(300)),
+                exit = shrinkVertically(animationSpec = tween(200)) + fadeOut(animationSpec = tween(200))
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 22.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "\u2191 ${TrafficStats.formatBytes(uploadSpeed)}/s",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.width(24.dp))
+                        Text(
+                            text = "\u2193 ${TrafficStats.formatBytes(downloadSpeed)}/s",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Tor bootstrap progress
+            AnimatedVisibility(
+                visible = showTorProgress,
+                enter = expandVertically(animationSpec = tween(300)) + fadeIn(animationSpec = tween(300)),
+                exit = shrinkVertically(animationSpec = tween(200)) + fadeOut(animationSpec = tween(200))
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        LinearProgressIndicator(
+                            progress = { snowflakeBootstrapProgress / 100f },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = ConnectingOrange,
+                            trackColor = ConnectingOrange.copy(alpha = 0.2f),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Tor: $snowflakeBootstrapProgress%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ConnectingOrange
+                        )
+                    }
+                }
             }
         }
     }
@@ -847,16 +1031,6 @@ private fun ConnectFab(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
     ) {
-        // Snowflake bootstrap progress above the FAB
-        if (connectionState is ConnectionState.Connecting && snowflakeBootstrapProgress in 0..99) {
-            Text(
-                text = "Tor: $snowflakeBootstrapProgress%",
-                style = MaterialTheme.typography.labelSmall,
-                color = ConnectingOrange,
-                modifier = Modifier.padding(bottom = 4.dp)
-            )
-        }
-
         FloatingActionButton(
             onClick = onToggleConnection,
             containerColor = statusColor,

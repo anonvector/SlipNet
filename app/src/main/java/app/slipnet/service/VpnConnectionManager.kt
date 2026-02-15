@@ -6,7 +6,9 @@ import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.repository.VpnRepositoryImpl
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.TrafficStats
 import app.slipnet.domain.repository.ProfileRepository
+import app.slipnet.widget.VpnWidgetProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +33,8 @@ class VpnConnectionManager @Inject constructor(
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
+    val trafficStats: StateFlow<TrafficStats> = vpnRepository.trafficStats
+
     private var pendingProfile: ServerProfile? = null
 
     init {
@@ -38,6 +42,13 @@ class VpnConnectionManager @Inject constructor(
         scope.launch {
             vpnRepository.connectionState.collect { state ->
                 _connectionState.value = state
+            }
+        }
+
+        // Push state changes to home screen widget
+        scope.launch {
+            _connectionState.collect { state ->
+                VpnWidgetProvider.notifyStateChanged(context, state)
             }
         }
     }
@@ -57,6 +68,23 @@ class VpnConnectionManager @Inject constructor(
         }
 
         // Start VPN service
+        val intent = Intent(context, SlipNetVpnService::class.java).apply {
+            action = SlipNetVpnService.ACTION_CONNECT
+            putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profile.id)
+        }
+        context.startForegroundService(intent)
+    }
+
+    fun reconnect(profile: ServerProfile) {
+        pendingProfile = profile
+        _connectionState.value = ConnectionState.Connecting
+
+        scope.launch {
+            profileRepository.setActiveProfile(profile.id)
+        }
+
+        // Send CONNECT directly — the service handles stopping the old connection
+        // (disconnectJob?.join()) before starting the new one.
         val intent = Intent(context, SlipNetVpnService::class.java).apply {
             action = SlipNetVpnService.ACTION_CONNECT
             putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profile.id)
@@ -101,6 +129,10 @@ class VpnConnectionManager @Inject constructor(
         scope.launch {
             _connectionState.value = ConnectionState.Error(error)
         }
+    }
+
+    fun refreshTrafficStats() {
+        vpnRepository.refreshTrafficStats()
     }
 
     suspend fun getProfileById(id: Long): ServerProfile? {

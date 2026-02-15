@@ -233,6 +233,12 @@ class SlipNetVpnService : VpnService() {
             // Wait for any in-progress disconnect to finish releasing ports
             disconnectJob?.join()
 
+            // Clean up previous connection resources if switching profiles
+            if (currentProfileId != -1L && currentProfileId != profileId) {
+                Log.i(TAG, "Switching profile: cleaning up previous connection")
+                cleanupConnection()
+            }
+
             val profile = connectionManager.getProfileById(profileId)
             if (profile == null) {
                 connectionManager.onVpnError("Profile not found")
@@ -1925,6 +1931,30 @@ class SlipNetVpnService : VpnService() {
                     delay(500)
                 }
 
+                // Restart HTTP proxy if it was running before (stopped by stopCurrentProxy)
+                if (!HttpProxyServer.isRunning()) {
+                    val appendProxy = preferencesDataStore.appendHttpProxyToVpn.first()
+                    val httpEnabled = preferencesDataStore.httpProxyEnabled.first()
+                    if (appendProxy || httpEnabled) {
+                        val httpPort = preferencesDataStore.httpProxyPort.first()
+                        val socksPort = preferencesDataStore.proxyListenPort.first()
+                        // Append mode uses 127.0.0.1; hotspot mode uses proxyListenAddress
+                        val socksHost = if (appendProxy) "127.0.0.1" else preferencesDataStore.proxyListenAddress.first()
+                        val listenHost = if (appendProxy) "127.0.0.1" else socksHost
+                        val result = HttpProxyServer.start(
+                            socksHost = socksHost,
+                            socksPort = socksPort,
+                            listenHost = listenHost,
+                            listenPort = httpPort
+                        )
+                        if (result.isFailure) {
+                            Log.w(TAG, "HTTP proxy failed to restart after reconnect: ${result.exceptionOrNull()?.message}")
+                        } else {
+                            Log.i(TAG, "HTTP proxy restarted on $listenHost:$httpPort after reconnect")
+                        }
+                    }
+                }
+
                 // Restart health check
                 startHealthCheck()
 
@@ -2084,13 +2114,14 @@ class SlipNetVpnService : VpnService() {
             val appendProxy = preferencesDataStore.appendHttpProxyToVpn.first()
             if (appendProxy) {
                 val httpPort = preferencesDataStore.httpProxyPort.first()
-                val socksHost = preferencesDataStore.proxyListenAddress.first()
                 val socksPort = preferencesDataStore.proxyListenPort.first()
 
-                // Start HTTP proxy now (before VPN) so it's ready when apps connect
+                // Start HTTP proxy now (before VPN) so it's ready when apps connect.
+                // Always use 127.0.0.1 for SOCKS5 upstream — the tunnel bridge is local.
+                // Using proxyListenAddress (0.0.0.0) as a connection target is unreliable.
                 if (!HttpProxyServer.isRunning()) {
                     val result = HttpProxyServer.start(
-                        socksHost = socksHost,
+                        socksHost = "127.0.0.1",
                         socksPort = socksPort,
                         listenHost = "127.0.0.1",
                         listenPort = httpPort
@@ -2146,6 +2177,14 @@ class SlipNetVpnService : VpnService() {
         // Cancel any in-progress connection attempt
         connectJob?.cancel()
         connectJob = null
+
+        // Cancel any in-progress reconnection immediately — before the coroutine.
+        // This prevents a race where the reconnect coroutine is mid-flight in native
+        // code (e.g., starting Slipstream on port 1081) while disconnect also tries
+        // to stop/start, leading to "port already in use" on the next connect.
+        reconnectDebounceJob?.cancel()
+        reconnectDebounceJob = null
+        isReconnecting = false
 
         // Cancel state observer to prevent stale stopSelf() calls
         stateObserverJob?.cancel()

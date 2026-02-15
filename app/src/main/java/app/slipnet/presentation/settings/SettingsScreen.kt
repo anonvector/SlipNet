@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Help
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Add
@@ -53,6 +54,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -76,6 +78,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import java.net.Inet4Address
@@ -98,10 +101,20 @@ fun SettingsScreen(
     var showSplitModeDialog by remember { mutableStateOf(false) }
     var showDomainRoutingModeDialog by remember { mutableStateOf(false) }
     var showDomainManagementDialog by remember { mutableStateOf(false) }
+    var showAboutDialog by remember { mutableStateOf(false) }
 
     // Proxy settings - local state for port text fields to avoid cursor jumps from async DataStore round-trip
     var proxyPort by remember { mutableStateOf(uiState.proxyListenPort.toString()) }
     var httpProxyPort by remember { mutableStateOf(uiState.httpProxyPort.toString()) }
+
+    // Sync local state when DataStore values load (initial default → actual saved value)
+    LaunchedEffect(uiState.proxyListenPort) {
+        proxyPort = uiState.proxyListenPort.toString()
+    }
+    LaunchedEffect(uiState.httpProxyPort) {
+        httpProxyPort = uiState.httpProxyPort.toString()
+    }
+
     val addressOptions = getAddressOptions()
 
     Scaffold(
@@ -111,6 +124,11 @@ fun SettingsScreen(
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showAboutDialog = true }) {
+                        Icon(Icons.Default.Help, contentDescription = "About")
                     }
                 }
             )
@@ -597,6 +615,94 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(onClick = { showSshCipherDialog = false }) {
                     Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // About Dialog
+    if (showAboutDialog) {
+        val clipboardManager = LocalClipboardManager.current
+        val uriHandler = LocalUriHandler.current
+        val donationAddress = ""
+
+        AlertDialog(
+            onDismissRequest = { showAboutDialog = false },
+            title = { Text("About SlipNet") },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "SlipNet VPN v${BuildConfig.VERSION_NAME}",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "A free, source-available anti-censorship VPN tool designed to bypass internet restrictions. SlipNet tunnels your traffic through DNS, SSH, Tor, and other protocols to keep you connected when access is blocked.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    // GitHub
+                    Text(
+                        text = "GitHub",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "github.com/anonvector/SlipNet",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable {
+                            uriHandler.openUri("https://github.com/anonvector/SlipNet")
+                        }
+                    )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    // Donate
+                    Text(
+                        text = "Donate (USDT \u2013 BEP20 / ERC20)",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = donationAddress,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                        IconButton(
+                            onClick = {
+                                clipboardManager.setText(AnnotatedString(donationAddress))
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.ContentCopy,
+                                contentDescription = "Copy donation address",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Your support helps keep this project alive and free for everyone.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAboutDialog = false }) {
+                    Text("Close")
                 }
             }
         )

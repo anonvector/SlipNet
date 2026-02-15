@@ -8,6 +8,7 @@ import app.slipnet.data.export.ImportResult
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.TrafficStats
 import app.slipnet.domain.repository.ProfileRepository
 import app.slipnet.domain.usecase.ConnectVpnUseCase
 import app.slipnet.domain.usecase.DeleteProfileUseCase
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -52,7 +54,11 @@ data class MainUiState(
     val error: String? = null,
     val exportedJson: String? = null,
     val importPreview: ImportPreview? = null,
-    val qrCodeData: QrCodeData? = null
+    val qrCodeData: QrCodeData? = null,
+    val showFirstLaunchAbout: Boolean = false,
+    val trafficStats: TrafficStats = TrafficStats.EMPTY,
+    val uploadSpeed: Long = 0,
+    val downloadSpeed: Long = 0
 )
 
 @HiltViewModel
@@ -75,12 +81,14 @@ class MainViewModel @Inject constructor(
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     private var bootstrapPollingJob: Job? = null
+    private var trafficPollingJob: Job? = null
 
     init {
         observeConnectionState()
         observeProfiles()
         observeProxyOnlyMode()
         observeDebugLogging()
+        checkFirstLaunch()
     }
 
     // ── Connection ──────────────────────────────────────────────────────
@@ -101,6 +109,11 @@ class MainViewModel @Inject constructor(
                     startBootstrapPolling()
                 } else {
                     stopBootstrapPolling()
+                }
+                if (state is ConnectionState.Connected) {
+                    startTrafficPolling()
+                } else {
+                    stopTrafficPolling()
                 }
             }
         }
@@ -125,6 +138,39 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(snowflakeBootstrapProgress = -1)
     }
 
+    private var previousStats: TrafficStats = TrafficStats.EMPTY
+
+    private fun startTrafficPolling() {
+        trafficPollingJob?.cancel()
+        previousStats = TrafficStats.EMPTY
+        trafficPollingJob = viewModelScope.launch {
+            while (true) {
+                connectionManager.refreshTrafficStats()
+                val current = connectionManager.trafficStats.value
+                val upSpeed = (current.bytesSent - previousStats.bytesSent).coerceAtLeast(0)
+                val downSpeed = (current.bytesReceived - previousStats.bytesReceived).coerceAtLeast(0)
+                previousStats = current
+                _uiState.value = _uiState.value.copy(
+                    trafficStats = current,
+                    uploadSpeed = upSpeed,
+                    downloadSpeed = downSpeed
+                )
+                delay(1000)
+            }
+        }
+    }
+
+    private fun stopTrafficPolling() {
+        trafficPollingJob?.cancel()
+        trafficPollingJob = null
+        previousStats = TrafficStats.EMPTY
+        _uiState.value = _uiState.value.copy(
+            trafficStats = TrafficStats.EMPTY,
+            uploadSpeed = 0,
+            downloadSpeed = 0
+        )
+    }
+
     private fun observeProxyOnlyMode() {
         viewModelScope.launch {
             preferencesDataStore.proxyOnlyMode.collect { enabled ->
@@ -138,6 +184,22 @@ class MainViewModel @Inject constructor(
             preferencesDataStore.debugLogging.collect { enabled ->
                 _uiState.value = _uiState.value.copy(debugLogging = enabled)
             }
+        }
+    }
+
+    private fun checkFirstLaunch() {
+        viewModelScope.launch {
+            val done = preferencesDataStore.firstLaunchDone.first()
+            if (!done) {
+                _uiState.value = _uiState.value.copy(showFirstLaunchAbout = true)
+            }
+        }
+    }
+
+    fun dismissFirstLaunchAbout() {
+        _uiState.value = _uiState.value.copy(showFirstLaunchAbout = false)
+        viewModelScope.launch {
+            preferencesDataStore.setFirstLaunchDone()
         }
     }
 
@@ -181,8 +243,16 @@ class MainViewModel @Inject constructor(
     }
 
     fun setActiveProfile(profile: ServerProfile) {
+        val state = _uiState.value.connectionState
+        val isConnectedOrConnecting = state is ConnectionState.Connected ||
+                state is ConnectionState.Connecting
+
         viewModelScope.launch {
             setActiveProfileUseCase(profile.id)
+        }
+
+        if (isConnectedOrConnecting && _uiState.value.connectedProfileId != profile.id) {
+            connectionManager.reconnect(profile)
         }
     }
 

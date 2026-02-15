@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_bg_disconnected"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="10dp"
+    android:paddingEnd="14dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp">
+
+    <!-- Icon in circular badge -->
+    <FrameLayout
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:background="@drawable/widget_icon_circle">
+
+        <ImageView
+            android:id="@+id/widget_status_icon"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_vpn_key"
+            android:contentDescription="VPN status" />
+
+    </FrameLayout>
+
+    <!-- Status text -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="10dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/widget_status_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Disconnected"
+            android:textColor="@android:color/white"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:shadowColor="#66000000"
+            android:shadowDx="0"
+            android:shadowDy="1"
+            android:shadowRadius="2" />
+
+        <TextView
+            android:id="@+id/widget_profile_name"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:textColor="#B3FFFFFF"
+            android:textSize="13sp"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:visibility="gone" />
+
+    </LinearLayout>
+
+    <!-- Progress spinner -->
+    <ProgressBar
+        android:id="@+id/widget_progress"
+        style="?android:attr/progressBarStyleSmall"
+        android:layout_width="18dp"
+        android:layout_height="18dp"
+        android:layout_marginStart="6dp"
+        android:indeterminateTint="@android:color/white"
+        android:visibility="gone" />
+
+</LinearLayout>

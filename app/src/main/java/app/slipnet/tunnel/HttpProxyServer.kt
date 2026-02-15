@@ -187,12 +187,15 @@ object HttpProxyServer {
             if (line.isEmpty()) break
         }
 
-        // Connect to target through SOCKS5 proxy
+        // Connect to target through SOCKS5 proxy.
+        // Use createUnresolved so the domain name is sent to the SOCKS5 proxy
+        // for remote resolution — avoids DNS leaks to the local ISP which would
+        // fail or return spoofed IPs in censored networks.
         val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(socksHost, socksPort))
         val remoteSocket: Socket
         try {
             remoteSocket = Socket(socksProxy)
-            remoteSocket.connect(InetSocketAddress(host, port), TCP_CONNECT_TIMEOUT_MS)
+            remoteSocket.connect(InetSocketAddress.createUnresolved(host, port), TCP_CONNECT_TIMEOUT_MS)
             remoteSocket.tcpNoDelay = true
         } catch (e: Exception) {
             logd("CONNECT: failed to connect to $host:$port via SOCKS5: ${e.message}")
@@ -248,16 +251,12 @@ object HttpProxyServer {
         // Read all headers
         val headers = mutableListOf<String>()
         var hostHeader: String? = null
-        var contentLength = -1L
         while (true) {
             val line = readLine(clientInput) ?: return
             if (line.isEmpty()) break
             headers.add(line)
             if (line.startsWith("Host:", ignoreCase = true)) {
                 hostHeader = line.substringAfter(":").trim()
-            }
-            if (line.startsWith("Content-Length:", ignoreCase = true)) {
-                contentLength = line.substringAfter(":").trim().toLongOrNull() ?: -1L
             }
         }
 
@@ -289,12 +288,12 @@ object HttpProxyServer {
             uri
         }
 
-        // Connect through SOCKS5
+        // Connect through SOCKS5 — use createUnresolved to avoid DNS leaks
         val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(socksHost, socksPort))
         val remoteSocket: Socket
         try {
             remoteSocket = Socket(socksProxy)
-            remoteSocket.connect(InetSocketAddress(host, port), TCP_CONNECT_TIMEOUT_MS)
+            remoteSocket.connect(InetSocketAddress.createUnresolved(host, port), TCP_CONNECT_TIMEOUT_MS)
             remoteSocket.tcpNoDelay = true
         } catch (e: Exception) {
             logd("HTTP: failed to connect to $host:$port via SOCKS5: ${e.message}")
@@ -312,26 +311,48 @@ object HttpProxyServer {
             // Send rewritten request line
             remoteOutput.write("$method $relativePath $httpVersion\r\n".toByteArray())
 
-            // Forward headers (skip Proxy-Connection, Proxy-Authorization)
+            // Forward headers: strip proxy headers, force Connection: close so server
+            // closes after the response (avoids blocking on keep-alive)
+            var wroteConnection = false
             for (header in headers) {
                 val headerName = header.substringBefore(":").trim().lowercase()
-                if (headerName == "proxy-connection" || headerName == "proxy-authorization") {
-                    continue
+                when (headerName) {
+                    "proxy-connection", "proxy-authorization" -> continue
+                    "connection" -> {
+                        remoteOutput.write("Connection: close\r\n".toByteArray())
+                        wroteConnection = true
+                    }
+                    else -> remoteOutput.write("$header\r\n".toByteArray())
                 }
-                remoteOutput.write("$header\r\n".toByteArray())
+            }
+            if (!wroteConnection) {
+                remoteOutput.write("Connection: close\r\n".toByteArray())
             }
             remoteOutput.write("\r\n".toByteArray())
             remoteOutput.flush()
 
-            // Forward request body if present
-            if (contentLength > 0) {
-                copyBytes(clientInput, remoteSocket.getOutputStream(), contentLength)
-            }
-
             clientSocket.soTimeout = 0
 
-            // Forward response back to client
-            copyStream(remoteInput, clientOutput)
+            // Bidirectional bridge: forwards request body (if any) and response.
+            // Server will close after response due to Connection: close.
+            val t1 = Thread({
+                try {
+                    copyStream(clientInput, remoteSocket.getOutputStream())
+                } catch (_: Exception) {
+                } finally {
+                    try { remoteSocket.shutdownOutput() } catch (_: Exception) {}
+                }
+            }, "http-proxy-c2s")
+            t1.isDaemon = true
+            t1.start()
+
+            try {
+                copyStream(remoteInput, clientOutput)
+            } catch (_: Exception) {
+            } finally {
+                try { remoteSocket.close() } catch (_: Exception) {}
+                t1.interrupt()
+            }
         } catch (e: Exception) {
             if (running.get()) {
                 logd("HTTP: proxy error for $host:$port: ${e.message}")
@@ -412,16 +433,4 @@ object HttpProxyServer {
         buffered.flush()
     }
 
-    private fun copyBytes(input: InputStream, output: OutputStream, count: Long) {
-        val buffer = ByteArray(BUFFER_SIZE)
-        var remaining = count
-        while (remaining > 0) {
-            val toRead = minOf(remaining, buffer.size.toLong()).toInt()
-            val bytesRead = input.read(buffer, 0, toRead)
-            if (bytesRead == -1) break
-            output.write(buffer, 0, bytesRead)
-            remaining -= bytesRead
-        }
-        output.flush()
-    }
 }

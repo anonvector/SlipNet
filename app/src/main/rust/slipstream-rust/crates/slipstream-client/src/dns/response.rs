@@ -76,10 +76,12 @@ pub(crate) fn handle_dns_response(
                     resolver.inflight_poll_ids.remove(&response_id);
                 }
             }
-            if resolver.mode == ResolverMode::Recursive {
-                resolver.pending_polls =
-                    resolver.pending_polls.saturating_add(1).min(MAX_POLL_BURST);
-            }
+            // Both modes: each response triggers a demand-driven poll.
+            // For authoritative mode this provides a floor so that the poll
+            // rate never drops below the actual response rate, even when BBR's
+            // pacing estimate is conservative.
+            resolver.pending_polls =
+                resolver.pending_polls.saturating_add(1).min(MAX_POLL_BURST);
         }
     } else if let Some(response_id) = response_id {
         if let Some(resolver) = find_resolver_by_addr(ctx.resolvers, peer) {

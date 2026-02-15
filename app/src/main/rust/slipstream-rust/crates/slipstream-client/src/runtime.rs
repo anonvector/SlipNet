@@ -337,7 +337,10 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                             .unwrap_or_else(|| cwnd_target_polls(quality.cwin, mtu));
                         let inflight_packets =
                             inflight_packet_estimate(quality.bytes_in_transit, mtu);
-                        target.saturating_sub(inflight_packets)
+                        let pacing = target.saturating_sub(inflight_packets);
+                        // Include demand-driven pending_polls so we wake up to
+                        // send response-triggered polls even when pacing is zero.
+                        pacing.max(resolver.pending_polls)
                     }
                     ResolverMode::Recursive => resolver.pending_polls,
                 };
@@ -363,10 +366,14 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                 }
             }
             // Avoid a tight poll loop when idle, but keep the short slice during active transfers.
+            // Cap at 2 seconds so shutdown checks (should_shutdown()) happen within the
+            // native stop timeout (3s). Without this cap, idle QUIC delays up to 10s
+            // can cause the JNI stop to abandon the thread while it still holds the port.
+            const MAX_SLEEP_US: u64 = 2_000_000;
             let timeout_us = if has_work {
                 delay_us.clamp(1, DNS_POLL_SLICE_US)
             } else {
-                delay_us.max(1)
+                delay_us.max(1).min(MAX_SLEEP_US)
             };
             let timeout = Duration::from_micros(timeout_us);
 
@@ -550,10 +557,16 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                             .unwrap_or_else(|| cwnd_target_polls(quality.cwin, mtu));
                         let inflight_packets =
                             inflight_packet_estimate(quality.bytes_in_transit, mtu);
-                        let mut poll_deficit = pacing_target.saturating_sub(inflight_packets);
+                        let mut pacing_deficit = pacing_target.saturating_sub(inflight_packets);
                         if has_ready_stream && !flow_blocked {
-                            poll_deficit = 0;
+                            pacing_deficit = 0;
                         }
+                        // Demand-driven floor: use pending_polls from DNS responses
+                        // so the poll rate never drops below the actual response rate,
+                        // even when BBR's pacing estimate is conservative.
+                        let demand_polls = resolver.pending_polls;
+                        resolver.pending_polls = 0;
+                        let mut poll_deficit = pacing_deficit.max(demand_polls);
                         // Idle throttling: suppress polls until interval elapses, then allow 1
                         if is_idle && poll_deficit > 0 {
                             let now_for_idle = unsafe { picoquic_current_time() };

@@ -81,9 +81,6 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
             <meta-data
-                android:name="android.service.quicksettings.ACTIVE_TILE"
-                android:value="true" />
-            <meta-data
                 android:name="android.service.quicksettings.TOGGLEABLE_TILE"
                 android:value="true" />
         </service>
@@ -97,6 +94,19 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
             </intent-filter>
+        </receiver>
+
+        <!-- Home Screen Widget -->
+        <receiver
+            android:name=".widget.VpnWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="app.slipnet.widget.TOGGLE_VPN" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_vpn_toggle_info" />
         </receiver>
 
         <!-- QR code scanner (force portrait) -->
