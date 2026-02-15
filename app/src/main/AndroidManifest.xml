@@ -111,7 +111,7 @@
 
         <!-- QR code scanner (force portrait) -->
         <activity
-            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:name=".presentation.scanner.QrScannerActivity"
             android:screenOrientation="portrait"
             tools:replace="screenOrientation" />
 

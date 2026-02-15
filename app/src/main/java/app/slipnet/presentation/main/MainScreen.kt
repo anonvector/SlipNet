@@ -110,6 +110,7 @@ import app.slipnet.presentation.common.components.ProfileListItem
 import app.slipnet.presentation.common.components.QrCodeDialog
 import app.slipnet.presentation.common.icons.TorIcon
 import app.slipnet.presentation.home.DebugLogSheet
+import app.slipnet.presentation.scanner.QrScannerActivity
 import app.slipnet.presentation.theme.ConnectedGreen
 import app.slipnet.presentation.theme.ConnectingOrange
 import app.slipnet.presentation.theme.DisconnectedRed
@@ -720,8 +721,9 @@ fun MainScreen(
                                 importText = ""
                                 qrScanLauncher.launch(ScanOptions().apply {
                                     setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                                    setPrompt("Scan a SlipNet QR code")
+                                    setPrompt("")
                                     setBeepEnabled(false)
+                                    setCaptureActivity(QrScannerActivity::class.java)
                                 })
                             }
                         ) { Text("Scan QR Code") }
