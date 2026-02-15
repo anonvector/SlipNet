@@ -16,7 +16,7 @@ Join our Telegram channel for updates, support, and discussions:
 
 If you want to support development:
 
-- **USDT (BNB, ERC20)**: ``
+- **USDT (BEP-20)**: ``
 
 ## Tunnel Types
 
