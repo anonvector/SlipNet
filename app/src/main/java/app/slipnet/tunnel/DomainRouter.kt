@@ -1,7 +1,7 @@
 package app.slipnet.tunnel
 
 import android.content.Context
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import app.slipnet.data.local.datastore.DomainRoutingMode
 import java.io.BufferedReader
 import java.io.InputStreamReader

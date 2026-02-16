@@ -1,7 +1,7 @@
 package app.slipnet.tunnel
 
 import android.os.ParcelFileDescriptor
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 
 /**
  * Bridge to hev-socks5-tunnel native library.

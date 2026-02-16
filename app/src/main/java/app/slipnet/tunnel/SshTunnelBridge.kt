@@ -1,6 +1,6 @@
 package app.slipnet.tunnel
 
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import app.slipnet.domain.model.SshAuthType
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch

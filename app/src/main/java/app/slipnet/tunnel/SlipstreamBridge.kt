@@ -1,7 +1,7 @@
 package app.slipnet.tunnel
 
 import android.net.VpnService
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import java.lang.ref.WeakReference
 
 /**
@@ -21,6 +21,12 @@ object SlipstreamBridge {
     // Use WeakReference to avoid memory leak - VpnService can be garbage collected
     @Volatile
     private var vpnServiceRef: WeakReference<VpnService>? = null
+
+    // In proxy-only mode there is no VPN interface, so protect() always returns
+    // false.  That is harmless — no TUN exists to create a routing loop — so we
+    // skip the protect call entirely and tell the Rust client "success".
+    @Volatile
+    var proxyOnlyMode = false
 
     init {
         try {
@@ -49,6 +55,7 @@ object SlipstreamBridge {
      */
     @JvmStatic
     fun protectSocket(fd: Int): Boolean {
+        if (proxyOnlyMode) return true // No VPN interface — protection not needed
         val service = vpnServiceRef?.get()
         if (service == null) {
             Log.e(TAG, "Cannot protect socket: VpnService not available")

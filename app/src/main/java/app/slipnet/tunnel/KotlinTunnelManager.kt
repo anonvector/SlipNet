@@ -1,7 +1,7 @@
 package app.slipnet.tunnel
 
 import android.os.ParcelFileDescriptor
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import java.net.DatagramPacket

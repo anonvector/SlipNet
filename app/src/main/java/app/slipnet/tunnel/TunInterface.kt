@@ -1,7 +1,7 @@
 package app.slipnet.tunnel
 
 import android.os.ParcelFileDescriptor
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException

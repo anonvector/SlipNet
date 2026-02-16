@@ -1,6 +1,6 @@
 package app.slipnet.tunnel
 
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress

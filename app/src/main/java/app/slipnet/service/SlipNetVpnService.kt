@@ -14,7 +14,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.local.datastore.SplitTunnelingMode
 import app.slipnet.data.local.datastore.SshCipher
@@ -311,6 +311,11 @@ class SlipNetVpnService : VpnService() {
                     TunnelType.SNOWFLAKE -> connectSnowflake(profile, dnsServer)
                 }
 
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Coroutine was cancelled (user disconnected, service stopped, or new connect).
+                // Do NOT treat as an error — let the cancelling code handle cleanup.
+                Log.d(TAG, "Connection coroutine cancelled")
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Exception during connection", e)
                 connectionManager.onVpnError(e.message ?: "Unknown error")
@@ -339,6 +344,7 @@ class SlipNetVpnService : VpnService() {
         val slipstreamPort = proxyPort + 1
 
         // Step 1: Set VpnService reference for socket protection via JNI
+        SlipstreamBridge.proxyOnlyMode = isProxyOnly
         SlipstreamBridge.setVpnService(this@SlipNetVpnService)
 
         // Step 2: Start Slipstream proxy on internal port (127.0.0.1 only)
@@ -502,6 +508,7 @@ class SlipNetVpnService : VpnService() {
         val slipstreamPort = proxyPort + 1
 
         // Step 1: Set VpnService reference for socket protection via JNI
+        SlipstreamBridge.proxyOnlyMode = isProxyOnly
         SlipstreamBridge.setVpnService(this@SlipNetVpnService)
 
         // Step 2: Start Slipstream tunnel on internal port (127.0.0.1 only)
@@ -2005,8 +2012,8 @@ class SlipNetVpnService : VpnService() {
      */
     private fun clearVpnServiceRef() {
         when (currentTunnelType) {
-            TunnelType.SLIPSTREAM -> SlipstreamBridge.setVpnService(null)
-            TunnelType.SLIPSTREAM_SSH -> SlipstreamBridge.setVpnService(null)
+            TunnelType.SLIPSTREAM -> { SlipstreamBridge.proxyOnlyMode = false; SlipstreamBridge.setVpnService(null) }
+            TunnelType.SLIPSTREAM_SSH -> { SlipstreamBridge.proxyOnlyMode = false; SlipstreamBridge.setVpnService(null) }
             TunnelType.DNSTT -> DnsttBridge.setVpnService(null)
             TunnelType.SSH -> { /* SSH-only: no bridge reference to clear */ }
             TunnelType.DNSTT_SSH -> DnsttBridge.setVpnService(null)

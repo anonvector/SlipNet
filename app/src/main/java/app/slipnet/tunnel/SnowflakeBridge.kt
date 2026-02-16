@@ -1,7 +1,7 @@
 package app.slipnet.tunnel
 
 import android.content.Context
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import snowflake.Snowflake
 import snowflake.SnowflakeClient
 import java.io.BufferedReader
@@ -162,12 +162,7 @@ object SnowflakeBridge {
                         "obfs4proxy (lyrebird) binary not found. " +
                         "It needs to be compiled and bundled as libobfs4proxy.so in the app's native libraries."
                     ))
-                val ptFile = File(ptBinaryPath)
-                Log.i(TAG, "PT binary: $ptBinaryPath (size=${ptFile.length()}, exec=${ptFile.canExecute()})")
-                if (!ptFile.canExecute()) {
-                    Log.w(TAG, "PT binary is not executable, attempting chmod +x")
-                    ptFile.setExecutable(true)
-                }
+                Log.i(TAG, "PT binary: $ptBinaryPath (size=${File(ptBinaryPath).length()})")
 
                 val result = startLyrebird(context, ptBinaryPath, lyrebirdTransports)
                 if (result.isFailure) {

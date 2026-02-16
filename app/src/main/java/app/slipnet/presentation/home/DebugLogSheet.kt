@@ -1,6 +1,5 @@
 package app.slipnet.presentation.home
 
-import android.os.Process
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -26,11 +25,9 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -39,74 +36,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import java.io.BufferedReader
-import java.io.InputStreamReader
-
-data class LogLine(val raw: String, val level: Char)
-
-object LogReader {
-
-    private val TAGS = listOf(
-        "SlipNetVpnService",
-        "DnsttBridge",
-        "SlipstreamBridge",
-        "SlipstreamSocksBridge",
-        "SshTunnelBridge",
-        "HevSocks5Tunnel",
-        "DohBridge",
-        "KotlinTunnelManager"
-    )
-
-    private const val MAX_LINES = 500
-
-    fun start(scope: CoroutineScope): Triple<SnapshotStateList<LogLine>, Job, () -> Unit> {
-        val lines = mutableStateListOf<LogLine>()
-
-        val cmd = mutableListOf("logcat", "-v", "time", "-T", "$MAX_LINES", "--pid=${Process.myPid()}")
-        TAGS.forEach { cmd.add("$it:*") }
-        cmd.add("*:S") // silence everything else
-
-        var process: java.lang.Process? = null
-
-        val job = scope.launch(Dispatchers.IO) {
-            try {
-                process = Runtime.getRuntime().exec(cmd.toTypedArray())
-                val reader = BufferedReader(InputStreamReader(process!!.inputStream))
-                var line: String?
-                while (isActive) {
-                    line = reader.readLine() ?: break
-                    val level = parseLevel(line)
-                    val logLine = LogLine(raw = line, level = level)
-                    launch(Dispatchers.Main) {
-                        lines.add(logLine)
-                        while (lines.size > MAX_LINES) {
-                            lines.removeAt(0)
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-            } finally {
-                process?.destroy()
-            }
-        }
-
-        val clear: () -> Unit = { lines.clear() }
-
-        return Triple(lines, job, clear)
-    }
-
-    private fun parseLevel(line: String): Char {
-        // logcat -v time format: "MM-DD HH:MM:SS.mmm D/Tag( PID): message"
-        // The level character is at position after the timestamp
-        val match = Regex("""^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+([VDIWEFS])\/""").find(line)
-        return match?.groupValues?.get(1)?.firstOrNull() ?: 'I'
-    }
-}
+import app.slipnet.util.AppLog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -115,15 +45,9 @@ fun DebugLogSheet(onDismiss: () -> Unit) {
         skipPartiallyExpanded = false,
         confirmValueChange = { true }
     )
-    val (lines, job, clear) = remember { LogReader.start(CoroutineScope(Dispatchers.Default)) }
+    val lines by AppLog.lines.collectAsState()
     val listState = rememberLazyListState()
     val clipboardManager = LocalClipboardManager.current
-
-    DisposableEffect(Unit) {
-        onDispose {
-            job.cancel()
-        }
-    }
 
     // Auto-scroll to bottom when new lines arrive
     LaunchedEffect(lines.size) {
@@ -170,7 +94,7 @@ fun DebugLogSheet(onDismiss: () -> Unit) {
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(onClick = clear) {
+                IconButton(onClick = { AppLog.clear() }) {
                     Icon(
                         Icons.Default.DeleteSweep,
                         contentDescription = "Clear logs",
@@ -196,13 +120,13 @@ fun DebugLogSheet(onDismiss: () -> Unit) {
                     .padding(horizontal = 8.dp)
                     .horizontalScroll(horizontalScrollState)
             ) {
-                items(lines, key = null) { logLine ->
+                items(lines) { logEntry ->
                     Text(
-                        text = logLine.raw,
+                        text = logEntry.raw,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
                         lineHeight = 15.sp,
-                        color = levelColor(logLine.level),
+                        color = levelColor(logEntry.level),
                         softWrap = false,
                         modifier = Modifier.padding(vertical = 1.dp)
                     )

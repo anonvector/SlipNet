@@ -1,7 +1,7 @@
 package app.slipnet.tunnel
 
 import android.net.VpnService
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import mobile.Mobile
 import mobile.DnsttClient
 import java.lang.ref.WeakReference
