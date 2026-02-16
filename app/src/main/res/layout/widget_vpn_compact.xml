@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Outer container fills the widget cell, transparent background -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- Inner square with colored background, centered in the cell -->
+    <FrameLayout
+        android:id="@+id/widget_compact_root"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:layout_gravity="center"
+        android:background="@drawable/widget_compact_bg_disconnected">
+
+        <!-- VPN key icon -->
+        <ImageView
+            android:id="@+id/widget_compact_icon"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_vpn_key"
+            android:tint="#FF333333"
+            android:contentDescription="VPN toggle" />
+
+        <!-- Spinner overlay (connecting/disconnecting) -->
+        <ProgressBar
+            android:id="@+id/widget_compact_progress"
+            style="?android:attr/progressBarStyleSmall"
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:layout_gravity="bottom|end"
+            android:layout_marginEnd="4dp"
+            android:layout_marginBottom="4dp"
+            android:indeterminateTint="@android:color/white"
+            android:visibility="gone" />
+
+    </FrameLayout>
+
+</FrameLayout>

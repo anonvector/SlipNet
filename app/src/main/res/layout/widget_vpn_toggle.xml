@@ -13,9 +13,10 @@
 
     <!-- Icon in circular badge -->
     <FrameLayout
+        android:id="@+id/widget_icon_badge"
         android:layout_width="36dp"
         android:layout_height="36dp"
-        android:background="@drawable/widget_icon_circle">
+        android:background="@drawable/widget_icon_circle_dark">
 
         <ImageView
             android:id="@+id/widget_status_icon"
@@ -23,6 +24,7 @@
             android:layout_height="20dp"
             android:layout_gravity="center"
             android:src="@drawable/ic_vpn_key"
+            android:tint="#FF333333"
             android:contentDescription="VPN status" />
 
     </FrameLayout>
@@ -40,22 +42,18 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Disconnected"
-            android:textColor="@android:color/white"
+            android:textColor="#FF333333"
             android:textSize="15sp"
             android:textStyle="bold"
             android:maxLines="1"
-            android:ellipsize="end"
-            android:shadowColor="#66000000"
-            android:shadowDx="0"
-            android:shadowDy="1"
-            android:shadowRadius="2" />
+            android:ellipsize="end" />
 
         <TextView
             android:id="@+id/widget_profile_name"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="1dp"
-            android:textColor="#B3FFFFFF"
+            android:textColor="#99333333"
             android:textSize="13sp"
             android:maxLines="1"
             android:ellipsize="end"

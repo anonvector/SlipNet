@@ -7,8 +7,11 @@ import app.slipnet.data.export.ConfigImporter
 import app.slipnet.data.export.ImportResult
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ConnectionState
+import app.slipnet.domain.model.DnsTransport
+import app.slipnet.domain.model.PingResult
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
+import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.repository.ProfileRepository
 import app.slipnet.domain.usecase.ConnectVpnUseCase
 import app.slipnet.domain.usecase.DeleteProfileUseCase
@@ -22,12 +25,20 @@ import app.slipnet.tunnel.SnowflakeBridge
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.URL
 import javax.inject.Inject
 
 data class ImportPreview(
@@ -58,7 +69,13 @@ data class MainUiState(
     val showFirstLaunchAbout: Boolean = false,
     val trafficStats: TrafficStats = TrafficStats.EMPTY,
     val uploadSpeed: Long = 0,
-    val downloadSpeed: Long = 0
+    val downloadSpeed: Long = 0,
+    // Session totals shown after disconnect
+    val sessionTotalUpload: Long = 0,
+    val sessionTotalDownload: Long = 0,
+    // Ping results per profile ID
+    val pingResults: Map<Long, PingResult> = emptyMap(),
+    val isPingRunning: Boolean = false
 )
 
 @HiltViewModel
@@ -82,6 +99,7 @@ class MainViewModel @Inject constructor(
 
     private var bootstrapPollingJob: Job? = null
     private var trafficPollingJob: Job? = null
+    private var pingJob: Job? = null
 
     init {
         observeConnectionState()
@@ -143,6 +161,8 @@ class MainViewModel @Inject constructor(
     private fun startTrafficPolling() {
         trafficPollingJob?.cancel()
         previousStats = TrafficStats.EMPTY
+        // Clear previous session totals when a new connection starts
+        _uiState.value = _uiState.value.copy(sessionTotalUpload = 0, sessionTotalDownload = 0)
         trafficPollingJob = viewModelScope.launch {
             while (true) {
                 connectionManager.refreshTrafficStats()
@@ -163,11 +183,18 @@ class MainViewModel @Inject constructor(
     private fun stopTrafficPolling() {
         trafficPollingJob?.cancel()
         trafficPollingJob = null
+        // Save session totals before clearing, but only if there are actual stats.
+        // State transitions Connected→Disconnecting→Disconnected call this twice;
+        // the second call must not overwrite saved totals with zeros.
+        val lastStats = _uiState.value.trafficStats
+        val hasStats = lastStats.bytesSent > 0 || lastStats.bytesReceived > 0
         previousStats = TrafficStats.EMPTY
         _uiState.value = _uiState.value.copy(
             trafficStats = TrafficStats.EMPTY,
             uploadSpeed = 0,
-            downloadSpeed = 0
+            downloadSpeed = 0,
+            sessionTotalUpload = if (hasStats) lastStats.bytesSent else _uiState.value.sessionTotalUpload,
+            sessionTotalDownload = if (hasStats) lastStats.bytesReceived else _uiState.value.sessionTotalDownload
         )
     }
 
@@ -364,5 +391,145 @@ class MainViewModel @Inject constructor(
 
     fun clearQrCode() {
         _uiState.value = _uiState.value.copy(qrCodeData = null)
+    }
+
+    // ── Ping All Profiles ───────────────────────────────────────────────
+
+    fun pingAllProfiles() {
+        if (_uiState.value.isPingRunning) {
+            cancelPing()
+            return
+        }
+
+        val profiles = _uiState.value.profiles
+        if (profiles.isEmpty()) return
+
+        // Initialize all as Pending, Snowflake as Skipped
+        val initial = profiles.associate { profile ->
+            profile.id to if (profile.tunnelType == TunnelType.SNOWFLAKE) {
+                PingResult.Skipped
+            } else {
+                PingResult.Pending
+            }
+        }
+        _uiState.value = _uiState.value.copy(pingResults = initial, isPingRunning = true)
+
+        pingJob = viewModelScope.launch {
+            try {
+                for (profile in profiles) {
+                    if (profile.tunnelType == TunnelType.SNOWFLAKE) continue
+
+                    val result = pingProfile(profile)
+                    _uiState.value = _uiState.value.copy(
+                        pingResults = _uiState.value.pingResults + (profile.id to result)
+                    )
+                }
+            } finally {
+                _uiState.value = _uiState.value.copy(isPingRunning = false)
+            }
+        }
+    }
+
+    fun cancelPing() {
+        pingJob?.cancel()
+        pingJob = null
+        _uiState.value = _uiState.value.copy(isPingRunning = false)
+    }
+
+    private sealed class PingTarget {
+        data class Tcp(val host: String, val port: Int) : PingTarget()
+        data class DnsUdp(val host: String, val port: Int) : PingTarget()
+    }
+
+    private suspend fun pingProfile(profile: ServerProfile): PingResult {
+        val target = getPingTarget(profile) ?: return PingResult.Error("No target")
+
+        return withContext(Dispatchers.IO) {
+            try {
+                when (target) {
+                    is PingTarget.Tcp -> pingTcp(target.host, target.port)
+                    is PingTarget.DnsUdp -> pingDnsUdp(target.host, target.port)
+                }
+            } catch (e: Exception) {
+                val msg = when (e) {
+                    is java.net.SocketTimeoutException -> "Timeout"
+                    is java.net.ConnectException -> "Refused"
+                    is java.net.UnknownHostException -> "DNS failed"
+                    else -> e.message?.take(20) ?: "Failed"
+                }
+                PingResult.Error(msg)
+            }
+        }
+    }
+
+    private fun pingTcp(host: String, port: Int): PingResult {
+        val socket = Socket()
+        val start = System.nanoTime()
+        socket.connect(InetSocketAddress(host, port), 5000)
+        val elapsed = (System.nanoTime() - start) / 1_000_000
+        socket.close()
+        return PingResult.Success(elapsed)
+    }
+
+    /** Send a minimal DNS query over UDP and wait for a response. */
+    private fun pingDnsUdp(host: String, port: Int): PingResult {
+        val query = byteArrayOf(
+            0x00, 0x01,       // Transaction ID
+            0x01, 0x00,       // Flags: standard query, recursion desired
+            0x00, 0x01,       // Questions: 1
+            0x00, 0x00,       // Answers: 0
+            0x00, 0x00,       // Authority: 0
+            0x00, 0x00,       // Additional: 0
+            0x00,             // Root label (.)
+            0x00, 0x01,       // Type: A
+            0x00, 0x01        // Class: IN
+        )
+        val address = InetAddress.getByName(host)
+        val socket = DatagramSocket()
+        socket.soTimeout = 5000
+        val sendPacket = DatagramPacket(query, query.size, address, port)
+        val start = System.nanoTime()
+        socket.send(sendPacket)
+        val recvPacket = DatagramPacket(ByteArray(512), 512)
+        socket.receive(recvPacket)
+        val elapsed = (System.nanoTime() - start) / 1_000_000
+        socket.close()
+        return PingResult.Success(elapsed)
+    }
+
+    private fun getPingTarget(profile: ServerProfile): PingTarget? {
+        return when (profile.tunnelType) {
+            TunnelType.SSH -> {
+                PingTarget.Tcp(profile.domain, profile.sshPort)
+            }
+            TunnelType.DOH -> {
+                extractHostFromUrl(profile.dohUrl)?.let { PingTarget.Tcp(it, 443) }
+            }
+            TunnelType.DNSTT, TunnelType.DNSTT_SSH -> {
+                when (profile.dnsTransport) {
+                    DnsTransport.DOH -> {
+                        extractHostFromUrl(profile.dohUrl)?.let { PingTarget.Tcp(it, 443) }
+                    }
+                    DnsTransport.DOT -> {
+                        profile.resolvers.firstOrNull()?.let { PingTarget.Tcp(it.host, 853) }
+                    }
+                    DnsTransport.UDP -> {
+                        profile.resolvers.firstOrNull()?.let { PingTarget.DnsUdp(it.host, it.port) }
+                    }
+                }
+            }
+            TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH -> {
+                profile.resolvers.firstOrNull()?.let { PingTarget.DnsUdp(it.host, it.port) }
+            }
+            TunnelType.SNOWFLAKE -> null
+        }
+    }
+
+    private fun extractHostFromUrl(url: String): String? {
+        return try {
+            URL(url).host.takeIf { it.isNotEmpty() }
+        } catch (_: Exception) {
+            null
+        }
     }
 }

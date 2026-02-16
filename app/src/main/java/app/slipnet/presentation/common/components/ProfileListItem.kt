@@ -36,10 +36,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.slipnet.domain.model.PingResult
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TunnelType
 import app.slipnet.presentation.profiles.EditProfileViewModel
 import app.slipnet.presentation.theme.ConnectedGreen
+import app.slipnet.presentation.theme.ConnectingOrange
+import app.slipnet.presentation.theme.DisconnectedRed
 import app.slipnet.tunnel.DOH_SERVERS
 
 @Composable
@@ -47,6 +50,7 @@ fun ProfileListItem(
     profile: ServerProfile,
     isSelected: Boolean,
     isConnected: Boolean,
+    pingResult: PingResult? = null,
     onClick: () -> Unit,
     onEditClick: () -> Unit,
     onDeleteClick: () -> Unit,
@@ -136,6 +140,52 @@ fun ProfileListItem(
                                 )
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         )
+                    }
+
+                    // Ping result badge
+                    when (pingResult) {
+                        is PingResult.Pending -> {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 1.5.dp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        is PingResult.Success -> {
+                            val latencyColor = when {
+                                pingResult.latencyMs < 300 -> ConnectedGreen
+                                pingResult.latencyMs < 1000 -> ConnectingOrange
+                                else -> DisconnectedRed
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "${pingResult.latencyMs}ms",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = latencyColor,
+                                modifier = Modifier
+                                    .background(
+                                        latencyColor.copy(alpha = 0.15f),
+                                        RoundedCornerShape(4.dp)
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        is PingResult.Error -> {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = pingResult.message,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = DisconnectedRed,
+                                modifier = Modifier
+                                    .background(
+                                        DisconnectedRed.copy(alpha = 0.15f),
+                                        RoundedCornerShape(4.dp)
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        is PingResult.Skipped, null -> { /* nothing */ }
                     }
                 }
 

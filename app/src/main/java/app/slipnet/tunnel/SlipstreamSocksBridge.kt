@@ -24,14 +24,15 @@ import javax.net.ssl.SSLSocketFactory
  * hev-socks5-tunnel and Slipstream:
  *
  * - CONNECT (0x01): Chains to Slipstream → Dante (with user/pass auth)
- * - FWD_UDP (0x05) DNS: DNS-over-TCP through Dante (uses user's resolver),
- *   falls back to DoH (Cloudflare 1.1.1.1) if TCP fails
+ * - FWD_UDP (0x05) DNS: DNS-over-TCP through Dante to clean DNS (1.1.1.1),
+ *   falls back to DoH (Cloudflare 1.1.1.1) if TCP fails.
+ *   Always uses 1.1.1.1 to prevent poisoned results from censored DNS servers.
  * - FWD_UDP (0x05) non-DNS: Dropped silently (browser falls back to TCP CONNECT)
  *
  * Traffic flow:
  * App -> TUN -> hev-socks5-tunnel -> SlipstreamSocksBridge (proxyPort+1)
  *   TCP: -> SOCKS5 CONNECT (with auth) -> Slipstream (proxyPort) -> Dante -> Server
- *   DNS: -> FWD_UDP -> DNS-over-TCP via Dante -> user's resolver (fallback: DoH via 1.1.1.1)
+ *   DNS: -> FWD_UDP -> DNS-over-TCP via Dante -> 1.1.1.1 (fallback: DoH via 1.1.1.1)
  */
 object SlipstreamSocksBridge {
     private const val TAG = "SlipstreamSocksBridge"
@@ -42,6 +43,13 @@ object SlipstreamSocksBridge {
     private const val BIND_RETRY_DELAY_MS = 200L
     private const val BUFFER_SIZE = 32768
     private const val TCP_CONNECT_TIMEOUT_MS = 10000
+    // Clean DNS server address bytes (SOCKS5 format: ATYP_IPV4 + 1.1.1.1 + port 53)
+    // Used instead of user's resolver to prevent DNS poisoning from censored DNS servers
+    private val CLEAN_DNS_ADDR = byteArrayOf(
+        0x01,                                   // ATYP: IPv4
+        0x01, 0x01, 0x01, 0x01,                 // 1.1.1.1
+        0x00, 0x35                              // port 53
+    )
 
     private var slipstreamHost: String = "127.0.0.1"
     private var slipstreamPort: Int = 0
@@ -545,9 +553,9 @@ object SlipstreamSocksBridge {
 
             try {
                 val response = if (dest.second == 53) {
-                    // DNS: try DNS-over-TCP through tunnel (uses user's resolver),
+                    // DNS: try DNS-over-TCP through tunnel (clean 1.1.1.1),
                     // fall back to DoH through tunnel (Cloudflare) if TCP fails
-                    forwardDnsTcp(addrBytes, payload)
+                    forwardDnsTcp(payload)
                         ?: forwardDnsDoH(payload)
                 } else {
                     // Non-DNS UDP (QUIC, etc.): drop silently.
@@ -578,18 +586,17 @@ object SlipstreamSocksBridge {
 
     /**
      * Forward DNS query via DNS-over-TCP through Slipstream → Dante tunnel.
-     * Uses the user's selected DNS resolver (from addrBytes).
+     * Always uses clean DNS (1.1.1.1) to prevent poisoned results from censored
+     * DNS servers (e.g. Iranian DNS that returns blocked IPs for foreign sites).
      *
-     * 1. SOCKS5 CONNECT to DNS server:53 through Dante
+     * 1. SOCKS5 CONNECT to 1.1.1.1:53 through Dante
      * 2. Send DNS query with TCP length prefix (2 bytes big-endian)
      * 3. Read DNS response with TCP length prefix
      *
-     * @param addrBytes raw SOCKS5 address bytes (ATYP + addr + port) for the DNS server
      * @param payload DNS query payload (raw UDP DNS packet)
      * @return DNS response payload, or null on failure
      */
-    private fun forwardDnsTcp(addrBytes: ByteArray, payload: ByteArray): ByteArray? {
-        val dest = parseSocksAddress(addrBytes) ?: return null
+    private fun forwardDnsTcp(payload: ByteArray): ByteArray? {
         var sock: Socket? = null
         try {
             // Step 1: Connect to Slipstream
@@ -604,14 +611,13 @@ object SlipstreamSocksBridge {
             // Step 2: SOCKS5 auth with Dante
             if (!performSocksAuth(sockIn, sockOut)) return null
 
-            // Step 3: SOCKS5 CONNECT to DNS server (user's resolver) on port 53
-            // Build address: use the original addrBytes (already has ATYP + addr + port)
-            val connectReq = byteArrayOf(0x05, 0x01, 0x00) + addrBytes
+            // Step 3: SOCKS5 CONNECT to clean DNS (1.1.1.1:53) through Dante
+            val connectReq = byteArrayOf(0x05, 0x01, 0x00) + CLEAN_DNS_ADDR
             sockOut.write(connectReq)
             sockOut.flush()
 
             if (!readSocksConnectResponse(sockIn)) {
-                logd("DNS-TCP: CONNECT to ${dest.first}:${dest.second} failed")
+                logd("DNS-TCP: CONNECT to 1.1.1.1:53 failed")
                 return null
             }
 
@@ -637,10 +643,10 @@ object SlipstreamSocksBridge {
             val response = ByteArray(respLen)
             sockIn.readFully(response)
 
-            logd("DNS-TCP: ${dest.first} resolved (${response.size} bytes)")
+            logd("DNS-TCP: 1.1.1.1 resolved (${response.size} bytes)")
             return response
         } catch (e: Exception) {
-            logd("DNS-TCP: ${dest?.first ?: "?"} failed: ${e.message}")
+            logd("DNS-TCP: 1.1.1.1 failed: ${e.message}")
             return null
         } finally {
             try { sock?.close() } catch (_: Exception) {}

@@ -123,18 +123,28 @@ class VpnWidgetProvider : AppWidgetProvider() {
                 is ConnectionState.Disconnected -> {
                     views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_bg_disconnected)
                     views.setTextViewText(R.id.widget_status_text, "Disconnected")
+                    views.setTextColor(R.id.widget_status_text, 0xFF333333.toInt())
+                    views.setInt(R.id.widget_status_icon, "setColorFilter", 0xFF333333.toInt())
+                    views.setInt(R.id.widget_icon_badge, "setBackgroundResource", R.drawable.widget_icon_circle_dark)
                     views.setViewVisibility(R.id.widget_profile_name, View.GONE)
                     views.setViewVisibility(R.id.widget_progress, View.GONE)
                 }
                 is ConnectionState.Connecting -> {
                     views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_bg_connecting)
                     views.setTextViewText(R.id.widget_status_text, "Connecting...")
+                    views.setTextColor(R.id.widget_status_text, 0xFFFFFFFF.toInt())
+                    views.setInt(R.id.widget_status_icon, "setColorFilter", 0xFFFFFFFF.toInt())
+                    views.setInt(R.id.widget_icon_badge, "setBackgroundResource", R.drawable.widget_icon_circle)
                     views.setViewVisibility(R.id.widget_profile_name, View.GONE)
                     views.setViewVisibility(R.id.widget_progress, View.VISIBLE)
                 }
                 is ConnectionState.Connected -> {
                     views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_bg_connected)
                     views.setTextViewText(R.id.widget_status_text, "Connected")
+                    views.setTextColor(R.id.widget_status_text, 0xFFFFFFFF.toInt())
+                    views.setTextColor(R.id.widget_profile_name, 0xB3FFFFFF.toInt())
+                    views.setInt(R.id.widget_status_icon, "setColorFilter", 0xFFFFFFFF.toInt())
+                    views.setInt(R.id.widget_icon_badge, "setBackgroundResource", R.drawable.widget_icon_circle)
                     views.setTextViewText(R.id.widget_profile_name, state.profile.name)
                     views.setViewVisibility(R.id.widget_profile_name, View.VISIBLE)
                     views.setViewVisibility(R.id.widget_progress, View.GONE)
@@ -142,12 +152,18 @@ class VpnWidgetProvider : AppWidgetProvider() {
                 is ConnectionState.Disconnecting -> {
                     views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_bg_disconnected)
                     views.setTextViewText(R.id.widget_status_text, "Disconnecting...")
+                    views.setTextColor(R.id.widget_status_text, 0xFF333333.toInt())
+                    views.setInt(R.id.widget_status_icon, "setColorFilter", 0xFF333333.toInt())
+                    views.setInt(R.id.widget_icon_badge, "setBackgroundResource", R.drawable.widget_icon_circle_dark)
                     views.setViewVisibility(R.id.widget_profile_name, View.GONE)
                     views.setViewVisibility(R.id.widget_progress, View.VISIBLE)
                 }
                 is ConnectionState.Error -> {
                     views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_bg_error)
                     views.setTextViewText(R.id.widget_status_text, "Error")
+                    views.setTextColor(R.id.widget_status_text, 0xFFFFFFFF.toInt())
+                    views.setInt(R.id.widget_status_icon, "setColorFilter", 0xFFFFFFFF.toInt())
+                    views.setInt(R.id.widget_icon_badge, "setBackgroundResource", R.drawable.widget_icon_circle)
                     views.setViewVisibility(R.id.widget_profile_name, View.GONE)
                     views.setViewVisibility(R.id.widget_progress, View.GONE)
                 }

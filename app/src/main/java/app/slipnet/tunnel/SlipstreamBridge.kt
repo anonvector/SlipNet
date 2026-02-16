@@ -93,11 +93,11 @@ object SlipstreamBridge {
         if (isNativeRunning()) {
             Log.w(TAG, "Slipstream client already running, stopping first...")
             stopClient()
-            Thread.sleep(200)
         }
 
-        // Wait for port to become free (up to 5 seconds)
-        if (!waitForPortFree(tcpListenPort, 5000)) {
+        // Wait for port to become free (up to 10 seconds).
+        // Native stop waits up to 3s internally + OS socket teardown can take a few more.
+        if (!waitForPortFree(tcpListenPort, 10000)) {
             return Result.failure(RuntimeException("Port $tcpListenPort is already in use"))
         }
 
@@ -156,15 +156,22 @@ object SlipstreamBridge {
 
     /**
      * Stop the slipstream client.
-     * Sends stop signal and waits briefly. Does not block for long to avoid ANR.
+     * Sends stop signal and waits for the port to be released.
      */
     fun stopClient() {
         if (!isLibraryLoaded) return
 
-        Log.i(TAG, "Stopping slipstream client on port $currentPort")
+        val port = currentPort
+        Log.i(TAG, "Stopping slipstream client on port $port")
         try {
             nativeStopSlipstreamClient()
-            Log.i(TAG, "Slipstream client stopped")
+            // Native stop waits up to 3s internally. Verify port is actually released
+            // to avoid "port already in use" on the next connect.
+            if (port > 0 && isPortInUse(port)) {
+                Log.w(TAG, "Port $port still in use after native stop, waiting...")
+                waitForPortFree(port, 5000)
+            }
+            Log.i(TAG, "Slipstream client stopped (port $port free: ${port <= 0 || !isPortInUse(port)})")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping slipstream client", e)
         }

@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Help
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Language
@@ -177,6 +178,16 @@ fun SettingsScreen(
                     description = "Expose SOCKS5 proxy without creating VPN tunnel",
                     checked = uiState.proxyOnlyMode,
                     onCheckedChange = { viewModel.setProxyOnlyMode(it) }
+                )
+
+                SettingsDivider()
+
+                SwitchSettingItem(
+                    icon = Icons.Default.Shield,
+                    title = "Kill switch",
+                    description = "Block all traffic if VPN connection drops",
+                    checked = uiState.killSwitch,
+                    onCheckedChange = { viewModel.setKillSwitch(it) }
                 )
             }
 

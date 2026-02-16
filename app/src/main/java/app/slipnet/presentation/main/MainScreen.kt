@@ -52,7 +52,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -104,6 +104,7 @@ import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ConnectionState
+import app.slipnet.domain.model.PingResult
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
 import app.slipnet.presentation.common.components.ProfileListItem
@@ -278,15 +279,28 @@ fun MainScreen(
                     IconButton(onClick = { showShareDialog = true }) {
                         Icon(Icons.Default.Share, contentDescription = "Share App")
                     }
-                    // Overflow menu
+                    IconButton(onClick = onNavigateToSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                    // Overflow menu (three-dot, rightmost)
                     Box {
                         IconButton(onClick = { showOverflowMenu = true }) {
-                            Icon(Icons.Default.DriveFileMove, contentDescription = "Import & Export")
+                            Icon(Icons.Default.MoreVert, contentDescription = "More")
                         }
                         DropdownMenu(
                             expanded = showOverflowMenu,
                             onDismissRequest = { showOverflowMenu = false }
                         ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (uiState.isPingRunning) "Stop Ping Test" else "Ping All Profiles")
+                                },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    viewModel.pingAllProfiles()
+                                },
+                                enabled = uiState.profiles.isNotEmpty()
+                            )
                             DropdownMenuItem(
                                 text = { Text("Export All Profiles") },
                                 onClick = {
@@ -311,9 +325,6 @@ fun MainScreen(
                                 enabled = uiState.profiles.isNotEmpty()
                             )
                         }
-                    }
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -482,6 +493,7 @@ fun MainScreen(
                                     profile = profile,
                                     isSelected = profile.isActive,
                                     isConnected = isConnected,
+                                    pingResult = uiState.pingResults[profile.id],
                                     onClick = { viewModel.setActiveProfile(profile) },
                                     onEditClick = { onNavigateToEditProfile(profile.id) },
                                     onDeleteClick = {
@@ -516,6 +528,8 @@ fun MainScreen(
                 snowflakeBootstrapProgress = uiState.snowflakeBootstrapProgress,
                 uploadSpeed = uiState.uploadSpeed,
                 downloadSpeed = uiState.downloadSpeed,
+                totalUpload = uiState.trafficStats.bytesSent,
+                totalDownload = uiState.trafficStats.bytesReceived,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = navBarPadding.calculateBottomPadding())
@@ -852,6 +866,8 @@ private fun ConnectionStatusStrip(
     snowflakeBootstrapProgress: Int,
     uploadSpeed: Long = 0,
     downloadSpeed: Long = 0,
+    totalUpload: Long = 0,
+    totalDownload: Long = 0,
     modifier: Modifier = Modifier
 ) {
     val isConnected = connectionState is ConnectionState.Connected
@@ -930,7 +946,7 @@ private fun ConnectionStatusStrip(
                 }
             }
 
-            // Traffic stats
+            // Traffic stats: live speed + totals when connected, session totals when disconnected
             AnimatedVisibility(
                 visible = isConnected,
                 enter = expandVertically(animationSpec = tween(300)) + fadeIn(animationSpec = tween(300)),
@@ -944,16 +960,24 @@ private fun ConnectionStatusStrip(
                             .padding(start = 22.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Live speed
                         Text(
                             text = "\u2191 ${TrafficStats.formatBytes(uploadSpeed)}/s",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(modifier = Modifier.width(24.dp))
+                        Spacer(modifier = Modifier.width(16.dp))
                         Text(
                             text = "\u2193 ${TrafficStats.formatBytes(downloadSpeed)}/s",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                        // Session totals
+                        Text(
+                            text = "\u2191 ${TrafficStats.formatBytes(totalUpload)}  \u2193 ${TrafficStats.formatBytes(totalDownload)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                         )
                     }
                 }

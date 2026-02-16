@@ -489,7 +489,8 @@ class VpnRepositoryImpl @Inject constructor(
             tcpListenHost = listenHost,
             gsoEnabled = profile.gsoEnabled,
             debugPoll = debugLogging,
-            debugStreams = debugLogging
+            debugStreams = debugLogging,
+            idlePollIntervalMs = 2000
         )
         if (result.isFailure) {
             val exception = result.exceptionOrNull()

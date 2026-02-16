@@ -57,6 +57,8 @@ class PreferencesDataStore @Inject constructor(
         val APPEND_HTTP_PROXY_TO_VPN = booleanPreferencesKey("append_http_proxy_to_vpn")
         // Proxy-Only Mode
         val PROXY_ONLY_MODE = booleanPreferencesKey("proxy_only_mode")
+        // Kill Switch
+        val KILL_SWITCH = booleanPreferencesKey("kill_switch")
         // Recent DNS Resolvers
         val RECENT_DNS_RESOLVERS = stringPreferencesKey("recent_dns_resolvers")
         // First Launch
@@ -367,6 +369,17 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setProxyOnlyMode(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[Keys.PROXY_ONLY_MODE] = enabled
+        }
+    }
+
+    // Kill Switch
+    val killSwitch: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.KILL_SWITCH] ?: false
+    }
+
+    suspend fun setKillSwitch(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.KILL_SWITCH] = enabled
         }
     }
 

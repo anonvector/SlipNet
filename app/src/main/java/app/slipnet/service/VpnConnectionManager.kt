@@ -8,6 +8,7 @@ import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
 import app.slipnet.domain.repository.ProfileRepository
+import app.slipnet.widget.VpnWidgetCompactProvider
 import app.slipnet.widget.VpnWidgetProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -49,6 +50,7 @@ class VpnConnectionManager @Inject constructor(
         scope.launch {
             _connectionState.collect { state ->
                 VpnWidgetProvider.notifyStateChanged(context, state)
+                VpnWidgetCompactProvider.notifyStateChanged(context, state)
             }
         }
     }

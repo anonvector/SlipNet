@@ -635,6 +635,14 @@ fun EditProfileScreen(
                             onCheckedChange = { viewModel.updateAuthoritativeMode(it) }
                         )
                     }
+                    if (uiState.authoritativeMode) {
+                        Text(
+                            text = "Resolver must be your server's IP (e.g. 1.2.3.4:53). Queries go directly to your server, bypassing recursive resolvers.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
 
                     // GSO Mode
                     Row(

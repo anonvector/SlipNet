@@ -85,5 +85,6 @@ abstract class SlipNetDatabase : RoomDatabase() {
                 """.trimIndent())
             }
         }
+
     }
 }

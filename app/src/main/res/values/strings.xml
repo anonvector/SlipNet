@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">SlipNet</string>
     <string name="widget_description">Toggle VPN connection from your home screen</string>
+    <string name="widget_compact_description">Compact VPN toggle button (1x1)</string>
 </resources>

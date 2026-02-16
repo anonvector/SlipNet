@@ -96,7 +96,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- Home Screen Widget -->
+        <!-- Home Screen Widget (2x1) -->
         <receiver
             android:name=".widget.VpnWidgetProvider"
             android:exported="true">
@@ -107,6 +107,19 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_vpn_toggle_info" />
+        </receiver>
+
+        <!-- Compact Home Screen Widget (1x1) -->
+        <receiver
+            android:name=".widget.VpnWidgetCompactProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="app.slipnet.widget.TOGGLE_VPN_COMPACT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_vpn_compact_info" />
         </receiver>
 
         <!-- QR code scanner (force portrait) -->

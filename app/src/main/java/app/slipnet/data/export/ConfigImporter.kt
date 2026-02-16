@@ -60,6 +60,8 @@ sealed class ImportResult {
  *
  * Decoded profile format v12 (extends v11 with Tor bridge lines):
  * v12|..same as v11..|torBridgeLines(b64)
+ *
+ * v13 (legacy, idlePollMode field ignored — parsed as v12)
  */
 @Singleton
 class ConfigImporter @Inject constructor() {
@@ -161,6 +163,7 @@ class ConfigImporter @Inject constructor() {
             "10" -> parseProfileV10(fields, lineNum)
             "11" -> parseProfileV11(fields, lineNum)
             "12" -> parseProfileV12(fields, lineNum)
+            "13" -> parseProfileV13(fields, lineNum)
             else -> ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
         }
     }
@@ -1253,6 +1256,11 @@ class ConfigImporter @Inject constructor() {
         )
 
         return ProfileParseResult.Success(profile)
+    }
+
+    // v13 legacy: same as v12 with an extra idlePollMode field (ignored)
+    private fun parseProfileV13(fields: List<String>, lineNum: Int): ProfileParseResult {
+        return parseProfileV12(fields, lineNum)
     }
 
     private fun parseResolvers(resolversStr: String): List<DnsResolver> {

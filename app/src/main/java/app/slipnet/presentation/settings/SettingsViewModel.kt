@@ -24,6 +24,7 @@ data class SettingsUiState(
     val proxyListenAddress: String = "0.0.0.0",
     val proxyListenPort: Int = 1080,
     val proxyOnlyMode: Boolean = false,
+    val killSwitch: Boolean = false,
     // HTTP Proxy Settings
     val httpProxyEnabled: Boolean = false,
     val httpProxyPort: Int = 8080,
@@ -85,7 +86,12 @@ class SettingsViewModel @Inject constructor(
                 Triple(enabled, mode, apps)
             }
 
-            val proxyOnlyFlow = preferencesDataStore.proxyOnlyMode
+            val proxyOnlyFlow = combine(
+                preferencesDataStore.proxyOnlyMode,
+                preferencesDataStore.killSwitch
+            ) { proxyOnly, killSwitch ->
+                Pair(proxyOnly, killSwitch)
+            }
 
             val httpProxyFlow = combine(
                 preferencesDataStore.httpProxyEnabled,
@@ -103,7 +109,7 @@ class SettingsViewModel @Inject constructor(
                 Triple(enabled, mode, domains)
             }
 
-            val baseFlow = combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow, httpProxyFlow) { main, ssh, split, proxyOnly, httpProxy ->
+            val baseFlow = combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow, httpProxyFlow) { main, ssh, split, proxyOnlyPair, httpProxy ->
                 SettingsUiState(
                     autoConnectOnBoot = main[0] as Boolean,
                     darkMode = main[1] as DarkMode,
@@ -111,7 +117,8 @@ class SettingsViewModel @Inject constructor(
                     isLoading = false,
                     proxyListenAddress = main[3] as String,
                     proxyListenPort = main[4] as Int,
-                    proxyOnlyMode = proxyOnly,
+                    proxyOnlyMode = proxyOnlyPair.first,
+                    killSwitch = proxyOnlyPair.second,
                     httpProxyEnabled = httpProxy.first,
                     httpProxyPort = httpProxy.second,
                     appendHttpProxyToVpn = httpProxy.third,
@@ -159,6 +166,13 @@ class SettingsViewModel @Inject constructor(
     fun setProxyOnlyMode(enabled: Boolean) {
         viewModelScope.launch {
             preferencesDataStore.setProxyOnlyMode(enabled)
+        }
+    }
+
+    // Kill Switch
+    fun setKillSwitch(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setKillSwitch(enabled)
         }
     }
 

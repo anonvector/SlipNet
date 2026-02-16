@@ -95,7 +95,11 @@ class SlipNetVpnService : VpnService() {
     private var stateObserverJob: Job? = null
     @Volatile
     private var isReconnecting = false
+    @Volatile
+    private var isKillSwitchActive = false
     private var isProxyOnly = false
+    private var isUserInitiatedDisconnect = false
+    private var currentProfileName = ""
 
     // Traffic monitoring for stale connection detection
     private var lastTrafficRxBytes = 0L
@@ -233,6 +237,13 @@ class SlipNetVpnService : VpnService() {
             // Wait for any in-progress disconnect to finish releasing ports
             disconnectJob?.join()
 
+            // Always stop previous proxies to ensure ports are freed.
+            // This handles the case where onDestroy() sent stop signals but
+            // didn't wait for native code to release ports (e.g. abandoned Rust threads).
+            withContext(Dispatchers.IO) {
+                try { stopCurrentProxy() } catch (_: Exception) {}
+            }
+
             // Clean up previous connection resources if switching profiles
             if (currentProfileId != -1L && currentProfileId != profileId) {
                 Log.i(TAG, "Switching profile: cleaning up previous connection")
@@ -247,10 +258,14 @@ class SlipNetVpnService : VpnService() {
             }
 
             currentProfileId = profileId
+            currentProfileName = profile.name
+            isUserInitiatedDisconnect = false
 
-            // Dismiss any previous reconnect notification
-            getSystemService(NotificationManager::class.java)
-                .cancel(NotificationHelper.RECONNECT_NOTIFICATION_ID)
+            // Dismiss any previous reconnect/disconnect notifications
+            getSystemService(NotificationManager::class.java).apply {
+                cancel(NotificationHelper.RECONNECT_NOTIFICATION_ID)
+                cancel(NotificationHelper.DISCONNECT_NOTIFICATION_ID)
+            }
 
             // Show connecting notification
             val notification = notificationHelper.createVpnNotification(ConnectionState.Connecting)
@@ -1446,10 +1461,7 @@ class SlipNetVpnService : VpnService() {
                 if (!proxyHealthy || !tunnelRunning) {
                     Log.e(TAG, "Health check failed: proxy=$proxyHealthy (type=$currentTunnelType), tunnel=$tunnelRunning")
                     launch(Dispatchers.Main) {
-                        connectionManager.onVpnError("VPN connection lost - native client stopped unexpectedly")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("health check failed")
                     }
                     break
                 }
@@ -1663,20 +1675,14 @@ class SlipNetVpnService : VpnService() {
                     }
                     if (sshResult.isFailure) {
                         Log.e(TAG, "Failed to restart SSH tunnel after network change", sshResult.exceptionOrNull())
-                        connectionManager.onVpnError("Failed to reconnect SSH after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect SSH after network change")
                         return@launch
                     }
 
                     // Wait for SSH SOCKS5 proxy to be ready
                     if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 50)) {
                         Log.e(TAG, "SSH SOCKS5 proxy failed to restart")
-                        connectionManager.onVpnError("Failed to reconnect SSH after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect SSH after network change")
                         return@launch
                     }
                 } else if (currentTunnelType == TunnelType.DNSTT_SSH) {
@@ -1686,19 +1692,13 @@ class SlipNetVpnService : VpnService() {
                     val dnsttResult = vpnRepository.startDnsttProxy(profile, portOverride = dnsttPort, hostOverride = "127.0.0.1")
                     if (dnsttResult.isFailure) {
                         Log.e(TAG, "Failed to restart DNSTT after network change", dnsttResult.exceptionOrNull())
-                        connectionManager.onVpnError("Failed to reconnect DNSTT+SSH after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect DNSTT+SSH after network change")
                         return@launch
                     }
 
                     if (!waitForProxyReady(dnsttPort, maxAttempts = 20, delayMs = 50)) {
                         Log.e(TAG, "DNSTT proxy failed to restart")
-                        connectionManager.onVpnError("Failed to reconnect DNSTT+SSH after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect DNSTT+SSH after network change")
                         return@launch
                     }
 
@@ -1725,19 +1725,13 @@ class SlipNetVpnService : VpnService() {
                     }
                     if (sshResult.isFailure) {
                         Log.e(TAG, "Failed to restart SSH over DNSTT after network change", sshResult.exceptionOrNull())
-                        connectionManager.onVpnError("Failed to reconnect DNSTT+SSH after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect DNSTT+SSH after network change")
                         return@launch
                     }
 
                     if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 50)) {
                         Log.e(TAG, "SSH SOCKS5 proxy failed to restart on port $proxyPort")
-                        connectionManager.onVpnError("Failed to reconnect DNSTT+SSH after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect DNSTT+SSH after network change")
                         return@launch
                     }
                 } else if (currentTunnelType == TunnelType.SLIPSTREAM_SSH) {
@@ -1747,19 +1741,13 @@ class SlipNetVpnService : VpnService() {
                     val slipResult = vpnRepository.startSlipstreamProxy(profile, portOverride = slipstreamPort, hostOverride = "127.0.0.1")
                     if (slipResult.isFailure) {
                         Log.e(TAG, "Failed to restart Slipstream after network change", slipResult.exceptionOrNull())
-                        connectionManager.onVpnError("Failed to reconnect Slipstream+SSH after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect Slipstream+SSH after network change")
                         return@launch
                     }
 
                     if (!waitForProxyReady(slipstreamPort, maxAttempts = 20, delayMs = 50)) {
                         Log.e(TAG, "Slipstream proxy failed to restart")
-                        connectionManager.onVpnError("Failed to reconnect Slipstream+SSH after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect Slipstream+SSH after network change")
                         return@launch
                     }
 
@@ -1790,19 +1778,13 @@ class SlipNetVpnService : VpnService() {
                     }
                     if (sshResult.isFailure) {
                         Log.e(TAG, "Failed to restart SSH over Slipstream after network change", sshResult.exceptionOrNull())
-                        connectionManager.onVpnError("Failed to reconnect Slipstream+SSH after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect Slipstream+SSH after network change")
                         return@launch
                     }
 
                     if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 50)) {
                         Log.e(TAG, "SSH SOCKS5 proxy failed to restart on port $proxyPort")
-                        connectionManager.onVpnError("Failed to reconnect Slipstream+SSH after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect Slipstream+SSH after network change")
                         return@launch
                     }
                 } else if (currentTunnelType == TunnelType.SLIPSTREAM) {
@@ -1812,19 +1794,13 @@ class SlipNetVpnService : VpnService() {
                     val slipResult = vpnRepository.startSlipstreamProxy(profile, portOverride = slipstreamPort, hostOverride = "127.0.0.1")
                     if (slipResult.isFailure) {
                         Log.e(TAG, "Failed to restart Slipstream after network change", slipResult.exceptionOrNull())
-                        connectionManager.onVpnError("Failed to reconnect Slipstream after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect Slipstream after network change")
                         return@launch
                     }
 
                     if (!waitForProxyReady(slipstreamPort, maxAttempts = 20, delayMs = 50)) {
                         Log.e(TAG, "Slipstream proxy failed to restart")
-                        connectionManager.onVpnError("Failed to reconnect Slipstream after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect Slipstream after network change")
                         return@launch
                     }
 
@@ -1844,19 +1820,13 @@ class SlipNetVpnService : VpnService() {
                     )
                     if (bridgeResult.isFailure) {
                         Log.e(TAG, "Failed to restart bridge after network change")
-                        connectionManager.onVpnError("Failed to reconnect after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect after network change")
                         return@launch
                     }
 
                     if (!waitForProxyReady(proxyPort, maxAttempts = 20, delayMs = 50)) {
                         Log.e(TAG, "Bridge failed to restart on port $proxyPort")
-                        connectionManager.onVpnError("Failed to reconnect after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect after network change")
                         return@launch
                     }
                 } else {
@@ -1872,20 +1842,14 @@ class SlipNetVpnService : VpnService() {
                     }
                     if (proxyResult.isFailure) {
                         Log.e(TAG, "Failed to restart proxy after network change", proxyResult.exceptionOrNull())
-                        connectionManager.onVpnError("Failed to reconnect after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect after network change")
                         return@launch
                     }
 
                     // Wait for proxy to be ready
                     if (!waitForProxyReady(proxyPort, maxAttempts = 20, delayMs = 50)) {
                         Log.e(TAG, "Proxy failed to restart")
-                        connectionManager.onVpnError("Failed to reconnect after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("failed to reconnect after network change")
                         return@launch
                     }
                 }
@@ -1900,10 +1864,7 @@ class SlipNetVpnService : VpnService() {
                         val tun2socksResult = vpnRepository.startTun2Socks(profile, pfd)
                         if (tun2socksResult.isFailure) {
                             Log.e(TAG, "Failed to restart tun2socks", tun2socksResult.exceptionOrNull())
-                            connectionManager.onVpnError("Failed to reconnect after network change")
-                            cleanupConnection()
-                            stopForeground(STOP_FOREGROUND_REMOVE)
-                            stopSelf()
+                            handleTunnelFailure("failed to reconnect after network change")
                             return@launch
                         }
                     }
@@ -1920,10 +1881,7 @@ class SlipNetVpnService : VpnService() {
                     // Wait for Tor to re-bootstrap after network change
                     if (!waitForTorReady(maxWaitMs = 90000)) {
                         Log.e(TAG, "Tor failed to re-bootstrap after network change")
-                        connectionManager.onVpnError("Tor failed to reconnect after network change")
-                        cleanupConnection()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        handleTunnelFailure("Tor failed to reconnect after network change")
                         return@launch
                     }
                 } else {
@@ -1957,6 +1915,15 @@ class SlipNetVpnService : VpnService() {
 
                 // Restart health check
                 startHealthCheck()
+
+                // Clear kill switch state and restore connected notification
+                if (isKillSwitchActive) {
+                    isKillSwitchActive = false
+                    val state = vpnRepository.connectionState.first()
+                    val notification = notificationHelper.createVpnNotification(state, isProxyOnly)
+                    val notificationManager = getSystemService(NotificationManager::class.java)
+                    notificationManager.notify(NotificationHelper.VPN_NOTIFICATION_ID, notification)
+                }
 
                 Log.i(TAG, "Successfully reconnected after network change (tunnel type: $currentTunnelType)")
             } finally {
@@ -2151,6 +2118,9 @@ class SlipNetVpnService : VpnService() {
 
                 when (state) {
                     is ConnectionState.Error -> {
+                        // Don't stop service during kill switch — we're blocking traffic and reconnecting
+                        if (isKillSwitchActive) return@collect
+
                         // Show reconnect notification before stopping
                         if (currentProfileId != -1L) {
                             val reconnectNotification = notificationHelper.createReconnectNotification(
@@ -2174,6 +2144,12 @@ class SlipNetVpnService : VpnService() {
     }
 
     private fun disconnect() {
+        // Mark as user-initiated so onDestroy() doesn't show disconnect notification
+        isUserInitiatedDisconnect = true
+
+        // Clear kill switch so teardown proceeds normally
+        isKillSwitchActive = false
+
         // Cancel any in-progress connection attempt
         connectJob?.cancel()
         connectJob = null
@@ -2199,6 +2175,59 @@ class SlipNetVpnService : VpnService() {
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
+        }
+    }
+
+    /**
+     * Handle tunnel failure with kill switch support.
+     * If kill switch is enabled and we have a VPN interface, enters kill switch mode
+     * (keeps TUN alive to block traffic). Otherwise, does the original teardown.
+     */
+    private suspend fun handleTunnelFailure(reason: String) {
+        val killSwitchEnabled = preferencesDataStore.killSwitch.first()
+        if (killSwitchEnabled && !isProxyOnly && vpnInterface != null) {
+            enterKillSwitchMode(reason)
+        } else {
+            connectionManager.onVpnError("VPN connection lost - $reason")
+            cleanupConnection()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    /**
+     * Enter kill switch mode: keep VPN interface alive (blocking all traffic),
+     * stop proxy/tunnel, show kill switch notification, and attempt reconnection.
+     */
+    private suspend fun enterKillSwitchMode(reason: String) {
+        Log.i(TAG, "Kill switch activated: $reason")
+        isKillSwitchActive = true
+
+        // Stop health check during kill switch
+        healthCheckJob?.cancel()
+        healthCheckJob = null
+
+        // Stop proxy/tunnel but NOT vpnInterface — TUN stays alive to block traffic
+        withContext(Dispatchers.IO) {
+            if (!isProxyOnly) {
+                try { HevSocks5Tunnel.stop() } catch (_: Exception) {}
+            }
+            try { stopCurrentProxy() } catch (_: Exception) {}
+        }
+
+        // Update foreground notification to kill switch notification
+        val profile = connectionManager.getProfileById(currentProfileId)
+        val profileName = profile?.name ?: "VPN"
+        val notification = notificationHelper.createKillSwitchNotification(profileName)
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(NotificationHelper.VPN_NOTIFICATION_ID, notification)
+
+        // Attempt reconnection after a brief delay
+        serviceScope.launch {
+            delay(2000)
+            if (isKillSwitchActive) {
+                handleNetworkChange("kill switch reconnect")
+            }
         }
     }
 
@@ -2256,12 +2285,36 @@ class SlipNetVpnService : VpnService() {
 
     override fun onRevoke() {
         super.onRevoke()
-        Log.i(TAG, "VPN permission revoked")
-        disconnect()
+        Log.i(TAG, "VPN permission revoked (another VPN took over)")
+        // Do NOT mark as user-initiated — onRevoke means another VPN took over,
+        // so onDestroy() should show the disconnect notification.
+        // We still need to clean up, but skip setting isUserInitiatedDisconnect.
+        isKillSwitchActive = false
+        connectJob?.cancel()
+        connectJob = null
+        reconnectDebounceJob?.cancel()
+        reconnectDebounceJob = null
+        isReconnecting = false
+        stateObserverJob?.cancel()
+        stateObserverJob = null
+        disconnectJob = serviceScope.launch {
+            Log.i(TAG, "Disconnecting VPN (revoked)")
+            clearConnectionState()
+            cleanupConnection()
+            connectionManager.onVpnDisconnected()
+            releaseWakeLock()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {
         Log.i(TAG, "Service onDestroy")
+
+        // Capture state before cleanup resets currentProfileId to -1
+        val wasActive = currentProfileId != -1L
+        val profileName = currentProfileName
+        val profileId = currentProfileId
 
         // Quick non-blocking cleanup for onDestroy
         // Don't wait for native threads - they'll clean up themselves
@@ -2274,6 +2327,16 @@ class SlipNetVpnService : VpnService() {
         // Without this, the UI would still show "Connected" after another VPN connects.
         clearConnectionState()
         connectionManager.onVpnDisconnected()
+
+        // Show disconnect notification if the connection was active and not user-initiated.
+        // Skip if kill switch is active (it has its own notification) or if reconnecting
+        // (the reconnect/kill-switch flow handles notifications).
+        if (wasActive && !isUserInitiatedDisconnect && !isKillSwitchActive && !isReconnecting) {
+            Log.i(TAG, "Unexpected disconnect detected, showing notification")
+            val notification = notificationHelper.createDisconnectedNotification(profileName, profileId)
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.notify(NotificationHelper.DISCONNECT_NOTIFICATION_ID, notification)
+        }
 
         // Release WakeLock
         releaseWakeLock()
