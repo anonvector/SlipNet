@@ -7,6 +7,7 @@ import app.slipnet.data.local.datastore.DomainRoutingMode
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.local.datastore.SplitTunnelingMode
 import app.slipnet.data.local.datastore.SshCipher
+import app.slipnet.tunnel.GeoBypassCountry
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,7 +43,10 @@ data class SettingsUiState(
     // Domain Routing Settings
     val domainRoutingEnabled: Boolean = false,
     val domainRoutingMode: DomainRoutingMode = DomainRoutingMode.BYPASS,
-    val domainRoutingDomains: Set<String> = emptySet()
+    val domainRoutingDomains: Set<String> = emptySet(),
+    // Geo-Bypass Settings
+    val geoBypassEnabled: Boolean = false,
+    val geoBypassCountry: GeoBypassCountry = GeoBypassCountry.IR
 )
 
 @HiltViewModel
@@ -109,6 +113,13 @@ class SettingsViewModel @Inject constructor(
                 Triple(enabled, mode, domains)
             }
 
+            val geoBypassFlow = combine(
+                preferencesDataStore.geoBypassEnabled,
+                preferencesDataStore.geoBypassCountry
+            ) { enabled, countryCode ->
+                Pair(enabled, GeoBypassCountry.fromCode(countryCode))
+            }
+
             val baseFlow = combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow, httpProxyFlow) { main, ssh, split, proxyOnlyPair, httpProxy ->
                 SettingsUiState(
                     autoConnectOnBoot = main[0] as Boolean,
@@ -132,11 +143,18 @@ class SettingsViewModel @Inject constructor(
                 )
             }
 
-            combine(baseFlow, domainRoutingFlow) { base, domainRouting ->
+            val routingFlow = combine(baseFlow, domainRoutingFlow) { base, domainRouting ->
                 base.copy(
                     domainRoutingEnabled = domainRouting.first,
                     domainRoutingMode = domainRouting.second,
                     domainRoutingDomains = domainRouting.third
+                )
+            }
+
+            combine(routingFlow, geoBypassFlow) { state, geoBypass ->
+                state.copy(
+                    geoBypassEnabled = geoBypass.first,
+                    geoBypassCountry = geoBypass.second
                 )
             }.collect { newState ->
                 _uiState.value = newState
@@ -274,6 +292,19 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             val current = _uiState.value.domainRoutingDomains
             preferencesDataStore.setDomainRoutingDomains(current - domain)
+        }
+    }
+
+    // Geo-Bypass Settings
+    fun setGeoBypassEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setGeoBypassEnabled(enabled)
+        }
+    }
+
+    fun setGeoBypassCountry(country: GeoBypassCountry) {
+        viewModelScope.launch {
+            preferencesDataStore.setGeoBypassCountry(country.code)
         }
     }
 }

@@ -19,6 +19,8 @@ import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.local.datastore.SplitTunnelingMode
 import app.slipnet.data.local.datastore.SshCipher
 import app.slipnet.tunnel.DomainRouter
+import app.slipnet.tunnel.GeoBypassCountry
+import app.slipnet.tunnel.GeoBypassData
 import app.slipnet.data.repository.VpnRepositoryImpl
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.TunnelType
@@ -449,12 +451,34 @@ class SlipNetVpnService : VpnService() {
      * Build a DomainRouter from DataStore preferences.
      */
     private suspend fun buildDomainRouter(): DomainRouter {
-        val enabled = preferencesDataStore.domainRoutingEnabled.first()
-        if (!enabled) return DomainRouter.DISABLED
+        val domainRoutingEnabled = preferencesDataStore.domainRoutingEnabled.first()
+        val geoBypassEnabled = preferencesDataStore.geoBypassEnabled.first()
+
+        if (!domainRoutingEnabled && !geoBypassEnabled) return DomainRouter.DISABLED
+
         val mode = preferencesDataStore.domainRoutingMode.first()
-        val domains = preferencesDataStore.domainRoutingDomains.first()
-        Log.i(TAG, "Domain routing enabled: mode=$mode, ${domains.size} domains")
-        return DomainRouter(enabled = true, mode = mode, domains = domains)
+        val domains = if (domainRoutingEnabled) preferencesDataStore.domainRoutingDomains.first() else emptySet()
+
+        val geoData = if (geoBypassEnabled) {
+            val countryCode = preferencesDataStore.geoBypassCountry.first()
+            val country = GeoBypassCountry.fromCode(countryCode)
+            Log.i(TAG, "Geo-bypass enabled: country=${country.displayName}")
+            DomainRouter.loadGeoData(this, country)
+        } else {
+            GeoBypassData.EMPTY
+        }
+
+        if (domainRoutingEnabled) {
+            Log.i(TAG, "Domain routing enabled: mode=$mode, ${domains.size} domains")
+        }
+
+        return DomainRouter(
+            enabled = domainRoutingEnabled || geoBypassEnabled,
+            mode = mode,
+            domains = domains,
+            geoBypassEnabled = geoBypassEnabled,
+            geoBypass = geoData
+        )
     }
 
     /**

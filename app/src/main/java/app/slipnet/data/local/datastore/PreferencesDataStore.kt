@@ -67,6 +67,9 @@ class PreferencesDataStore @Inject constructor(
         val DOMAIN_ROUTING_ENABLED = booleanPreferencesKey("domain_routing_enabled")
         val DOMAIN_ROUTING_MODE = stringPreferencesKey("domain_routing_mode")
         val DOMAIN_ROUTING_DOMAINS = stringPreferencesKey("domain_routing_domains")
+        // Geo-Bypass Keys
+        val GEO_BYPASS_ENABLED = booleanPreferencesKey("geo_bypass_enabled")
+        val GEO_BYPASS_COUNTRY = stringPreferencesKey("geo_bypass_country")
     }
 
     // Auto-connect on boot
@@ -429,6 +432,27 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setDomainRoutingDomains(domains: Set<String>) {
         dataStore.edit { prefs ->
             prefs[Keys.DOMAIN_ROUTING_DOMAINS] = org.json.JSONArray(domains.toList()).toString()
+        }
+    }
+
+    // Geo-Bypass Settings
+    val geoBypassEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.GEO_BYPASS_ENABLED] ?: false
+    }
+
+    suspend fun setGeoBypassEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.GEO_BYPASS_ENABLED] = enabled
+        }
+    }
+
+    val geoBypassCountry: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.GEO_BYPASS_COUNTRY] ?: "ir"
+    }
+
+    suspend fun setGeoBypassCountry(country: String) {
+        dataStore.edit { prefs ->
+            prefs[Keys.GEO_BYPASS_COUNTRY] = country
         }
     }
 }

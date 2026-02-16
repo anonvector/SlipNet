@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.Wifi
@@ -73,6 +74,7 @@ import app.slipnet.data.local.datastore.DarkMode
 import app.slipnet.data.local.datastore.DomainRoutingMode
 import app.slipnet.data.local.datastore.SplitTunnelingMode
 import app.slipnet.data.local.datastore.SshCipher
+import app.slipnet.tunnel.GeoBypassCountry
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
@@ -107,6 +109,7 @@ fun SettingsScreen(
     var showSplitModeDialog by remember { mutableStateOf(false) }
     var showDomainRoutingModeDialog by remember { mutableStateOf(false) }
     var showDomainManagementDialog by remember { mutableStateOf(false) }
+    var showGeoBypassCountryDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
 
     // Proxy settings - local state for port text fields to avoid cursor jumps from async DataStore round-trip
@@ -322,6 +325,31 @@ fun SettingsScreen(
                         title = "Manage domains",
                         description = "${uiState.domainRoutingDomains.size} domains configured",
                         onClick = { showDomainManagementDialog = true }
+                    )
+                }
+            }
+
+            // Geo-Bypass Settings
+            SettingsSection(
+                title = "Geo-Bypass",
+                subtitle = "Changes apply on next connection"
+            ) {
+                SwitchSettingItem(
+                    icon = Icons.Default.Public,
+                    title = "Enable geo-bypass",
+                    description = "Route domestic traffic directly, bypass VPN for local sites",
+                    checked = uiState.geoBypassEnabled,
+                    onCheckedChange = { viewModel.setGeoBypassEnabled(it) }
+                )
+
+                if (uiState.geoBypassEnabled) {
+                    SettingsDivider()
+
+                    ClickableSettingItem(
+                        icon = Icons.Default.Language,
+                        title = "Country",
+                        description = uiState.geoBypassCountry.displayName,
+                        onClick = { showGeoBypassCountryDialog = true }
                     )
                 }
             }
@@ -603,6 +631,48 @@ fun SettingsScreen(
             onAddDomain = { viewModel.addDomainRoutingDomain(it) },
             onRemoveDomain = { viewModel.removeDomainRoutingDomain(it) },
             onDismiss = { showDomainManagementDialog = false }
+        )
+    }
+
+    // Geo-Bypass Country Dialog
+    if (showGeoBypassCountryDialog) {
+        AlertDialog(
+            onDismissRequest = { showGeoBypassCountryDialog = false },
+            title = { Text("Select Country") },
+            text = {
+                Column {
+                    GeoBypassCountry.entries.forEach { country ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    viewModel.setGeoBypassCountry(country)
+                                    showGeoBypassCountryDialog = false
+                                }
+                                .padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = uiState.geoBypassCountry == country,
+                                onClick = {
+                                    viewModel.setGeoBypassCountry(country)
+                                    showGeoBypassCountryDialog = false
+                                }
+                            )
+                            Text(
+                                text = country.displayName,
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showGeoBypassCountryDialog = false }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 
