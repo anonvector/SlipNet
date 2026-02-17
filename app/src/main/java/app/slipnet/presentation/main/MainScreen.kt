@@ -344,7 +344,6 @@ fun MainScreen(
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         tonalElevation = 4.dp,
-                        shadowElevation = 8.dp,
                         modifier = Modifier.padding(bottom = 12.dp, end = 8.dp)
                     ) {
                         Column(
