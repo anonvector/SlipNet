@@ -341,19 +341,19 @@ fun MainScreen(
                 AnimatedVisibility(
                     visible = showAddMenu,
                     enter = scaleIn(
-                        animationSpec = tween(250, easing = FastOutSlowInEasing),
+                        animationSpec = tween(150, easing = FastOutSlowInEasing),
                         transformOrigin = TransformOrigin(1f, 1f),
                         initialScale = 0.8f
-                    ) + fadeIn(tween(200)) + expandVertically(
-                        animationSpec = tween(250, easing = FastOutSlowInEasing),
+                    ) + fadeIn(tween(100)) + expandVertically(
+                        animationSpec = tween(150, easing = FastOutSlowInEasing),
                         expandFrom = Alignment.Top
                     ),
                     exit = scaleOut(
-                        animationSpec = tween(200, easing = FastOutLinearInEasing),
+                        animationSpec = tween(100, easing = FastOutLinearInEasing),
                         transformOrigin = TransformOrigin(1f, 1f),
                         targetScale = 0.8f
-                    ) + fadeOut(tween(150)) + shrinkVertically(
-                        animationSpec = tween(200, easing = FastOutLinearInEasing),
+                    ) + fadeOut(tween(75)) + shrinkVertically(
+                        animationSpec = tween(100, easing = FastOutLinearInEasing),
                         shrinkTowards = Alignment.Top
                     )
                 ) {
