@@ -23,21 +23,47 @@ data class LogEntry(val raw: String, val level: Char)
 object AppLog {
     private const val MAX_LINES = 500
     private val buffer = ArrayDeque<LogEntry>()
+
+    // Lazy snapshot — only rebuilt when the debug sheet is open (observerCount > 0).
     private val _lines = MutableStateFlow<List<LogEntry>>(emptyList())
     val lines: StateFlow<List<LogEntry>> = _lines.asStateFlow()
+
+    // Track whether anyone is observing so we skip work when not needed.
+    @Volatile var observerCount = 0
+        private set
 
     private val dateFormat = object : ThreadLocal<SimpleDateFormat>() {
         override fun initialValue() = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
     }
 
     private fun append(level: Char, tag: String, msg: String) {
-        val ts = dateFormat.get()!!.format(Date())
-        val entry = LogEntry("$ts $level/$tag: $msg", level)
+        val entry = if (observerCount > 0) {
+            val ts = dateFormat.get()!!.format(Date())
+            LogEntry("$ts $level/$tag: $msg", level)
+        } else {
+            // Lightweight entry — no timestamp formatting when nobody is watching
+            LogEntry("$level/$tag: $msg", level)
+        }
         synchronized(buffer) {
             buffer.addLast(entry)
             while (buffer.size > MAX_LINES) buffer.removeFirst()
+            if (observerCount > 0) {
+                _lines.value = ArrayList(buffer)
+            }
+        }
+    }
+
+    /** Call from debug sheet onStart/onStop to enable/disable snapshots. */
+    fun addObserver() {
+        observerCount++
+        // Immediately snapshot current buffer for new observer
+        synchronized(buffer) {
             _lines.value = ArrayList(buffer)
         }
+    }
+
+    fun removeObserver() {
+        observerCount = (observerCount - 1).coerceAtLeast(0)
     }
 
     fun v(tag: String, msg: String): Int {

@@ -25,6 +25,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -45,6 +46,12 @@ fun DebugLogSheet(onDismiss: () -> Unit) {
         skipPartiallyExpanded = false,
         confirmValueChange = { true }
     )
+    // Register/unregister observer so AppLog only snapshots while sheet is open
+    DisposableEffect(Unit) {
+        AppLog.addObserver()
+        onDispose { AppLog.removeObserver() }
+    }
+
     val lines by AppLog.lines.collectAsState()
     val listState = rememberLazyListState()
     val clipboardManager = LocalClipboardManager.current
