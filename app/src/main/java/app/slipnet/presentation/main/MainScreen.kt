@@ -15,6 +15,8 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -338,8 +340,22 @@ fun MainScreen(
             ) {
                 AnimatedVisibility(
                     visible = showAddMenu,
-                    enter = scaleIn(transformOrigin = TransformOrigin(1f, 1f)) + fadeIn(),
-                    exit = scaleOut(transformOrigin = TransformOrigin(1f, 1f)) + fadeOut()
+                    enter = scaleIn(
+                        animationSpec = tween(250, easing = FastOutSlowInEasing),
+                        transformOrigin = TransformOrigin(1f, 1f),
+                        initialScale = 0.8f
+                    ) + fadeIn(tween(200)) + expandVertically(
+                        animationSpec = tween(250, easing = FastOutSlowInEasing),
+                        expandFrom = Alignment.Top
+                    ),
+                    exit = scaleOut(
+                        animationSpec = tween(200, easing = FastOutLinearInEasing),
+                        transformOrigin = TransformOrigin(1f, 1f),
+                        targetScale = 0.8f
+                    ) + fadeOut(tween(150)) + shrinkVertically(
+                        animationSpec = tween(200, easing = FastOutLinearInEasing),
+                        shrinkTowards = Alignment.Top
+                    )
                 ) {
                     Surface(
                         shape = RoundedCornerShape(16.dp),
