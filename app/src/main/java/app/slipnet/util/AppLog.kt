@@ -6,8 +6,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 
-data class LogEntry(val raw: String, val level: Char)
+data class LogEntry(val id: Long, val raw: String, val level: Char)
 
 /**
  * In-memory log buffer that wraps [android.util.Log].
@@ -22,6 +23,7 @@ data class LogEntry(val raw: String, val level: Char)
  */
 object AppLog {
     private const val MAX_LINES = 500
+    private val nextId = AtomicLong(0)
     private val buffer = ArrayDeque<LogEntry>()
 
     // Lazy snapshot — only rebuilt when the debug sheet is open (observerCount > 0).
@@ -37,12 +39,13 @@ object AppLog {
     }
 
     private fun append(level: Char, tag: String, msg: String) {
+        val id = nextId.getAndIncrement()
         val entry = if (observerCount > 0) {
             val ts = dateFormat.get()!!.format(Date())
-            LogEntry("$ts $level/$tag: $msg", level)
+            LogEntry(id, "$ts $level/$tag: $msg", level)
         } else {
             // Lightweight entry — no timestamp formatting when nobody is watching
-            LogEntry("$level/$tag: $msg", level)
+            LogEntry(id, "$level/$tag: $msg", level)
         }
         synchronized(buffer) {
             buffer.addLast(entry)

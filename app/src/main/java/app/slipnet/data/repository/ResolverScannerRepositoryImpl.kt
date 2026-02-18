@@ -15,6 +15,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import app.slipnet.tunnel.DomainRouter
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -265,6 +268,76 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             false
         }
+    }
+
+    override fun generateCountryRangeIps(
+        context: android.content.Context,
+        countryCode: String,
+        count: Int
+    ): List<String> {
+        val ranges = loadCidrRanges(context, countryCode)
+        if (ranges.isEmpty()) return emptyList()
+
+        // Precompute cumulative sizes for proportional sampling
+        val cumulativeSizes = LongArray(ranges.size)
+        var cumulative = 0L
+        for (i in ranges.indices) {
+            val (start, end) = ranges[i]
+            cumulative += (end - start + 1)
+            cumulativeSizes[i] = cumulative
+        }
+        val totalIps = cumulative
+
+        val result = mutableSetOf<String>()
+        val maxAttempts = count * 3 // avoid infinite loop on small ranges
+        var attempts = 0
+
+        while (result.size < count && attempts < maxAttempts) {
+            attempts++
+            // Pick a random position in the total IP space
+            val pos = (Random.nextLong(totalIps) and 0x7FFFFFFFFFFFFFFFL) % totalIps
+
+            // Binary search for which range this falls into
+            var lo = 0
+            var hi = ranges.size - 1
+            while (lo < hi) {
+                val mid = (lo + hi) / 2
+                if (cumulativeSizes[mid] <= pos) lo = mid + 1 else hi = mid
+            }
+
+            val (start, _) = ranges[lo]
+            val offset = pos - (if (lo > 0) cumulativeSizes[lo - 1] else 0L)
+            val ip = start + offset
+            result.add(longToIp(ip))
+        }
+
+        return result.toList()
+    }
+
+    private fun loadCidrRanges(context: android.content.Context, countryCode: String): List<Pair<Long, Long>> {
+        val ranges = mutableListOf<Pair<Long, Long>>()
+        try {
+            context.assets.open("geo/$countryCode.cidr").use { stream ->
+                BufferedReader(InputStreamReader(stream)).use { reader ->
+                    reader.forEachLine { line ->
+                        val trimmed = line.trim()
+                        if (trimmed.isNotEmpty()) {
+                            val range = DomainRouter.parseCidr(trimmed)
+                            if (range != null) {
+                                ranges.add(range)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Asset file not found
+        }
+        return ranges
+    }
+
+    private fun longToIp(ip: Long): String {
+        return "${(ip shr 24) and 0xFF}.${(ip shr 16) and 0xFF}.${(ip shr 8) and 0xFF}.${ip and 0xFF}"
     }
 
     override fun scanResolvers(

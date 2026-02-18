@@ -1,6 +1,6 @@
 package app.slipnet.data.native
 
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.TrafficStats
 import kotlinx.coroutines.flow.MutableStateFlow

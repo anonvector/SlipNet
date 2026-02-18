@@ -12,6 +12,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -85,8 +86,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.FlowRow
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ScanMode
+import app.slipnet.tunnel.GeoBypassCountry
 
 private val WorkingGreen = Color(0xFF4CAF50)
 
@@ -193,8 +196,13 @@ fun DnsScannerScreen(
                 resolverCount = uiState.resolverList.size,
                 listSource = uiState.listSource,
                 isLoading = uiState.isLoadingList,
+                selectedCountry = uiState.selectedCountry,
+                sampleCount = uiState.sampleCount,
                 onLoadDefault = { viewModel.loadDefaultList() },
-                onImportFile = { filePickerLauncher.launch("text/*") }
+                onImportFile = { filePickerLauncher.launch("text/*") },
+                onSelectCountry = { viewModel.updateSelectedCountry(it) },
+                onSelectSampleCount = { viewModel.updateSampleCount(it) },
+                onGenerateCountryList = { viewModel.loadCountryRangeList() }
             )
 
             // Recent DNS
@@ -517,14 +525,22 @@ private fun ScanModeChip(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ResolverListSection(
     resolverCount: Int,
     listSource: ListSource,
     isLoading: Boolean,
+    selectedCountry: GeoBypassCountry,
+    sampleCount: Int,
     onLoadDefault: () -> Unit,
-    onImportFile: () -> Unit
+    onImportFile: () -> Unit,
+    onSelectCountry: (GeoBypassCountry) -> Unit,
+    onSelectSampleCount: (Int) -> Unit,
+    onGenerateCountryList: () -> Unit
 ) {
+    var showCountryOptions by remember { mutableStateOf(listSource == ListSource.COUNTRY_RANGE) }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -580,6 +596,7 @@ private fun ResolverListSection(
                         text = when (listSource) {
                             ListSource.DEFAULT -> "Built-in list"
                             ListSource.IMPORTED -> "Imported from file"
+                            ListSource.COUNTRY_RANGE -> "${selectedCountry.displayName} IP range ($sampleCount random IPs)"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -589,10 +606,13 @@ private fun ResolverListSection(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
-                    onClick = onLoadDefault,
+                    onClick = {
+                        showCountryOptions = false
+                        onLoadDefault()
+                    },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(vertical = 10.dp)
@@ -600,14 +620,17 @@ private fun ResolverListSection(
                     Icon(
                         Icons.Default.Refresh,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Default")
+                    Spacer(Modifier.width(6.dp))
+                    Text("Default", maxLines = 1)
                 }
 
                 OutlinedButton(
-                    onClick = onImportFile,
+                    onClick = {
+                        showCountryOptions = false
+                        onImportFile()
+                    },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(vertical = 10.dp)
@@ -615,10 +638,118 @@ private fun ResolverListSection(
                     Icon(
                         Icons.Default.FileUpload,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Import")
+                    Spacer(Modifier.width(6.dp))
+                    Text("Import", maxLines = 1)
+                }
+
+                OutlinedButton(
+                    onClick = { showCountryOptions = !showCountryOptions },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(vertical = 10.dp),
+                    colors = if (showCountryOptions || listSource == ListSource.COUNTRY_RANGE) {
+                        ButtonDefaults.outlinedButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                    } else {
+                        ButtonDefaults.outlinedButtonColors()
+                    }
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Country", maxLines = 1)
+                }
+            }
+
+            // Country range options
+            AnimatedVisibility(visible = showCountryOptions) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Country selector
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Country",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            GeoBypassCountry.entries.forEach { country ->
+                                OptionChip(
+                                    selected = selectedCountry == country,
+                                    onClick = { onSelectCountry(country) },
+                                    label = country.displayName
+                                )
+                            }
+                        }
+                    }
+
+                    // Sample count selector
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Sample Size",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(1000, 2000, 5000, 10000).forEach { count ->
+                                OptionChip(
+                                    selected = sampleCount == count,
+                                    onClick = { onSelectSampleCount(count) },
+                                    label = count.toString()
+                                )
+                            }
+                        }
+                    }
+
+                    // Generate button
+                    FilledTonalButton(
+                        onClick = onGenerateCountryList,
+                        enabled = !isLoading,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text("Generate ${selectedCountry.displayName} IPs")
+                    }
+
+                    // Hint after generation
+                    AnimatedVisibility(
+                        visible = listSource == ListSource.COUNTRY_RANGE && !isLoading && resolverCount > 0
+                    ) {
+                        Text(
+                            text = "Ready! Scroll up and tap Start Scan to begin.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
         }
@@ -728,6 +859,58 @@ private fun RecentDnsSection(
                     Text("Apply Selected")
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun OptionChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String
+) {
+    val backgroundColor by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        label = "optionChipBg"
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+        label = "optionChipBorder"
+    )
+
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .border(
+                width = if (selected) 1.5.dp else 1.dp,
+                color = borderColor,
+                shape = RoundedCornerShape(10.dp)
+            )
+            .background(backgroundColor)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (selected) {
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface
+            )
         }
     }
 }

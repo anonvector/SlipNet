@@ -10,7 +10,10 @@ import app.slipnet.domain.model.ScanMode
 import app.slipnet.domain.model.ScannerState
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.repository.ResolverScannerRepository
+import app.slipnet.tunnel.GeoBypassCountry
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
@@ -32,7 +35,9 @@ data class DnsScannerUiState(
     val recentDnsResolvers: List<String> = emptyList(),
     val isLoadingList: Boolean = false,
     val error: String? = null,
-    val listSource: ListSource = ListSource.DEFAULT
+    val listSource: ListSource = ListSource.DEFAULT,
+    val selectedCountry: GeoBypassCountry = GeoBypassCountry.IR,
+    val sampleCount: Int = 2000
 ) {
     companion object {
         const val MAX_SELECTED_RESOLVERS = 3
@@ -47,14 +52,16 @@ data class DnsScannerUiState(
 
 enum class ListSource {
     DEFAULT,
-    IMPORTED
+    IMPORTED,
+    COUNTRY_RANGE
 }
 
 @HiltViewModel
 class DnsScannerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val scannerRepository: ResolverScannerRepository,
-    private val preferencesDataStore: PreferencesDataStore
+    private val preferencesDataStore: PreferencesDataStore,
+    @ApplicationContext private val appContext: android.content.Context
 ) : ViewModel() {
 
     private val profileId: Long? = savedStateHandle.get<Long>("profileId")?.takeIf { it != -1L }
@@ -137,6 +144,49 @@ class DnsScannerViewModel @Inject constructor(
 
     fun updateScanMode(scanMode: ScanMode) {
         _uiState.value = _uiState.value.copy(scanMode = scanMode)
+    }
+
+    fun updateSelectedCountry(country: GeoBypassCountry) {
+        _uiState.value = _uiState.value.copy(selectedCountry = country)
+    }
+
+    fun updateSampleCount(count: Int) {
+        _uiState.value = _uiState.value.copy(sampleCount = count)
+    }
+
+    fun loadCountryRangeList() {
+        val state = _uiState.value
+        _uiState.value = state.copy(isLoadingList = true)
+
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                val ips = scannerRepository.generateCountryRangeIps(
+                    context = appContext,
+                    countryCode = state.selectedCountry.code,
+                    count = state.sampleCount
+                )
+                if (ips.isEmpty()) {
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingList = false,
+                        error = "No CIDR ranges found for ${state.selectedCountry.displayName}"
+                    )
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        resolverList = ips,
+                        listSource = ListSource.COUNTRY_RANGE,
+                        scannerState = ScannerState(),
+                        selectedResolvers = emptySet(),
+                        isLoadingList = false,
+                        timeoutMs = "1500"
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isLoadingList = false,
+                    error = "Failed to generate IPs: ${e.message}"
+                )
+            }
+        }
     }
 
     fun toggleResolverSelection(host: String) {

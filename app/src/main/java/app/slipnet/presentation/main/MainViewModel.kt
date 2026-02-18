@@ -7,7 +7,6 @@ import app.slipnet.data.export.ConfigImporter
 import app.slipnet.data.export.ImportResult
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ConnectionState
-import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.PingResult
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
@@ -33,12 +32,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.net.URL
 import javax.inject.Inject
 
 data class ImportPreview(
@@ -393,7 +388,7 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(qrCodeData = null)
     }
 
-    // ── Ping All Profiles ───────────────────────────────────────────────
+    // ── Test Server Reachability (SSH-only) ────────────────────────────
 
     fun pingAllProfiles() {
         if (_uiState.value.isPingRunning) {
@@ -404,12 +399,13 @@ class MainViewModel @Inject constructor(
         val profiles = _uiState.value.profiles
         if (profiles.isEmpty()) return
 
-        // Initialize all as Pending, Snowflake as Skipped
+        // Only SSH profiles can be tested directly; others tunnel through
+        // DNS/Tor/etc. so a direct ping is misleading.
         val initial = profiles.associate { profile ->
-            profile.id to if (profile.tunnelType == TunnelType.SNOWFLAKE) {
-                PingResult.Skipped
-            } else {
+            profile.id to if (profile.tunnelType == TunnelType.SSH) {
                 PingResult.Pending
+            } else {
+                PingResult.Skipped
             }
         }
         _uiState.value = _uiState.value.copy(pingResults = initial, isPingRunning = true)
@@ -417,7 +413,7 @@ class MainViewModel @Inject constructor(
         pingJob = viewModelScope.launch {
             try {
                 for (profile in profiles) {
-                    if (profile.tunnelType == TunnelType.SNOWFLAKE) continue
+                    if (profile.tunnelType != TunnelType.SSH) continue
 
                     val result = pingProfile(profile)
                     _uiState.value = _uiState.value.copy(
@@ -438,7 +434,6 @@ class MainViewModel @Inject constructor(
 
     private sealed class PingTarget {
         data class Tcp(val host: String, val port: Int) : PingTarget()
-        data class DnsUdp(val host: String, val port: Int) : PingTarget()
     }
 
     private suspend fun pingProfile(profile: ServerProfile): PingResult {
@@ -448,7 +443,6 @@ class MainViewModel @Inject constructor(
             try {
                 when (target) {
                     is PingTarget.Tcp -> pingTcp(target.host, target.port)
-                    is PingTarget.DnsUdp -> pingDnsUdp(target.host, target.port)
                 }
             } catch (e: Exception) {
                 val msg = when (e) {
@@ -471,65 +465,11 @@ class MainViewModel @Inject constructor(
         return PingResult.Success(elapsed)
     }
 
-    /** Send a minimal DNS query over UDP and wait for a response. */
-    private fun pingDnsUdp(host: String, port: Int): PingResult {
-        val query = byteArrayOf(
-            0x00, 0x01,       // Transaction ID
-            0x01, 0x00,       // Flags: standard query, recursion desired
-            0x00, 0x01,       // Questions: 1
-            0x00, 0x00,       // Answers: 0
-            0x00, 0x00,       // Authority: 0
-            0x00, 0x00,       // Additional: 0
-            0x00,             // Root label (.)
-            0x00, 0x01,       // Type: A
-            0x00, 0x01        // Class: IN
-        )
-        val address = InetAddress.getByName(host)
-        val socket = DatagramSocket()
-        socket.soTimeout = 5000
-        val sendPacket = DatagramPacket(query, query.size, address, port)
-        val start = System.nanoTime()
-        socket.send(sendPacket)
-        val recvPacket = DatagramPacket(ByteArray(512), 512)
-        socket.receive(recvPacket)
-        val elapsed = (System.nanoTime() - start) / 1_000_000
-        socket.close()
-        return PingResult.Success(elapsed)
-    }
 
     private fun getPingTarget(profile: ServerProfile): PingTarget? {
         return when (profile.tunnelType) {
-            TunnelType.SSH -> {
-                PingTarget.Tcp(profile.domain, profile.sshPort)
-            }
-            TunnelType.DOH -> {
-                extractHostFromUrl(profile.dohUrl)?.let { PingTarget.Tcp(it, 443) }
-            }
-            TunnelType.DNSTT, TunnelType.DNSTT_SSH -> {
-                when (profile.dnsTransport) {
-                    DnsTransport.DOH -> {
-                        extractHostFromUrl(profile.dohUrl)?.let { PingTarget.Tcp(it, 443) }
-                    }
-                    DnsTransport.DOT -> {
-                        profile.resolvers.firstOrNull()?.let { PingTarget.Tcp(it.host, 853) }
-                    }
-                    DnsTransport.UDP -> {
-                        profile.resolvers.firstOrNull()?.let { PingTarget.DnsUdp(it.host, it.port) }
-                    }
-                }
-            }
-            TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH -> {
-                profile.resolvers.firstOrNull()?.let { PingTarget.DnsUdp(it.host, it.port) }
-            }
-            TunnelType.SNOWFLAKE -> null
-        }
-    }
-
-    private fun extractHostFromUrl(url: String): String? {
-        return try {
-            URL(url).host.takeIf { it.isNotEmpty() }
-        } catch (_: Exception) {
-            null
+            TunnelType.SSH -> PingTarget.Tcp(profile.domain, profile.sshPort)
+            else -> null
         }
     }
 }

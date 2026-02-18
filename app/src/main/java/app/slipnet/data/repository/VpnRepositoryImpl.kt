@@ -1,7 +1,7 @@
 package app.slipnet.data.repository
 
 import android.os.ParcelFileDescriptor
-import android.util.Log
+import app.slipnet.util.AppLog as Log
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
@@ -15,6 +15,7 @@ import app.slipnet.tunnel.DohBridge
 import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.ResolverConfig
 import app.slipnet.tunnel.SlipstreamBridge
+import app.slipnet.tunnel.DnsttSocksBridge
 import app.slipnet.tunnel.SlipstreamSocksBridge
 import app.slipnet.tunnel.SnowflakeBridge
 import app.slipnet.tunnel.SshTunnelBridge
@@ -83,7 +84,7 @@ class VpnRepositoryImpl @Inject constructor(
         profile: ServerProfile,
         portOverride: Int? = null,
         hostOverride: String? = null
-    ): Result<Unit> {
+    ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
         val debugLogging = preferencesDataStore.debugLogging.first()
 
@@ -100,7 +101,7 @@ class VpnRepositoryImpl @Inject constructor(
         val listenHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
         val success = startSlipstreamClient(profile.domain, resolvers, profile, debugLogging, listenPort, listenHost)
 
-        return if (success) {
+        if (success) {
             Log.i(TAG, "Slipstream SOCKS5 proxy started successfully")
             currentTunnelType = TunnelType.SLIPSTREAM
             // Note: Caller should verify proxy is ready by checking the port
@@ -206,7 +207,8 @@ class VpnRepositoryImpl @Inject constructor(
         bridgePort: Int,
         bridgeHost: String,
         socksUsername: String? = null,
-        socksPassword: String? = null
+        socksPassword: String? = null,
+        dnsServer: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val result = SlipstreamSocksBridge.start(
             slipstreamPort = slipstreamPort,
@@ -214,12 +216,41 @@ class VpnRepositoryImpl @Inject constructor(
             listenPort = bridgePort,
             listenHost = bridgeHost,
             socksUsername = socksUsername,
-            socksPassword = socksPassword
+            socksPassword = socksPassword,
+            dnsServer = dnsServer
         )
         if (result.isSuccess) {
             Log.i(TAG, "SlipstreamSocksBridge started on $bridgeHost:$bridgePort -> $slipstreamHost:$slipstreamPort")
         } else {
             Log.e(TAG, "Failed to start SlipstreamSocksBridge: ${result.exceptionOrNull()?.message}")
+        }
+        result
+    }
+
+    /**
+     * Start DnsttSocksBridge — a middleman SOCKS5 proxy for DNSTT standalone.
+     * Chains CONNECT to DNSTT's raw tunnel (→ Dante) and handles FWD_UDP (DNS) via worker pool.
+     */
+    suspend fun startDnsttSocksBridge(
+        dnsttPort: Int,
+        dnsttHost: String,
+        bridgePort: Int,
+        bridgeHost: String,
+        socksUsername: String? = null,
+        socksPassword: String? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val result = DnsttSocksBridge.start(
+            dnsttPort = dnsttPort,
+            dnsttHost = dnsttHost,
+            listenPort = bridgePort,
+            listenHost = bridgeHost,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword
+        )
+        if (result.isSuccess) {
+            Log.i(TAG, "DnsttSocksBridge started on $bridgeHost:$bridgePort -> $dnsttHost:$dnsttPort")
+        } else {
+            Log.e(TAG, "Failed to start DnsttSocksBridge: ${result.exceptionOrNull()?.message}")
         }
         result
     }
@@ -293,12 +324,12 @@ class VpnRepositoryImpl @Inject constructor(
 
         val socksPort = socksPortOverride ?: preferencesDataStore.proxyListenPort.first()
         val disableQuic = preferencesDataStore.disableQuic.first()
-        // Only DNSTT sends SOCKS5 auth (remote Dante server supports it).
-        // All other tunnel types use local bridges/proxies that don't support auth:
+        // All tunnel types use local bridges that handle Dante auth:
+        // DNSTT: DnsttSocksBridge handles auth
         // SSH/DNSTT_SSH/SLIPSTREAM_SSH: SSH handles auth, local SOCKS5 is no-auth
-        // SLIPSTREAM: SlipstreamSocksBridge is no-auth
+        // SLIPSTREAM: SlipstreamSocksBridge handles auth
         // DOH: DohBridge is no-auth
-        val useAuth = profile.tunnelType == TunnelType.DNSTT
+        val useAuth = false
         val enableUdpTunneling = true
         val socksUsername = if (useAuth) profile.socksUsername else null
         val socksPassword = if (useAuth) profile.socksPassword else null

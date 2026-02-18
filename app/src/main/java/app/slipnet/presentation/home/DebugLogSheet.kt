@@ -127,7 +127,7 @@ fun DebugLogSheet(onDismiss: () -> Unit) {
                     .padding(horizontal = 8.dp)
                     .horizontalScroll(horizontalScrollState)
             ) {
-                items(lines) { logEntry ->
+                items(lines, key = { it.id }) { logEntry ->
                     Text(
                         text = logEntry.raw,
                         fontFamily = FontFamily.Monospace,

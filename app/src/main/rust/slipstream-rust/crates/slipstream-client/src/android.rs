@@ -309,6 +309,22 @@ fn start_client_impl<'local>(
         }
     }
 
+    // Wait for any abandoned thread to finish. After nativeStop abandons a thread,
+    // SHOULD_SHUTDOWN stays true so the thread can see it and exit. Wait here for
+    // that to happen before resetting the flag for the new thread.
+    if !IS_THREAD_DONE.load(Ordering::SeqCst) {
+        info!("Waiting for previous client thread to finish...");
+        for _ in 0..30 {
+            if IS_THREAD_DONE.load(Ordering::SeqCst) {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if !IS_THREAD_DONE.load(Ordering::SeqCst) {
+            warn!("Previous client thread still running, proceeding anyway");
+        }
+    }
+
     // Reset state
     SHOULD_SHUTDOWN.store(false, Ordering::SeqCst);
     IS_LISTENER_READY.store(false, Ordering::SeqCst);
@@ -588,19 +604,21 @@ pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStopSlipst
         if let Some(handle) = guard.take() {
             std::mem::forget(handle);
         }
+        // Leave SHOULD_SHUTDOWN=true so the abandoned thread sees it and exits,
+        // releasing the TCP listener port. The next nativeStart resets it.
     } else {
         // Join the thread if it exited
         let mut guard = CLIENT_THREAD.lock().unwrap();
         if let Some(handle) = guard.take() {
             let _ = handle.join();
         }
+        SHOULD_SHUTDOWN.store(false, Ordering::SeqCst);
     }
 
     // Reset state
     IS_RUNNING.store(false, Ordering::SeqCst);
     IS_LISTENER_READY.store(false, Ordering::SeqCst);
     IS_QUIC_READY.store(false, Ordering::SeqCst);
-    SHOULD_SHUTDOWN.store(false, Ordering::SeqCst);
 
     info!("Client stopped");
 }

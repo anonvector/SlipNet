@@ -24,10 +24,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -332,7 +337,7 @@ fun EditProfileScreen(
                         value = uiState.resolvers,
                         onValueChange = { viewModel.updateResolvers(it) },
                         label = { Text("DNS Resolver") },
-                        placeholder = { Text(if (isDoT) "8.8.8.8:853" else "1.1.1.1:53") },
+                        placeholder = { Text(if (isDoT) "e.g. 8.8.8.8:853" else "e.g. 8.8.8.8:53") },
                         isError = uiState.resolversError != null,
                         supportingText = {
                             Text(uiState.resolversError ?: if (isDoT) "DNS-over-TLS server (IP:853)" else "DNS server address (IP:port)")
@@ -518,6 +523,13 @@ fun EditProfileScreen(
                                 .padding(vertical = 12.dp, horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            Spacer(Modifier.width(4.dp))
+                            Icon(
+                                Icons.Default.SmartToy,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
                             Spacer(Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
@@ -541,17 +553,18 @@ fun EditProfileScreen(
                     }
 
                     val context = LocalContext.current
+                    data class BridgeLink(val label: String, val description: String, val url: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
                     val bridgeLinks = listOf(
-                        Triple("Telegram", "Message @GetBridgesBot", "https://t.me/GetBridgesBot"),
-                        Triple("Web", "bridges.torproject.org", "https://bridges.torproject.org"),
-                        Triple("Gmail or Riseup", "bridges@torproject.org", "mailto:bridges@torproject.org")
+                        BridgeLink("Telegram", "Message @GetBridgesBot", "https://t.me/GetBridgesBot", Icons.Default.Send),
+                        BridgeLink("Web", "bridges.torproject.org", "https://bridges.torproject.org", Icons.Default.Language),
+                        BridgeLink("Gmail or Riseup", "bridges@torproject.org", "mailto:bridges@torproject.org", Icons.Default.Email)
                     )
-                    bridgeLinks.forEach { (label, description, url) ->
+                    bridgeLinks.forEach { link ->
                         Surface(
                             onClick = {
                                 val intent = android.content.Intent(
                                     android.content.Intent.ACTION_VIEW,
-                                    android.net.Uri.parse(url)
+                                    android.net.Uri.parse(link.url)
                                 )
                                 context.startActivity(intent)
                             },
@@ -565,15 +578,22 @@ fun EditProfileScreen(
                                     .padding(vertical = 12.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                Spacer(Modifier.width(4.dp))
+                                Icon(
+                                    link.icon,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
                                 Spacer(Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = label,
+                                        text = link.label,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Text(
-                                        text = description,
+                                        text = link.description,
                                         style = MaterialTheme.typography.bodyLarge
                                     )
                                 }

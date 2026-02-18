@@ -14,8 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
-val appVersionName = "1.8.3"
-val appVersionCode = 23
+val appVersionName = "1.8.4"
+val appVersionCode = 24
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"

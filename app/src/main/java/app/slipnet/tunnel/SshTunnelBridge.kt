@@ -47,10 +47,12 @@ object SshTunnelBridge {
     private const val CHANNEL_ACQUIRE_TIMEOUT_MS = 30000L
     private const val CHANNEL_RETRY_COUNT = 2
     private const val CHANNEL_RETRY_DELAY_MS = 100L  // fast retry
-    private const val DNS_POOL_SIZE = 8
+    private const val DNS_POOL_SIZE = 10
     private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
     // systemd-resolved stub listener (standard on Ubuntu/Debian servers)
     private const val SERVER_DNS_HOST = "127.0.0.53"
+    // Fallback DNS when server has no local resolver (works on any server)
+    private const val FALLBACK_DNS_HOST = "8.8.8.8"
     // Auto cipher: prefer hardware-accelerated ciphers first
     private const val AUTO_CIPHER_ORDER =
         "aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes256-ctr"
@@ -534,6 +536,23 @@ object SshTunnelBridge {
                     dnsWorkers[i] = DnsWorker(ch, ch.inputStream, ch.outputStream)
                     logd("DNS worker ${i + 1}/$DNS_POOL_SIZE ready → $dnsTargetHost:53")
                 } catch (e: Exception) {
+                    if (i == 0 && dnsTargetHost == SERVER_DNS_HOST) {
+                        // Server has no local resolver — fall back to public DNS
+                        Log.w(TAG, "DNS worker 1 failed on $SERVER_DNS_HOST, falling back to $FALLBACK_DNS_HOST")
+                        dnsTargetHost = FALLBACK_DNS_HOST
+                        try {
+                            val fallbackCh = s.openChannel("direct-tcpip") as ChannelDirectTCPIP
+                            fallbackCh.setHost(dnsTargetHost)
+                            fallbackCh.setPort(53)
+                            fallbackCh.connect(CHANNEL_CONNECT_TIMEOUT_MS)
+                            dnsWorkers[i] = DnsWorker(fallbackCh, fallbackCh.inputStream, fallbackCh.outputStream)
+                            logd("DNS worker 1/$DNS_POOL_SIZE ready → $dnsTargetHost:53 (fallback)")
+                            continue
+                        } catch (e2: Exception) {
+                            logd("DNS worker 1 fallback also failed: ${e2.message}")
+                            break
+                        }
+                    }
                     logd("DNS worker ${i + 1} failed: ${e.message}")
                     break
                 }

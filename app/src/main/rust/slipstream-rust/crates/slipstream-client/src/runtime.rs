@@ -160,6 +160,12 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
     let mut reconnect_delay = Duration::from_millis(RECONNECT_SLEEP_MIN_MS);
 
     loop {
+        // Check for shutdown before QUIC setup (picoquic_create etc. can be slow)
+        if should_shutdown() {
+            info!("Shutdown signal received before QUIC setup, exiting");
+            return Ok(0);
+        }
+
         let mut resolvers = resolve_resolvers(config.resolvers, mtu, config.debug_poll)?;
         if resolvers.is_empty() {
             return Err(ClientError::new("At least one resolver is required"));

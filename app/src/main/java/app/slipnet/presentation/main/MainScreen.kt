@@ -295,7 +295,7 @@ fun MainScreen(
                         ) {
                             DropdownMenuItem(
                                 text = {
-                                    Text(if (uiState.isPingRunning) "Stop Ping Test" else "Ping All Profiles")
+                                    Text(if (uiState.isPingRunning) "Stop Reachability Test" else "Test Server Reachability")
                                 },
                                 onClick = {
                                     showOverflowMenu = false

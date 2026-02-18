@@ -11,7 +11,10 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.locks.ReentrantLock
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
@@ -24,15 +27,14 @@ import javax.net.ssl.SSLSocketFactory
  * hev-socks5-tunnel and Slipstream:
  *
  * - CONNECT (0x01): Chains to Slipstream → Dante (with user/pass auth)
- * - FWD_UDP (0x05) DNS: DNS-over-TCP through Dante to clean DNS (1.1.1.1),
- *   falls back to DoH (Cloudflare 1.1.1.1) if TCP fails.
- *   Always uses 1.1.1.1 to prevent poisoned results from censored DNS servers.
+ * - FWD_UDP (0x05) DNS: DNS-over-TCP through persistent worker pool via Dante,
+ *   falls back to DoH (Cloudflare 1.1.1.1) if all workers fail.
  * - FWD_UDP (0x05) non-DNS: Dropped silently (browser falls back to TCP CONNECT)
  *
  * Traffic flow:
  * App -> TUN -> hev-socks5-tunnel -> SlipstreamSocksBridge (proxyPort+1)
  *   TCP: -> SOCKS5 CONNECT (with auth) -> Slipstream (proxyPort) -> Dante -> Server
- *   DNS: -> FWD_UDP -> DNS-over-TCP via Dante -> 1.1.1.1 (fallback: DoH via 1.1.1.1)
+ *   DNS: -> FWD_UDP -> persistent DNS worker pool (via Dante) -> DNS server
  */
 object SlipstreamSocksBridge {
     private const val TAG = "SlipstreamSocksBridge"
@@ -41,15 +43,17 @@ object SlipstreamSocksBridge {
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
-    private const val BUFFER_SIZE = 32768
+    private const val BUFFER_SIZE = 65536  // 64KB for better throughput (was 32KB)
     private const val TCP_CONNECT_TIMEOUT_MS = 10000
-    // Clean DNS server address bytes (SOCKS5 format: ATYP_IPV4 + 1.1.1.1 + port 53)
-    // Used instead of user's resolver to prevent DNS poisoning from censored DNS servers
-    private val CLEAN_DNS_ADDR = byteArrayOf(
-        0x01,                                   // ATYP: IPv4
-        0x01, 0x01, 0x01, 0x01,                 // 1.1.1.1
-        0x00, 0x35                              // port 53
-    )
+    private const val DNS_POOL_SIZE = 10
+    private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
+    private const val DNS_WORKER_TIMEOUT_MS = 15_000
+    // Clean DNS resolved at the REMOTE server (through Dante SOCKS5 CONNECT).
+    // Unlike SSH (direct-tcpip bypasses Dante), Slipstream goes through Dante which
+    // may block or mangle CONNECT to localhost (127.0.0.53). Use public DNS instead.
+    private const val PRIMARY_DNS_HOST = "1.1.1.1"
+    // Fallback if primary is unreachable through Dante
+    private const val FALLBACK_DNS_HOST = "8.8.8.8"
 
     private var slipstreamHost: String = "127.0.0.1"
     private var slipstreamPort: Int = 0
@@ -59,6 +63,27 @@ object SlipstreamSocksBridge {
     private var acceptorThread: Thread? = null
     private val running = AtomicBoolean(false)
     private val connectionThreads = CopyOnWriteArrayList<Thread>()
+    // Track all remote sockets (connections to Slipstream) for explicit cleanup
+    private val remoteSockets = CopyOnWriteArrayList<Socket>()
+
+    // --- DNS Worker Pool ---
+    // Persistent SOCKS5 connections through Slipstream→Dante to DNS server.
+    // Each worker holds an open TCP connection to the DNS server (via SOCKS5 CONNECT),
+    // allowing DNS-over-TCP queries without per-query connection overhead (~4 RTTs saved).
+    private class DnsWorker(
+        val socket: Socket,
+        val input: InputStream,
+        val output: OutputStream,
+        val lock: ReentrantLock = ReentrantLock()
+    ) {
+        val isAlive: Boolean get() = !socket.isClosed && socket.isConnected
+    }
+
+    private val dnsWorkers = arrayOfNulls<DnsWorker>(DNS_POOL_SIZE)
+    private val dnsRoundRobin = AtomicInteger(0)
+    private var dnsTargetHost: String = PRIMARY_DNS_HOST
+    private val workerCreationLocks = Array(DNS_POOL_SIZE) { ReentrantLock() }
+    private var dnsKeepaliveThread: Thread? = null
 
     fun start(
         slipstreamPort: Int,
@@ -66,12 +91,14 @@ object SlipstreamSocksBridge {
         listenPort: Int,
         listenHost: String = "127.0.0.1",
         socksUsername: String? = null,
-        socksPassword: String? = null
+        socksPassword: String? = null,
+        dnsServer: String? = null
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting Slipstream SOCKS5 bridge")
         Log.i(TAG, "  Slipstream: $slipstreamHost:$slipstreamPort")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  DNS: ${dnsServer ?: PRIMARY_DNS_HOST} (fallback: $FALLBACK_DNS_HOST)")
         Log.i(TAG, "========================================")
 
         stop()
@@ -79,6 +106,7 @@ object SlipstreamSocksBridge {
         this.slipstreamPort = slipstreamPort
         this.socksUsername = socksUsername
         this.socksPassword = socksPassword
+        this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
 
         return try {
             val ss = bindServerSocket(listenHost, listenPort)
@@ -99,6 +127,9 @@ object SlipstreamSocksBridge {
                 }
                 logd("Acceptor thread exited")
             }, "slip-bridge-acceptor").also { it.isDaemon = true; it.start() }
+
+            // Pre-warm DNS worker pool in background
+            prewarmDnsWorkers()
 
             Log.i(TAG, "Bridge started on $listenHost:$listenPort")
             Result.success(Unit)
@@ -121,6 +152,25 @@ object SlipstreamSocksBridge {
         acceptorThread?.interrupt()
         acceptorThread = null
 
+        // Stop DNS keepalive
+        dnsKeepaliveThread?.interrupt()
+        dnsKeepaliveThread = null
+
+        // Close all DNS workers (connections to Slipstream port)
+        for (i in 0 until DNS_POOL_SIZE) {
+            val worker = dnsWorkers[i]
+            dnsWorkers[i] = null
+            if (worker != null) {
+                try { worker.socket.close() } catch (_: Exception) {}
+            }
+        }
+
+        // Close all remote sockets (CONNECT chains to Slipstream port)
+        for (sock in remoteSockets) {
+            try { sock.close() } catch (_: Exception) {}
+        }
+        remoteSockets.clear()
+
         for (thread in connectionThreads) {
             thread.interrupt()
         }
@@ -134,6 +184,253 @@ object SlipstreamSocksBridge {
     fun isClientHealthy(): Boolean {
         val ss = serverSocket ?: return false
         return running.get() && !ss.isClosed
+    }
+
+    // --- DNS Worker Pool Management ---
+
+    /**
+     * Pre-warm DNS worker pool: open persistent SOCKS5 connections to the DNS server
+     * through Slipstream→Dante. Each worker is a ready-to-use DNS-over-TCP channel.
+     */
+    private fun prewarmDnsWorkers() {
+        Log.i(TAG, "DNS workers target: $dnsTargetHost:53 (fallback: $FALLBACK_DNS_HOST, pool=$DNS_POOL_SIZE)")
+        val thread = Thread({
+            for (i in 0 until DNS_POOL_SIZE) {
+                if (!running.get() || Thread.currentThread().isInterrupted) break
+                try {
+                    val worker = createDnsWorker()
+                    if (worker != null) {
+                        dnsWorkers[i] = worker
+                        logd("DNS worker ${i + 1}/$DNS_POOL_SIZE ready → $dnsTargetHost:53")
+                    } else {
+                        logd("DNS worker ${i + 1} creation returned null")
+                        break
+                    }
+                } catch (e: Exception) {
+                    if (i == 0 && dnsTargetHost == PRIMARY_DNS_HOST) {
+                        // Primary DNS unreachable — fall back to secondary public DNS
+                        Log.w(TAG, "DNS worker 1 failed on $PRIMARY_DNS_HOST, falling back to $FALLBACK_DNS_HOST")
+                        dnsTargetHost = FALLBACK_DNS_HOST
+                        try {
+                            val fallbackWorker = createDnsWorker()
+                            if (fallbackWorker != null) {
+                                dnsWorkers[i] = fallbackWorker
+                                logd("DNS worker 1/$DNS_POOL_SIZE ready → $dnsTargetHost:53 (fallback)")
+                                continue
+                            }
+                        } catch (e2: Exception) {
+                            logd("DNS worker 1 fallback also failed: ${e2.message}")
+                            break
+                        }
+                    }
+                    logd("DNS worker ${i + 1} failed: ${e.message}")
+                    break
+                }
+            }
+            val count = dnsWorkers.count { it != null }
+            Log.i(TAG, "DNS worker pool: $count/$DNS_POOL_SIZE ready → $dnsTargetHost:53")
+        }, "slip-dns-prewarm")
+        thread.isDaemon = true
+        thread.start()
+        startDnsKeepalive()
+    }
+
+    /**
+     * Create a single DNS worker: Socket → Slipstream → SOCKS5 auth → CONNECT to DNS:53.
+     * Returns a ready-to-use DnsWorker, or null on failure.
+     */
+    private fun createDnsWorker(): DnsWorker? {
+        val sock = Socket()
+        try {
+            sock.connect(InetSocketAddress(slipstreamHost, slipstreamPort), TCP_CONNECT_TIMEOUT_MS)
+            sock.soTimeout = DNS_WORKER_TIMEOUT_MS
+            sock.tcpNoDelay = true
+
+            val sockIn = sock.getInputStream()
+            val sockOut = sock.getOutputStream()
+
+            // SOCKS5 auth with Dante
+            if (!performSocksAuth(sockIn, sockOut)) {
+                sock.close()
+                return null
+            }
+
+            // SOCKS5 CONNECT to DNS server:53
+            val dnsAddr = buildDnsTargetAddr(dnsTargetHost)
+            val connectReq = byteArrayOf(0x05, 0x01, 0x00) + dnsAddr
+            sockOut.write(connectReq)
+            sockOut.flush()
+
+            if (!readSocksConnectResponse(sockIn)) {
+                logd("DNS worker: CONNECT to $dnsTargetHost:53 failed")
+                sock.close()
+                return null
+            }
+
+            return DnsWorker(sock, sockIn, sockOut)
+        } catch (e: Exception) {
+            try { sock.close() } catch (_: Exception) {}
+            throw e
+        }
+    }
+
+    /**
+     * Recreate a dead DNS worker with creation lock to prevent duplicate recreation.
+     */
+    private fun recreateDnsWorkerSync(idx: Int): DnsWorker? {
+        try {
+            if (!workerCreationLocks[idx].tryLock(1, TimeUnit.SECONDS)) return null
+        } catch (_: InterruptedException) {
+            return null
+        }
+        try {
+            // Double-check: another thread may have already recreated it
+            val existing = dnsWorkers[idx]
+            if (existing != null && existing.isAlive) return existing
+            existing?.let { try { it.socket.close() } catch (_: Exception) {} }
+
+            if (!running.get()) return null
+
+            val worker = createDnsWorker()
+            dnsWorkers[idx] = worker
+            if (worker != null) logd("DNS worker $idx recreated")
+            return worker
+        } catch (e: Exception) {
+            logd("DNS worker $idx recreation failed: ${e.message}")
+            dnsWorkers[idx] = null
+            return null
+        } finally {
+            workerCreationLocks[idx].unlock()
+        }
+    }
+
+    /**
+     * Periodic health check: detect dead workers and recreate them proactively.
+     */
+    private fun startDnsKeepalive() {
+        dnsKeepaliveThread?.interrupt()
+        dnsKeepaliveThread = Thread({
+            try {
+                Thread.sleep(DNS_KEEPALIVE_INTERVAL_MS)
+            } catch (_: InterruptedException) { return@Thread }
+
+            while (running.get() && !Thread.currentThread().isInterrupted) {
+                var deadCount = 0
+                for (i in 0 until DNS_POOL_SIZE) {
+                    val worker = dnsWorkers[i]
+                    if (worker == null || !worker.isAlive) {
+                        deadCount++
+                        recreateDnsWorkerSync(i)
+                    }
+                }
+                if (deadCount > 0) {
+                    logd("DNS keepalive: $deadCount dead workers found, recreation attempted")
+                }
+
+                try {
+                    Thread.sleep(DNS_KEEPALIVE_INTERVAL_MS)
+                } catch (_: InterruptedException) { break }
+            }
+        }, "slip-dns-keepalive").also { it.isDaemon = true; it.start() }
+    }
+
+    /**
+     * Build SOCKS5 address bytes for the DNS target (ATYP_IPV4 + IP + port 53).
+     */
+    private fun buildDnsTargetAddr(host: String): ByteArray {
+        val parts = host.split(".")
+        return byteArrayOf(
+            0x01,                               // ATYP: IPv4
+            parts[0].toInt().toByte(),
+            parts[1].toInt().toByte(),
+            parts[2].toInt().toByte(),
+            parts[3].toInt().toByte(),
+            0x00, 0x35                          // port 53
+        )
+    }
+
+    /**
+     * Send a DNS-over-TCP query on a persistent worker connection.
+     * Returns DNS response payload, or null on bad response.
+     */
+    private fun sendDnsQuery(worker: DnsWorker, payload: ByteArray): ByteArray? {
+        val lenBuf = ByteArray(2)
+        lenBuf[0] = ((payload.size shr 8) and 0xFF).toByte()
+        lenBuf[1] = (payload.size and 0xFF).toByte()
+        worker.output.write(lenBuf)
+        worker.output.write(payload)
+        worker.output.flush()
+
+        val respLen = ByteArray(2)
+        worker.input.readFully(respLen)
+        val responseLength = ((respLen[0].toInt() and 0xFF) shl 8) or (respLen[1].toInt() and 0xFF)
+
+        if (responseLength <= 0 || responseLength > 65535) return null
+
+        val response = ByteArray(responseLength)
+        worker.input.readFully(response)
+        return response
+    }
+
+    /**
+     * Forward DNS query through persistent worker pool with multi-phase resilience:
+     *
+     * Phase 1: Try ALL existing live workers round-robin (non-blocking lock).
+     * Phase 2: If all dead/busy, recreate ONE worker inline and use it.
+     * Phase 3: Last resort — open a per-query connection (still through Slipstream).
+     * Phase 4: DoH fallback if all TCP methods fail.
+     */
+    private fun forwardDnsPooled(payload: ByteArray): ByteArray? {
+        val startIdx = (dnsRoundRobin.getAndIncrement() and 0x7FFFFFFF) % DNS_POOL_SIZE
+
+        // Phase 1: Try all existing live workers (non-blocking lock to skip busy ones)
+        for (i in 0 until DNS_POOL_SIZE) {
+            val idx = (startIdx + i) % DNS_POOL_SIZE
+            val worker = dnsWorkers[idx] ?: continue
+            if (!worker.isAlive) {
+                dnsWorkers[idx] = null
+                continue
+            }
+            if (!worker.lock.tryLock()) continue
+            try {
+                if (!worker.isAlive) {
+                    dnsWorkers[idx] = null
+                    continue
+                }
+                val result = sendDnsQuery(worker, payload)
+                if (result != null) return result
+            } catch (e: Exception) {
+                logd("FWD_UDP: DNS worker $idx failed: ${e.message}")
+                dnsWorkers[idx] = null
+            } finally {
+                worker.lock.unlock()
+            }
+        }
+
+        // Phase 2: All workers dead/busy — recreate one inline
+        for (i in 0 until DNS_POOL_SIZE) {
+            val idx = (startIdx + i) % DNS_POOL_SIZE
+            val newWorker = recreateDnsWorkerSync(idx) ?: continue
+            if (!newWorker.lock.tryLock(5, TimeUnit.SECONDS)) continue
+            try {
+                val result = sendDnsQuery(newWorker, payload)
+                if (result != null) return result
+            } catch (e: Exception) {
+                logd("FWD_UDP: recreated DNS worker $idx failed: ${e.message}")
+                dnsWorkers[idx] = null
+            } finally {
+                newWorker.lock.unlock()
+            }
+            break
+        }
+
+        // Phase 3: Per-query fallback (old behavior — new connection per query)
+        logd("FWD_UDP: all workers failed, falling back to per-query connection")
+        val tcpResult = forwardDnsTcpOneShot(payload)
+        if (tcpResult != null) return tcpResult
+
+        // Phase 4: DoH fallback
+        return forwardDnsDoH(payload)
     }
 
     private fun bindServerSocket(host: String, port: Int): ServerSocket {
@@ -163,6 +460,8 @@ object SlipstreamSocksBridge {
                 clientSocket.use { socket ->
                     socket.soTimeout = 30000
                     socket.tcpNoDelay = true
+                    socket.receiveBufferSize = BUFFER_SIZE
+                    socket.sendBufferSize = BUFFER_SIZE
                     val input = socket.getInputStream()
                     val output = socket.getOutputStream()
 
@@ -358,6 +657,7 @@ object SlipstreamSocksBridge {
             remoteSocket = Socket()
             remoteSocket.connect(InetSocketAddress(slipstreamHost, slipstreamPort), TCP_CONNECT_TIMEOUT_MS)
             remoteSocket.tcpNoDelay = true
+            remoteSockets.add(remoteSocket)
         } catch (e: Exception) {
             logd("CONNECT: failed to connect to Slipstream: ${e.message}")
             if (sendReply) {
@@ -473,6 +773,7 @@ object SlipstreamSocksBridge {
                 } catch (_: Exception) {
                 } finally {
                     try { remote.close() } catch (_: Exception) {}
+                    remoteSockets.remove(remote)
                     t1.interrupt()
                 }
             }
@@ -485,6 +786,7 @@ object SlipstreamSocksBridge {
                 } catch (_: Exception) {}
             }
             try { remoteSocket.close() } catch (_: Exception) {}
+            remoteSockets.remove(remoteSocket)
         }
     }
 
@@ -517,7 +819,7 @@ object SlipstreamSocksBridge {
 
     /**
      * Handle FWD_UDP (cmd 0x05) — same wire format as SshTunnelBridge/DohBridge.
-     * DNS (port 53): DNS-over-TCP through Dante (user's resolver), DoH fallback (Cloudflare).
+     * DNS (port 53): through persistent worker pool, DoH fallback.
      * Non-DNS UDP: dropped silently (browser falls back to TCP CONNECT).
      */
     private fun handleFwdUdp(input: InputStream, output: OutputStream) {
@@ -553,10 +855,8 @@ object SlipstreamSocksBridge {
 
             try {
                 val response = if (dest.second == 53) {
-                    // DNS: try DNS-over-TCP through tunnel (clean 1.1.1.1),
-                    // fall back to DoH through tunnel (Cloudflare) if TCP fails
-                    forwardDnsTcp(payload)
-                        ?: forwardDnsDoH(payload)
+                    // DNS: use persistent worker pool with multi-phase fallback
+                    forwardDnsPooled(payload)
                 } else {
                     // Non-DNS UDP (QUIC, etc.): drop silently.
                     // Browser falls back to TCP → CONNECT through Slipstream.
@@ -585,43 +885,32 @@ object SlipstreamSocksBridge {
     }
 
     /**
-     * Forward DNS query via DNS-over-TCP through Slipstream → Dante tunnel.
-     * Always uses clean DNS (1.1.1.1) to prevent poisoned results from censored
-     * DNS servers (e.g. Iranian DNS that returns blocked IPs for foreign sites).
-     *
-     * 1. SOCKS5 CONNECT to 1.1.1.1:53 through Dante
-     * 2. Send DNS query with TCP length prefix (2 bytes big-endian)
-     * 3. Read DNS response with TCP length prefix
-     *
-     * @param payload DNS query payload (raw UDP DNS packet)
-     * @return DNS response payload, or null on failure
+     * One-shot DNS-over-TCP through a new Slipstream connection (Phase 3 fallback).
+     * Used when all persistent workers are dead and recreation failed.
      */
-    private fun forwardDnsTcp(payload: ByteArray): ByteArray? {
+    private fun forwardDnsTcpOneShot(payload: ByteArray): ByteArray? {
         var sock: Socket? = null
         try {
-            // Step 1: Connect to Slipstream
             sock = Socket()
             sock.connect(InetSocketAddress(slipstreamHost, slipstreamPort), TCP_CONNECT_TIMEOUT_MS)
-            sock.soTimeout = 10000
+            sock.soTimeout = DNS_WORKER_TIMEOUT_MS
             sock.tcpNoDelay = true
 
             val sockIn = sock.getInputStream()
             val sockOut = sock.getOutputStream()
 
-            // Step 2: SOCKS5 auth with Dante
             if (!performSocksAuth(sockIn, sockOut)) return null
 
-            // Step 3: SOCKS5 CONNECT to clean DNS (1.1.1.1:53) through Dante
-            val connectReq = byteArrayOf(0x05, 0x01, 0x00) + CLEAN_DNS_ADDR
+            val dnsAddr = buildDnsTargetAddr(dnsTargetHost)
+            val connectReq = byteArrayOf(0x05, 0x01, 0x00) + dnsAddr
             sockOut.write(connectReq)
             sockOut.flush()
 
             if (!readSocksConnectResponse(sockIn)) {
-                logd("DNS-TCP: CONNECT to 1.1.1.1:53 failed")
+                logd("DNS-TCP oneshot: CONNECT to $dnsTargetHost:53 failed")
                 return null
             }
 
-            // Step 4: DNS-over-TCP — send query with 2-byte length prefix
             val lenPrefix = byteArrayOf(
                 ((payload.size shr 8) and 0xFF).toByte(),
                 (payload.size and 0xFF).toByte()
@@ -630,23 +919,22 @@ object SlipstreamSocksBridge {
             sockOut.write(payload)
             sockOut.flush()
 
-            // Step 5: Read DNS response with 2-byte length prefix
             val respLenBytes = ByteArray(2)
             sockIn.readFully(respLenBytes)
             val respLen = ((respLenBytes[0].toInt() and 0xFF) shl 8) or (respLenBytes[1].toInt() and 0xFF)
 
             if (respLen <= 0 || respLen > 65535) {
-                logd("DNS-TCP: invalid response length $respLen")
+                logd("DNS-TCP oneshot: invalid response length $respLen")
                 return null
             }
 
             val response = ByteArray(respLen)
             sockIn.readFully(response)
 
-            logd("DNS-TCP: 1.1.1.1 resolved (${response.size} bytes)")
+            logd("DNS-TCP oneshot: $dnsTargetHost resolved (${response.size} bytes)")
             return response
         } catch (e: Exception) {
-            logd("DNS-TCP: 1.1.1.1 failed: ${e.message}")
+            logd("DNS-TCP oneshot: $dnsTargetHost failed: ${e.message}")
             return null
         } finally {
             try { sock?.close() } catch (_: Exception) {}
@@ -672,7 +960,7 @@ object SlipstreamSocksBridge {
             // Step 1: Connect to Slipstream (loopback)
             rawSocket = Socket()
             rawSocket.connect(InetSocketAddress(slipstreamHost, slipstreamPort), TCP_CONNECT_TIMEOUT_MS)
-            rawSocket.soTimeout = 10000
+            rawSocket.soTimeout = DNS_WORKER_TIMEOUT_MS
             rawSocket.tcpNoDelay = true
 
             val rawIn = rawSocket.getInputStream()

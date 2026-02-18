@@ -1,5 +1,6 @@
 package app.slipnet.domain.repository
 
+import android.content.Context
 import app.slipnet.domain.model.ResolverScanResult
 import app.slipnet.domain.model.ScanMode
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +18,14 @@ interface ResolverScannerRepository {
      * Parse a text file content into a list of IP addresses
      */
     fun parseResolverList(content: String): List<String>
+
+    /**
+     * Generate random IPs from a country's CIDR ranges
+     * @param context Android context to access assets
+     * @param countryCode Country code (e.g. "ir", "cn", "ru")
+     * @param count Number of random IPs to generate
+     */
+    fun generateCountryRangeIps(context: Context, countryCode: String, count: Int): List<String>
 
     /**
      * Scan a single resolver for DNS connectivity

@@ -24,7 +24,7 @@ abstract class SlipNetDatabase : RoomDatabase() {
 
         val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE server_profiles ADD COLUMN forward_dns_through_ssh INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN forward_dns_through_ssh INTEGER NOT NULL DEFAULT 0")
             }
         }
 
