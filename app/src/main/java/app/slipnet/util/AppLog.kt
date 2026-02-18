@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 data class LogEntry(val id: Long, val raw: String, val level: Char)
@@ -34,6 +35,11 @@ object AppLog {
     @Volatile var observerCount = 0
         private set
 
+    // Dirty flag: set by append(), cleared by flush().
+    // Avoids creating an ArrayList copy on every single log call — instead
+    // the UI polls via flushIfDirty() on each collection (every frame).
+    private val dirty = AtomicBoolean(false)
+
     private val dateFormat = object : ThreadLocal<SimpleDateFormat>() {
         override fun initialValue() = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
     }
@@ -50,7 +56,20 @@ object AppLog {
         synchronized(buffer) {
             buffer.addLast(entry)
             while (buffer.size > MAX_LINES) buffer.removeFirst()
-            if (observerCount > 0) {
+        }
+        if (observerCount > 0) {
+            dirty.set(true)
+        }
+    }
+
+    /**
+     * Copy the buffer to the StateFlow if anything changed since the last flush.
+     * Called by the debug sheet on a periodic timer (~100ms) so we batch many
+     * rapid log calls into a single ArrayList copy + recomposition.
+     */
+    fun flushIfDirty() {
+        if (dirty.compareAndSet(true, false)) {
+            synchronized(buffer) {
                 _lines.value = ArrayList(buffer)
             }
         }

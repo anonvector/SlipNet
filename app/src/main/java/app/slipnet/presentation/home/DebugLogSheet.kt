@@ -29,6 +29,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -52,6 +53,14 @@ fun DebugLogSheet(onDismiss: () -> Unit) {
         onDispose { AppLog.removeObserver() }
     }
 
+    // Flush dirty buffer → StateFlow every 100ms (batches rapid log calls)
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(100)
+            AppLog.flushIfDirty()
+        }
+    }
+
     val lines by AppLog.lines.collectAsState()
     val listState = rememberLazyListState()
     val clipboardManager = LocalClipboardManager.current
@@ -59,7 +68,7 @@ fun DebugLogSheet(onDismiss: () -> Unit) {
     // Auto-scroll to bottom when new lines arrive
     LaunchedEffect(lines.size) {
         if (lines.isNotEmpty()) {
-            listState.animateScrollToItem(lines.size - 1)
+            listState.scrollToItem(lines.size - 1)
         }
     }
 
