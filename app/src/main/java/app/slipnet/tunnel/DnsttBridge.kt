@@ -41,7 +41,8 @@ object DnsttBridge {
         tunnelDomain: String,
         publicKey: String,
         listenPort: Int,
-        listenHost: String = "127.0.0.1"
+        listenHost: String = "127.0.0.1",
+        authoritativeMode: Boolean = false
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting DNSTT client")
@@ -49,6 +50,7 @@ object DnsttBridge {
         Log.i(TAG, "  Tunnel Domain: $tunnelDomain")
         Log.i(TAG, "  Public Key: ${publicKey.take(16)}...")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  Authoritative Mode: $authoritativeMode")
         Log.i(TAG, "========================================")
 
         // Validate inputs
@@ -85,6 +87,7 @@ object DnsttBridge {
 
             // Create the DNSTT client via Go mobile bindings
             val newClient = Mobile.newClient(dnsAddr, tunnelDomain, publicKey, listenAddr)
+            newClient.setAuthoritativeMode(authoritativeMode)
             client = newClient
             currentPort = listenPort
 

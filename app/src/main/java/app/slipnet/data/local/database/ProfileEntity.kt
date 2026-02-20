@@ -103,5 +103,8 @@ data class ProfileEntity(
     val torBridgeLines: String = "",
 
     @ColumnInfo(name = "sort_order", defaultValue = "0")
-    val sortOrder: Int = 0
+    val sortOrder: Int = 0,
+
+    @ColumnInfo(name = "dnstt_authoritative", defaultValue = "0")
+    val dnsttAuthoritative: Boolean = false
 )

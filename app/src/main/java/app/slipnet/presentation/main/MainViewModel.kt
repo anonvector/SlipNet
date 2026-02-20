@@ -70,7 +70,8 @@ data class MainUiState(
     val sessionTotalDownload: Long = 0,
     // Ping results per profile ID
     val pingResults: Map<Long, PingResult> = emptyMap(),
-    val isPingRunning: Boolean = false
+    val isPingRunning: Boolean = false,
+    val sleepTimerRemainingSeconds: Int = 0
 )
 
 @HiltViewModel
@@ -94,6 +95,7 @@ class MainViewModel @Inject constructor(
 
     private var bootstrapPollingJob: Job? = null
     private var trafficPollingJob: Job? = null
+    private var sleepTimerJob: Job? = null
     private var pingJob: Job? = null
 
     init {
@@ -125,8 +127,10 @@ class MainViewModel @Inject constructor(
                 }
                 if (state is ConnectionState.Connected) {
                     startTrafficPolling()
+                    startSleepTimer()
                 } else {
                     stopTrafficPolling()
+                    cancelSleepTimer()
                 }
             }
         }
@@ -191,6 +195,32 @@ class MainViewModel @Inject constructor(
             sessionTotalUpload = if (hasStats) lastStats.bytesSent else _uiState.value.sessionTotalUpload,
             sessionTotalDownload = if (hasStats) lastStats.bytesReceived else _uiState.value.sessionTotalDownload
         )
+    }
+
+    private fun startSleepTimer() {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = viewModelScope.launch {
+            val minutes = preferencesDataStore.sleepTimerMinutes.first()
+            if (minutes <= 0) return@launch
+            var remaining = minutes * 60
+            _uiState.value = _uiState.value.copy(sleepTimerRemainingSeconds = remaining)
+            while (remaining > 0) {
+                delay(1000)
+                remaining--
+                _uiState.value = _uiState.value.copy(sleepTimerRemainingSeconds = remaining)
+            }
+            disconnect()
+        }
+    }
+
+    private fun cancelSleepTimer() {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        _uiState.value = _uiState.value.copy(sleepTimerRemainingSeconds = 0)
+    }
+
+    fun userCancelSleepTimer() {
+        cancelSleepTimer()
     }
 
     private fun observeProxyOnlyMode() {

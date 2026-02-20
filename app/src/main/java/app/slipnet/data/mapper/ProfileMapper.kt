@@ -54,7 +54,8 @@ class ProfileMapper @Inject constructor(
             sshPrivateKey = entity.sshPrivateKey,
             sshKeyPassphrase = entity.sshKeyPassphrase,
             torBridgeLines = entity.torBridgeLines,
-            sortOrder = entity.sortOrder
+            sortOrder = entity.sortOrder,
+            dnsttAuthoritative = entity.dnsttAuthoritative
         )
     }
 
@@ -93,7 +94,8 @@ class ProfileMapper @Inject constructor(
             sshPrivateKey = profile.sshPrivateKey,
             sshKeyPassphrase = profile.sshKeyPassphrase,
             torBridgeLines = profile.torBridgeLines,
-            sortOrder = profile.sortOrder
+            sortOrder = profile.sortOrder,
+            dnsttAuthoritative = profile.dnsttAuthoritative
         )
     }
 

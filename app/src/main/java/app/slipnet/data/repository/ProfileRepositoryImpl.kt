@@ -67,4 +67,8 @@ class ProfileRepositoryImpl @Inject constructor(
     override suspend fun getMaxSortOrder(): Int {
         return profileDao.getMaxSortOrder() ?: -1
     }
+
+    override suspend fun prepareTopSortOrder() {
+        profileDao.incrementAllSortOrders()
+    }
 }

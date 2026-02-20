@@ -114,6 +114,7 @@ import app.slipnet.presentation.common.components.QrCodeDialog
 import app.slipnet.presentation.common.icons.TorIcon
 import app.slipnet.presentation.home.DebugLogSheet
 import app.slipnet.presentation.scanner.QrScannerActivity
+import androidx.compose.material.icons.filled.Timer
 import app.slipnet.presentation.theme.ConnectedGreen
 import app.slipnet.presentation.theme.ConnectingOrange
 import app.slipnet.presentation.theme.DisconnectedRed
@@ -228,8 +229,12 @@ fun MainScreen(
     val showTorProgressFab = uiState.connectionState is ConnectionState.Connecting &&
             uiState.snowflakeBootstrapProgress in 0..99
 
+    val sleepTimerActive = uiState.connectionState is ConnectionState.Connected &&
+            uiState.sleepTimerRemainingSeconds > 0
+
     val fabExtraPadding by animateDpAsState(
         targetValue = when {
+            uiState.connectionState is ConnectionState.Connected && sleepTimerActive -> 52.dp
             uiState.connectionState is ConnectionState.Connected -> 28.dp
             showTorProgressFab -> 30.dp
             else -> 0.dp
@@ -545,6 +550,8 @@ fun MainScreen(
                 downloadSpeed = uiState.downloadSpeed,
                 totalUpload = uiState.trafficStats.bytesSent,
                 totalDownload = uiState.trafficStats.bytesReceived,
+                sleepTimerRemainingSeconds = uiState.sleepTimerRemainingSeconds,
+                onCancelSleepTimer = { viewModel.userCancelSleepTimer() },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = navBarPadding.calculateBottomPadding())
@@ -883,6 +890,8 @@ private fun ConnectionStatusStrip(
     downloadSpeed: Long = 0,
     totalUpload: Long = 0,
     totalDownload: Long = 0,
+    sleepTimerRemainingSeconds: Int = 0,
+    onCancelSleepTimer: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isConnected = connectionState is ConnectionState.Connected
@@ -998,6 +1007,47 @@ private fun ConnectionStatusStrip(
                 }
             }
 
+            // Sleep timer countdown
+            AnimatedVisibility(
+                visible = isConnected && sleepTimerRemainingSeconds > 0,
+                enter = expandVertically(animationSpec = tween(300)) + fadeIn(animationSpec = tween(300)),
+                exit = shrinkVertically(animationSpec = tween(200)) + fadeOut(animationSpec = tween(200))
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 22.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Timer,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Sleep: ${formatCountdown(sleepTimerRemainingSeconds)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                        TextButton(
+                            onClick = onCancelSleepTimer,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(28.dp)
+                        ) {
+                            Text(
+                                text = "Cancel",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
+            }
+
             // Tor bootstrap progress
             AnimatedVisibility(
                 visible = showTorProgress,
@@ -1030,6 +1080,10 @@ private fun ConnectionStatusStrip(
             }
         }
     }
+}
+
+private fun formatCountdown(totalSeconds: Int): String {
+    return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
 }
 
 // ── Connect FAB ─────────────────────────────────────────────────────────

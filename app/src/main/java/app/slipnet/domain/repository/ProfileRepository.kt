@@ -15,4 +15,5 @@ interface ProfileRepository {
     suspend fun updateLastConnectedAt(id: Long)
     suspend fun updateProfileOrder(orderedIds: List<Long>)
     suspend fun getMaxSortOrder(): Int
+    suspend fun prepareTopSortOrder()
 }

@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class],
-    version = 15,
+    version = 16,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -83,6 +83,12 @@ abstract class SlipNetDatabase : RoomDatabase() {
                            OR (sp2.updated_at = server_profiles.updated_at AND sp2.id < server_profiles.id)
                     )
                 """.trimIndent())
+            }
+        }
+
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN dnstt_authoritative INTEGER NOT NULL DEFAULT 0")
             }
         }
 

@@ -1,7 +1,12 @@
 package app.slipnet.presentation.scanner
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +34,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
@@ -172,7 +178,8 @@ fun ScanResultsScreen(
                     totalCount = uiState.scannerState.totalCount,
                     scannedCount = uiState.scannerState.scannedCount,
                     workingCount = uiState.scannerState.workingCount,
-                    onStopScan = { viewModel.stopScan() }
+                    onStopScan = { viewModel.stopScan() },
+                    onResumeScan = { viewModel.resumeScan() }
                 )
             }
 
@@ -314,12 +321,14 @@ private fun ResultsProgressSection(
     totalCount: Int,
     scannedCount: Int,
     workingCount: Int,
-    onStopScan: () -> Unit
+    onStopScan: () -> Unit,
+    onResumeScan: () -> Unit
 ) {
     val animatedProgress by animateFloatAsState(
         targetValue = progress,
         label = "progress"
     )
+    val canResume = !isScanning && scannedCount > 0 && scannedCount < totalCount
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -374,6 +383,23 @@ private fun ResultsProgressSection(
                         Spacer(Modifier.width(4.dp))
                         Text("Stop", style = MaterialTheme.typography.labelMedium)
                     }
+                } else if (canResume) {
+                    Button(
+                        onClick = onResumeScan,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Continue", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
 
@@ -427,7 +453,11 @@ private fun ResultsSelectionControls(
     selectedCount: Int,
     onClearSelection: () -> Unit
 ) {
-    if (selectedCount > 0) {
+    AnimatedVisibility(
+        visible = selectedCount > 0,
+        enter = expandVertically() + fadeIn(),
+        exit = shrinkVertically() + fadeOut()
+    ) {
         Surface(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 1.dp,

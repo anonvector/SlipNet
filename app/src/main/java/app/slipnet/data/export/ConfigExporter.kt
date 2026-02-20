@@ -14,8 +14,8 @@ import javax.inject.Singleton
  * Single profile format: slipnet://[base64-encoded-profile]
  * Multiple profiles: one URI per line
  *
- * Encoded profile format v12 (pipe-delimited):
- * v12|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)
+ * Encoded profile format v13 (pipe-delimited):
+ * v13|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -24,7 +24,7 @@ class ConfigExporter @Inject constructor() {
 
     companion object {
         const val SCHEME = "slipnet://"
-        const val VERSION = "12"
+        const val VERSION = "13"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -87,7 +87,8 @@ class ConfigExporter @Inject constructor() {
             profile.sshAuthType.value,
             Base64.encodeToString(profile.sshPrivateKey.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
             Base64.encodeToString(profile.sshKeyPassphrase.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
-            Base64.encodeToString(profile.torBridgeLines.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            Base64.encodeToString(profile.torBridgeLines.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
+            if (profile.dnsttAuthoritative) "1" else "0"
         ).joinToString(FIELD_DELIMITER)
 
         val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)

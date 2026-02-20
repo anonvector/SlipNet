@@ -154,7 +154,8 @@ class VpnRepositoryImpl @Inject constructor(
             tunnelDomain = profile.domain,
             publicKey = profile.dnsttPublicKey,
             listenPort = proxyPort,
-            listenHost = proxyHost
+            listenHost = proxyHost,
+            authoritativeMode = profile.dnsttAuthoritative
         )
 
         if (result.isSuccess) {

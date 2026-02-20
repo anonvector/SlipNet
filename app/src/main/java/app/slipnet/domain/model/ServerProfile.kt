@@ -44,7 +44,9 @@ data class ServerProfile(
     // Transport is auto-detected from bridge line prefix (obfs4, webtunnel, meek_lite, etc.)
     val torBridgeLines: String = "",
     // User-defined sort order for profile list (lower = higher in list)
-    val sortOrder: Int = 0
+    val sortOrder: Int = 0,
+    // When true, DNSTT uses aggressive query rates (authoritative mode for own servers)
+    val dnsttAuthoritative: Boolean = false
 )
 
 data class DnsResolver(

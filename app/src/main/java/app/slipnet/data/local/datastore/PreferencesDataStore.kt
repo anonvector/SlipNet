@@ -10,8 +10,11 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -59,6 +62,8 @@ class PreferencesDataStore @Inject constructor(
         val PROXY_ONLY_MODE = booleanPreferencesKey("proxy_only_mode")
         // Kill Switch
         val KILL_SWITCH = booleanPreferencesKey("kill_switch")
+        // Sleep Timer
+        val SLEEP_TIMER_MINUTES = intPreferencesKey("sleep_timer_minutes")
         // Recent DNS Resolvers
         val RECENT_DNS_RESOLVERS = stringPreferencesKey("recent_dns_resolvers")
         // First Launch
@@ -386,6 +391,17 @@ class PreferencesDataStore @Inject constructor(
         }
     }
 
+    // Sleep Timer
+    val sleepTimerMinutes: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.SLEEP_TIMER_MINUTES] ?: 0
+    }
+
+    suspend fun setSleepTimerMinutes(minutes: Int) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SLEEP_TIMER_MINUTES] = minutes.coerceIn(0, 120)
+        }
+    }
+
     // First Launch
     val firstLaunchDone: Flow<Boolean> = dataStore.data.map { prefs ->
         prefs[Keys.FIRST_LAUNCH_DONE] ?: false
@@ -454,6 +470,23 @@ class PreferencesDataStore @Inject constructor(
         dataStore.edit { prefs ->
             prefs[Keys.GEO_BYPASS_COUNTRY] = country
         }
+    }
+
+    // Scan Session (file-based — can be large with 10K+ resolvers)
+    private val scanSessionFile: File
+        get() = File(context.cacheDir, "scan_session.json")
+
+    suspend fun saveScanSession(json: String) = withContext(Dispatchers.IO) {
+        scanSessionFile.writeText(json)
+    }
+
+    suspend fun getSavedScanSession(): String? = withContext(Dispatchers.IO) {
+        val file = scanSessionFile
+        if (file.exists()) file.readText() else null
+    }
+
+    suspend fun clearScanSession() = withContext(Dispatchers.IO) {
+        scanSessionFile.delete()
     }
 }
 

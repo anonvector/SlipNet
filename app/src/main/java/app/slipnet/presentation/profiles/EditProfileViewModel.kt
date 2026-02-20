@@ -117,7 +117,9 @@ data class EditProfileUiState(
     val torBridgeLinesError: String? = null,
     // Bridge request state
     val isRequestingBridges: Boolean = false,
-    val isAskingTor: Boolean = false
+    val isAskingTor: Boolean = false,
+    // DNSTT authoritative mode (aggressive query rate for own servers)
+    val dnsttAuthoritative: Boolean = false
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH
@@ -207,6 +209,7 @@ class EditProfileViewModel @Inject constructor(
                     sshKeyPassphrase = profile.sshKeyPassphrase,
                     torBridgeType = detectBridgeType(profile.torBridgeLines),
                     torBridgeLines = profile.torBridgeLines,
+                    dnsttAuthoritative = profile.dnsttAuthoritative,
                     isLoading = false
                 )
             } else {
@@ -306,6 +309,10 @@ class EditProfileViewModel @Inject constructor(
 
     fun updateDnsTransport(transport: DnsTransport) {
         _uiState.value = _uiState.value.copy(dnsTransport = transport)
+    }
+
+    fun updateDnsttAuthoritative(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(dnsttAuthoritative = enabled)
     }
 
     fun updateDohUrl(url: String) {
@@ -943,7 +950,7 @@ class EditProfileViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isSaving = true)
 
             try {
-                val resolversList = parseResolvers(state.resolvers, state.authoritativeMode)
+                val resolversList = parseResolvers(state.resolvers, state.authoritativeMode || state.dnsttAuthoritative)
                 val keepAlive = state.keepAliveInterval.toIntOrNull() ?: 200
 
                 val profile = ServerProfile(
@@ -969,7 +976,8 @@ class EditProfileViewModel @Inject constructor(
                     sshAuthType = if (state.useSsh) state.sshAuthType else SshAuthType.PASSWORD,
                     sshPrivateKey = if (state.useSsh && state.sshAuthType == SshAuthType.KEY) state.sshPrivateKey else "",
                     sshKeyPassphrase = if (state.useSsh && state.sshAuthType == SshAuthType.KEY) state.sshKeyPassphrase else "",
-                    torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else ""
+                    torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else "",
+                    dnsttAuthoritative = if (state.isDnsttBased) state.dnsttAuthoritative else false
                 )
 
                 val savedId = saveProfileUseCase(profile)
@@ -1092,7 +1100,7 @@ class EditProfileViewModel @Inject constructor(
     }
 
     companion object {
-        const val MAX_RESOLVERS = 3
+        const val MAX_RESOLVERS = 8
         private const val BRIDGES_PER_TYPE = 2
 
         // Moat API (Tor bridge distribution)

@@ -1,9 +1,10 @@
 package app.slipnet.presentation.scanner
 
-import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.slipnet.domain.model.DnsTunnelTestResult
 import app.slipnet.domain.model.ResolverScanResult
 import app.slipnet.domain.model.ResolverStatus
 import app.slipnet.domain.model.ScanMode
@@ -11,6 +12,7 @@ import app.slipnet.domain.model.ScannerState
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.repository.ResolverScannerRepository
 import app.slipnet.tunnel.GeoBypassCountry
+import com.google.gson.Gson
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -37,10 +39,11 @@ data class DnsScannerUiState(
     val error: String? = null,
     val listSource: ListSource = ListSource.DEFAULT,
     val selectedCountry: GeoBypassCountry = GeoBypassCountry.IR,
-    val sampleCount: Int = 2000
+    val sampleCount: Int = 2000,
+    val showResumeDialog: Boolean = false
 ) {
     companion object {
-        const val MAX_SELECTED_RESOLVERS = 3
+        const val MAX_SELECTED_RESOLVERS = 8
     }
 
     val isSelectionLimitReached: Boolean
@@ -56,6 +59,30 @@ enum class ListSource {
     COUNTRY_RANGE
 }
 
+// Lightweight models for JSON serialization of scan sessions.
+private data class SavedScanSession(
+    val resolverList: List<String>,
+    val testDomain: String,
+    val timeoutMs: String,
+    val concurrency: String,
+    val scanMode: String,
+    val listSource: String,
+    val scannedCount: Int,
+    val workingCount: Int,
+    val results: List<SavedResult>
+)
+
+private data class SavedResult(
+    val host: String,
+    val status: String,
+    val responseTimeMs: Long?,
+    val errorMessage: String?,
+    val nsSupport: Boolean?,
+    val txtSupport: Boolean?,
+    val randomSub1: Boolean?,
+    val randomSub2: Boolean?
+)
+
 @HiltViewModel
 class DnsScannerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -70,9 +97,10 @@ class DnsScannerViewModel @Inject constructor(
     val uiState: StateFlow<DnsScannerUiState> = _uiState.asStateFlow()
 
     private var scanJob: Job? = null
+    private val gson = Gson()
 
     init {
-        loadDefaultList()
+        loadSavedSession()
         loadRecentDns()
     }
 
@@ -93,7 +121,93 @@ class DnsScannerViewModel @Inject constructor(
         }
     }
 
+    // --- Saved session persistence ---
+
+    private fun loadSavedSession() {
+        viewModelScope.launch {
+            try {
+                val json = preferencesDataStore.getSavedScanSession()
+                if (json != null) {
+                    val session = gson.fromJson(json, SavedScanSession::class.java)
+                    if (session != null && session.resolverList.isNotEmpty() &&
+                        session.scannedCount > 0 && session.scannedCount < session.resolverList.size
+                    ) {
+                        // Restore the previous scan state.
+                        val results = session.resolverList.map { host ->
+                            val saved = session.results.find { it.host == host }
+                            saved?.toScanResult() ?: ResolverScanResult(host = host)
+                        }
+                        _uiState.value = _uiState.value.copy(
+                            resolverList = session.resolverList,
+                            testDomain = session.testDomain,
+                            timeoutMs = session.timeoutMs,
+                            concurrency = session.concurrency,
+                            scanMode = try { ScanMode.valueOf(session.scanMode) } catch (_: Exception) { ScanMode.DNS_TUNNEL },
+                            listSource = try { ListSource.valueOf(session.listSource) } catch (_: Exception) { ListSource.DEFAULT },
+                            scannerState = ScannerState(
+                                isScanning = false,
+                                totalCount = session.resolverList.size,
+                                scannedCount = session.scannedCount,
+                                workingCount = session.workingCount,
+                                results = results
+                            ),
+                            selectedResolvers = emptySet()
+                        )
+                        return@launch
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("DnsScanner", "Failed to load saved session", e)
+            }
+            // No valid saved session — load default list.
+            loadDefaultList()
+        }
+    }
+
+    private fun saveScanSessionToStore() {
+        val state = _uiState.value
+        val scanState = state.scannerState
+        if (scanState.scannedCount <= 0 || scanState.scannedCount >= scanState.totalCount) return
+
+        val savedResults = scanState.results
+            .filter { it.status != ResolverStatus.PENDING && it.status != ResolverStatus.SCANNING }
+            .map { it.toSavedResult() }
+
+        val session = SavedScanSession(
+            resolverList = state.resolverList,
+            testDomain = state.testDomain,
+            timeoutMs = state.timeoutMs,
+            concurrency = state.concurrency,
+            scanMode = state.scanMode.name,
+            listSource = state.listSource.name,
+            scannedCount = scanState.scannedCount,
+            workingCount = scanState.workingCount,
+            results = savedResults
+        )
+
+        viewModelScope.launch {
+            withContext(NonCancellable) {
+                try {
+                    preferencesDataStore.saveScanSession(gson.toJson(session))
+                } catch (e: Exception) {
+                    Log.w("DnsScanner", "Failed to save scan session", e)
+                }
+            }
+        }
+    }
+
+    private fun clearSavedSession() {
+        viewModelScope.launch {
+            try {
+                preferencesDataStore.clearScanSession()
+            } catch (_: Exception) {}
+        }
+    }
+
+    // --- List loading ---
+
     fun loadDefaultList() {
+        clearSavedSession()
         _uiState.value = _uiState.value.copy(
             resolverList = scannerRepository.getDefaultResolvers(),
             listSource = ListSource.DEFAULT,
@@ -113,6 +227,7 @@ class DnsScannerViewModel @Inject constructor(
                         error = "No valid IP addresses found in file"
                     )
                 } else {
+                    clearSavedSession()
                     _uiState.value = _uiState.value.copy(
                         resolverList = resolvers,
                         listSource = ListSource.IMPORTED,
@@ -171,6 +286,7 @@ class DnsScannerViewModel @Inject constructor(
                         error = "No CIDR ranges found for ${state.selectedCountry.displayName}"
                     )
                 } else {
+                    clearSavedSession()
                     _uiState.value = _uiState.value.copy(
                         resolverList = ips,
                         listSource = ListSource.COUNTRY_RANGE,
@@ -202,6 +318,8 @@ class DnsScannerViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(selectedResolvers = emptySet())
     }
 
+    // --- Scan control ---
+
     fun startScan() {
         val state = _uiState.value
         if (state.resolverList.isEmpty()) {
@@ -214,6 +332,25 @@ class DnsScannerViewModel @Inject constructor(
             return
         }
 
+        // Check for resumable partial scan.
+        val ss = state.scannerState
+        if (!ss.isScanning && ss.scannedCount > 0 && ss.scannedCount < ss.totalCount) {
+            _uiState.value = _uiState.value.copy(showResumeDialog = true)
+            return
+        }
+
+        startFreshScan()
+    }
+
+    fun dismissResumeDialog() {
+        _uiState.value = _uiState.value.copy(showResumeDialog = false)
+    }
+
+    fun startFreshScan() {
+        _uiState.value = _uiState.value.copy(showResumeDialog = false)
+        clearSavedSession()
+
+        val state = _uiState.value
         val timeout = state.timeoutMs.toLongOrNull() ?: 3000L
         val concurrency = state.concurrency.toIntOrNull() ?: 50
 
@@ -234,22 +371,104 @@ class DnsScannerViewModel @Inject constructor(
             error = null
         )
 
+        launchScan(
+            hosts = state.resolverList,
+            allHosts = state.resolverList,
+            testDomain = state.testDomain,
+            timeout = timeout,
+            concurrency = concurrency,
+            scanMode = state.scanMode,
+            existingResults = emptyMap(),
+            startScannedCount = 0,
+            startWorkingCount = 0
+        )
+    }
+
+    fun resumeScan() {
+        _uiState.value = _uiState.value.copy(showResumeDialog = false)
+        clearSavedSession()
+
+        val state = _uiState.value
+        val timeout = state.timeoutMs.toLongOrNull() ?: 3000L
+        val concurrency = state.concurrency.toIntOrNull() ?: 50
+
+        // Determine which hosts were already scanned.
+        val existingResults = mutableMapOf<String, ResolverScanResult>()
+        var startWorkingCount = 0
+        for (result in state.scannerState.results) {
+            if (result.status != ResolverStatus.PENDING && result.status != ResolverStatus.SCANNING) {
+                existingResults[result.host] = result
+                if (result.status == ResolverStatus.WORKING) startWorkingCount++
+            }
+        }
+        val scannedHosts = existingResults.keys
+        val remainingHosts = state.resolverList.filter { it !in scannedHosts }
+
+        if (remainingHosts.isEmpty()) {
+            // Nothing left to scan — just mark complete.
+            _uiState.value = _uiState.value.copy(
+                scannerState = state.scannerState.copy(isScanning = false)
+            )
+            return
+        }
+
+        // Update state: mark remaining as SCANNING, keep scanned results.
+        val resumeResults = state.resolverList.map { host ->
+            existingResults[host] ?: ResolverScanResult(host = host, status = ResolverStatus.PENDING)
+        }
+        _uiState.value = _uiState.value.copy(
+            scannerState = ScannerState(
+                isScanning = true,
+                totalCount = state.resolverList.size,
+                scannedCount = existingResults.size,
+                workingCount = startWorkingCount,
+                results = resumeResults
+            ),
+            selectedResolvers = emptySet(),
+            error = null
+        )
+
+        launchScan(
+            hosts = remainingHosts,
+            allHosts = state.resolverList,
+            testDomain = state.testDomain,
+            timeout = timeout,
+            concurrency = concurrency,
+            scanMode = state.scanMode,
+            existingResults = existingResults,
+            startScannedCount = existingResults.size,
+            startWorkingCount = startWorkingCount
+        )
+    }
+
+    private fun launchScan(
+        hosts: List<String>,
+        allHosts: List<String>,
+        testDomain: String,
+        timeout: Long,
+        concurrency: Int,
+        scanMode: ScanMode,
+        existingResults: Map<String, ResolverScanResult>,
+        startScannedCount: Int,
+        startWorkingCount: Int
+    ) {
         scanJob = viewModelScope.launch {
             val resultsMap = mutableMapOf<String, ResolverScanResult>()
-            var scannedCount = 0
-            var workingCount = 0
+            resultsMap.putAll(existingResults)
+            var scannedCount = startScannedCount
+            var workingCount = startWorkingCount
 
-            // Mark all as scanning initially
-            state.resolverList.forEach { host ->
+            // Mark hosts to scan as SCANNING.
+            hosts.forEach { host ->
                 resultsMap[host] = ResolverScanResult(host = host, status = ResolverStatus.SCANNING)
             }
 
             scannerRepository.scanResolvers(
-                hosts = state.resolverList,
-                testDomain = state.testDomain,
+                hosts = hosts,
+                testDomain = testDomain,
                 timeoutMs = timeout,
                 concurrency = concurrency,
-                scanMode = state.scanMode
+                scanMode = scanMode
             ).collect { result ->
                 resultsMap[result.host] = result
                 scannedCount++
@@ -258,24 +477,24 @@ class DnsScannerViewModel @Inject constructor(
                     workingCount++
                 }
 
-                // Update UI state with current results
                 _uiState.value = _uiState.value.copy(
                     scannerState = ScannerState(
-                        isScanning = scannedCount < state.resolverList.size,
-                        totalCount = state.resolverList.size,
+                        isScanning = scannedCount < allHosts.size,
+                        totalCount = allHosts.size,
                         scannedCount = scannedCount,
                         workingCount = workingCount,
-                        results = state.resolverList.map { host ->
+                        results = allHosts.map { host ->
                             resultsMap[host] ?: ResolverScanResult(host = host, status = ResolverStatus.PENDING)
                         }
                     )
                 )
             }
 
-            // Final update when done
+            // Scan completed — clear saved session.
             _uiState.value = _uiState.value.copy(
                 scannerState = _uiState.value.scannerState.copy(isScanning = false)
             )
+            clearSavedSession()
         }
     }
 
@@ -284,6 +503,7 @@ class DnsScannerViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(
             scannerState = _uiState.value.scannerState.copy(isScanning = false)
         )
+        saveScanSessionToStore()
     }
 
     fun getSelectedResolversString(): String {
@@ -297,5 +517,57 @@ class DnsScannerViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         scanJob?.cancel()
+        // Save partial results so the user can resume after navigating away.
+        val ss = _uiState.value.scannerState
+        if (ss.scannedCount > 0 && ss.scannedCount < ss.totalCount) {
+            // Use a blocking approach since viewModelScope is cancelled.
+            val state = _uiState.value
+            val savedResults = ss.results
+                .filter { it.status != ResolverStatus.PENDING && it.status != ResolverStatus.SCANNING }
+                .map { it.toSavedResult() }
+            val session = SavedScanSession(
+                resolverList = state.resolverList,
+                testDomain = state.testDomain,
+                timeoutMs = state.timeoutMs,
+                concurrency = state.concurrency,
+                scanMode = state.scanMode.name,
+                listSource = state.listSource.name,
+                scannedCount = ss.scannedCount,
+                workingCount = ss.workingCount,
+                results = savedResults
+            )
+            try {
+                val file = java.io.File(appContext.cacheDir, "scan_session.json")
+                file.writeText(gson.toJson(session))
+            } catch (_: Exception) {}
+        }
     }
 }
+
+// --- Conversion helpers ---
+
+private fun ResolverScanResult.toSavedResult() = SavedResult(
+    host = host,
+    status = status.name,
+    responseTimeMs = responseTimeMs,
+    errorMessage = errorMessage,
+    nsSupport = tunnelTestResult?.nsSupport,
+    txtSupport = tunnelTestResult?.txtSupport,
+    randomSub1 = tunnelTestResult?.randomSubdomain1,
+    randomSub2 = tunnelTestResult?.randomSubdomain2
+)
+
+private fun SavedResult.toScanResult() = ResolverScanResult(
+    host = host,
+    status = try { ResolverStatus.valueOf(status) } catch (_: Exception) { ResolverStatus.PENDING },
+    responseTimeMs = responseTimeMs,
+    errorMessage = errorMessage,
+    tunnelTestResult = if (nsSupport != null) {
+        DnsTunnelTestResult(
+            nsSupport = nsSupport,
+            txtSupport = txtSupport ?: false,
+            randomSubdomain1 = randomSub1 ?: false,
+            randomSubdomain2 = randomSub2 ?: false
+        )
+    } else null
+)

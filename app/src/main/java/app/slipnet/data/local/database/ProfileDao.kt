@@ -42,6 +42,12 @@ interface ProfileDao {
     @Query("SELECT MAX(sort_order) FROM server_profiles")
     suspend fun getMaxSortOrder(): Int?
 
+    @Query("SELECT MIN(sort_order) FROM server_profiles")
+    suspend fun getMinSortOrder(): Int?
+
+    @Query("UPDATE server_profiles SET sort_order = sort_order + 1")
+    suspend fun incrementAllSortOrders()
+
     @Query("UPDATE server_profiles SET sort_order = :sortOrder WHERE id = :id")
     suspend fun updateSortOrder(id: Long, sortOrder: Int)
 }

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -25,6 +26,8 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FilterList
@@ -68,6 +71,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.data.local.datastore.DarkMode
@@ -191,6 +195,19 @@ fun SettingsScreen(
                     description = "Block all traffic if VPN connection drops",
                     checked = uiState.killSwitch,
                     onCheckedChange = { viewModel.setKillSwitch(it) }
+                )
+
+                SettingsDivider()
+
+                StepperSettingItem(
+                    icon = Icons.Default.Timer,
+                    title = "Sleep timer",
+                    description = "Auto-disconnect after a set time",
+                    value = uiState.sleepTimerMinutes,
+                    step = 5,
+                    range = 0..120,
+                    valueFormatter = { if (it == 0) "Off" else "$it min" },
+                    onValueChange = { viewModel.setSleepTimerMinutes(it) }
                 )
             }
 
@@ -1084,6 +1101,81 @@ private fun SliderSettingItem(
                 .fillMaxWidth()
                 .padding(start = 40.dp, top = 4.dp)
         )
+    }
+}
+
+@Composable
+private fun StepperSettingItem(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    value: Int,
+    step: Int,
+    range: IntRange,
+    valueFormatter: (Int) -> String,
+    onValueChange: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(24.dp)
+        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 16.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = { onValueChange((value - step).coerceIn(range)) },
+                enabled = value > range.first,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.Remove,
+                    contentDescription = "Decrease",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Text(
+                text = valueFormatter(value),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(min = 48.dp)
+            )
+            IconButton(
+                onClick = { onValueChange((value + step).coerceIn(range)) },
+                enabled = value < range.last,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = "Increase",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
     }
 }
 

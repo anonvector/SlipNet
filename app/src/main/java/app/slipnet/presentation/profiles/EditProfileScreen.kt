@@ -315,6 +315,41 @@ fun EditProfileScreen(
                     }
                 }
 
+                // Authoritative Mode toggle (DNSTT-based profiles only)
+                if (uiState.isDnsttBased) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Authoritative Mode",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "Aggressive query rate for faster speeds",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = uiState.dnsttAuthoritative,
+                            onCheckedChange = { viewModel.updateDnsttAuthoritative(it) }
+                        )
+                    }
+                    if (uiState.dnsttAuthoritative) {
+                        Text(
+                            text = "Only use when the DNS resolver is your own server. Public resolvers (Google, Cloudflare) will rate-limit and block your connection.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                }
+
                 // DoH URL for DNSTT with DoH transport
                 if (uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOH) {
                     DohServerSelector(
