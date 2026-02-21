@@ -120,6 +120,8 @@ data class EditProfileUiState(
     val isAskingTor: Boolean = false,
     // DNSTT authoritative mode (aggressive query rate for own servers)
     val dnsttAuthoritative: Boolean = false,
+    // Preserved sort order for updates (not editable)
+    val sortOrder: Int = 0,
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH
@@ -210,6 +212,7 @@ class EditProfileViewModel @Inject constructor(
                     torBridgeType = detectBridgeType(profile.torBridgeLines),
                     torBridgeLines = profile.torBridgeLines,
                     dnsttAuthoritative = profile.dnsttAuthoritative,
+                    sortOrder = profile.sortOrder,
                     isLoading = false
                 )
             } else {
@@ -970,7 +973,6 @@ class EditProfileViewModel @Inject constructor(
                     sshPassword = if (state.useSsh && state.sshAuthType == SshAuthType.PASSWORD) state.sshPassword else "",
                     sshPort = state.sshPort.toIntOrNull() ?: 22,
                     sshHost = "127.0.0.1",
-                    useServerDns = false,
                     dohUrl = if (state.isDoh || (state.isDnsttBased && state.dnsTransport == DnsTransport.DOH)) state.dohUrl.trim() else "",
                     dnsTransport = if (state.isDnsttBased) state.dnsTransport else DnsTransport.UDP,
                     sshAuthType = if (state.useSsh) state.sshAuthType else SshAuthType.PASSWORD,
@@ -978,6 +980,7 @@ class EditProfileViewModel @Inject constructor(
                     sshKeyPassphrase = if (state.useSsh && state.sshAuthType == SshAuthType.KEY) state.sshKeyPassphrase else "",
                     torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else "",
                     dnsttAuthoritative = if (state.isDnsttBased) state.dnsttAuthoritative else false,
+                    sortOrder = state.sortOrder,
                 )
 
                 val savedId = saveProfileUseCase(profile)

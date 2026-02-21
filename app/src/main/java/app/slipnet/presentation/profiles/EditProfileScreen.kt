@@ -350,8 +350,8 @@ fun EditProfileScreen(
                     if (uiState.dnsttAuthoritative) {
                         Text(
                             text = "Only use when the DNS resolver is your own server. Public resolvers (Google, Cloudflare) will rate-limit and block your connection.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(bottom = 8.dp)
                         )
                     }
@@ -699,9 +699,9 @@ fun EditProfileScreen(
                     }
                     if (uiState.authoritativeMode) {
                         Text(
-                            text = "Resolver must be your server's IP (e.g. 1.2.3.4:53). Queries go directly to your server, bypassing recursive resolvers.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            text = "Only use when the DNS resolver is your own server. Public resolvers (Google, Cloudflare) will rate-limit and block your connection.",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(bottom = 8.dp)
                         )
                     }

@@ -632,17 +632,11 @@ fun MainScreen(
 
     // Delete all confirmation dialog
     if (showDeleteAllDialog) {
-        val hasConnected = uiState.connectedProfileId != null
         AlertDialog(
             onDismissRequest = { showDeleteAllDialog = false },
             title = { Text("Delete All Profiles") },
             text = {
-                Text(
-                    if (hasConnected)
-                        "Are you sure you want to delete all profiles? The currently connected profile will be kept."
-                    else
-                        "Are you sure you want to delete all profiles? This cannot be undone."
-                )
+                Text("Are you sure you want to delete all profiles? This cannot be undone.")
             },
             confirmButton = {
                 TextButton(

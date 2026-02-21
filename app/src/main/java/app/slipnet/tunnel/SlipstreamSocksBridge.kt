@@ -51,9 +51,9 @@ object SlipstreamSocksBridge {
     // Clean DNS resolved at the REMOTE server (through Dante SOCKS5 CONNECT).
     // Unlike SSH (direct-tcpip bypasses Dante), Slipstream goes through Dante which
     // may block or mangle CONNECT to localhost (127.0.0.53). Use public DNS instead.
-    private const val PRIMARY_DNS_HOST = "1.1.1.1"
+    private const val PRIMARY_DNS_HOST = "8.8.8.8"
     // Fallback if primary is unreachable through Dante
-    private const val FALLBACK_DNS_HOST = "8.8.8.8"
+    private const val FALLBACK_DNS_HOST = "1.1.1.1"
 
     private var slipstreamHost: String = "127.0.0.1"
     private var slipstreamPort: Int = 0
@@ -82,6 +82,7 @@ object SlipstreamSocksBridge {
     private val dnsWorkers = arrayOfNulls<DnsWorker>(DNS_POOL_SIZE)
     private val dnsRoundRobin = AtomicInteger(0)
     private var dnsTargetHost: String = PRIMARY_DNS_HOST
+    private var dnsFallbackHost: String = FALLBACK_DNS_HOST
     private val workerCreationLocks = Array(DNS_POOL_SIZE) { ReentrantLock() }
     private var dnsKeepaliveThread: Thread? = null
 
@@ -92,13 +93,14 @@ object SlipstreamSocksBridge {
         listenHost: String = "127.0.0.1",
         socksUsername: String? = null,
         socksPassword: String? = null,
-        dnsServer: String? = null
+        dnsServer: String? = null,
+        dnsFallback: String? = null
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting Slipstream SOCKS5 bridge")
         Log.i(TAG, "  Slipstream: $slipstreamHost:$slipstreamPort")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
-        Log.i(TAG, "  DNS: ${dnsServer ?: PRIMARY_DNS_HOST} (fallback: $FALLBACK_DNS_HOST)")
+        Log.i(TAG, "  DNS: ${dnsServer ?: PRIMARY_DNS_HOST} (fallback: ${dnsFallback ?: FALLBACK_DNS_HOST})")
         Log.i(TAG, "========================================")
 
         stop()
@@ -107,6 +109,7 @@ object SlipstreamSocksBridge {
         this.socksUsername = socksUsername
         this.socksPassword = socksPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
+        this.dnsFallbackHost = dnsFallback ?: FALLBACK_DNS_HOST
 
         return try {
             val ss = bindServerSocket(listenHost, listenPort)
@@ -193,7 +196,7 @@ object SlipstreamSocksBridge {
      * through Slipstream→Dante. Each worker is a ready-to-use DNS-over-TCP channel.
      */
     private fun prewarmDnsWorkers() {
-        Log.i(TAG, "DNS workers target: $dnsTargetHost:53 (fallback: $FALLBACK_DNS_HOST, pool=$DNS_POOL_SIZE)")
+        Log.i(TAG, "DNS workers target: $dnsTargetHost:53 (fallback: $dnsFallbackHost, pool=$DNS_POOL_SIZE)")
         val thread = Thread({
             for (i in 0 until DNS_POOL_SIZE) {
                 if (!running.get() || Thread.currentThread().isInterrupted) break
@@ -207,10 +210,10 @@ object SlipstreamSocksBridge {
                         break
                     }
                 } catch (e: Exception) {
-                    if (i == 0 && dnsTargetHost == PRIMARY_DNS_HOST) {
-                        // Primary DNS unreachable — fall back to secondary public DNS
-                        Log.w(TAG, "DNS worker 1 failed on $PRIMARY_DNS_HOST, falling back to $FALLBACK_DNS_HOST")
-                        dnsTargetHost = FALLBACK_DNS_HOST
+                    if (i == 0) {
+                        // Primary DNS unreachable — fall back to secondary DNS
+                        Log.w(TAG, "DNS worker 1 failed on $dnsTargetHost, falling back to $dnsFallbackHost")
+                        dnsTargetHost = dnsFallbackHost
                         try {
                             val fallbackWorker = createDnsWorker()
                             if (fallbackWorker != null) {

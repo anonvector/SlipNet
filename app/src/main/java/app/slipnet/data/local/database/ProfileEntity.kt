@@ -78,9 +78,6 @@ data class ProfileEntity(
     @ColumnInfo(name = "ssh_host", defaultValue = "127.0.0.1")
     val sshHost: String = "127.0.0.1",
 
-    @ColumnInfo(name = "use_server_dns", defaultValue = "0")
-    val useServerDns: Boolean = false,
-
     @ColumnInfo(name = "doh_url", defaultValue = "")
     val dohUrl: String = "",
 

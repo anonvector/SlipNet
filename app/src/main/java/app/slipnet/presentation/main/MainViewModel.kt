@@ -341,9 +341,14 @@ class MainViewModel @Inject constructor(
 
     fun deleteAllProfiles() {
         viewModelScope.launch {
-            val connectedId = _uiState.value.connectedProfileId
-            val profilesToDelete = _uiState.value.profiles.filter { it.id != connectedId }
-            for (profile in profilesToDelete) {
+            // Disconnect first so no profile is protected from deletion
+            if (_uiState.value.connectionState is ConnectionState.Connected ||
+                _uiState.value.connectionState is ConnectionState.Connecting) {
+                connectionManager.disconnect()
+                // Give VPN service time to clean up so connectedProfile is cleared
+                kotlinx.coroutines.delay(500)
+            }
+            for (profile in _uiState.value.profiles) {
                 deleteProfileUseCase(profile.id)
             }
         }
@@ -387,7 +392,7 @@ class MainViewModel @Inject constructor(
         val preview = _uiState.value.importPreview ?: return
         viewModelScope.launch {
             try {
-                for (profile in preview.profiles) {
+                for (profile in preview.profiles.reversed()) {
                     saveProfileUseCase(profile)
                 }
                 _uiState.value = _uiState.value.copy(

@@ -47,7 +47,11 @@ data class SettingsUiState(
     val domainRoutingDomains: Set<String> = emptySet(),
     // Geo-Bypass Settings
     val geoBypassEnabled: Boolean = false,
-    val geoBypassCountry: GeoBypassCountry = GeoBypassCountry.IR
+    val geoBypassCountry: GeoBypassCountry = GeoBypassCountry.IR,
+    // Remote DNS Settings
+    val remoteDnsMode: String = "default",
+    val customRemoteDns: String = "",
+    val customRemoteDnsFallback: String = ""
 )
 
 @HiltViewModel
@@ -122,6 +126,14 @@ class SettingsViewModel @Inject constructor(
                 Pair(enabled, GeoBypassCountry.fromCode(countryCode))
             }
 
+            val remoteDnsFlow = combine(
+                preferencesDataStore.remoteDnsMode,
+                preferencesDataStore.customRemoteDns,
+                preferencesDataStore.customRemoteDnsFallback
+            ) { mode, customDns, customFallback ->
+                Triple(mode, customDns, customFallback)
+            }
+
             val baseFlow = combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow, httpProxyFlow) { main, ssh, split, proxyOnlyTriple, httpProxy ->
                 SettingsUiState(
                     autoConnectOnBoot = main[0] as Boolean,
@@ -154,10 +166,18 @@ class SettingsViewModel @Inject constructor(
                 )
             }
 
-            combine(routingFlow, geoBypassFlow) { state, geoBypass ->
+            val withGeoFlow = combine(routingFlow, geoBypassFlow) { state, geoBypass ->
                 state.copy(
                     geoBypassEnabled = geoBypass.first,
                     geoBypassCountry = geoBypass.second
+                )
+            }
+
+            combine(withGeoFlow, remoteDnsFlow) { state, remoteDns ->
+                state.copy(
+                    remoteDnsMode = remoteDns.first,
+                    customRemoteDns = remoteDns.second,
+                    customRemoteDnsFallback = remoteDns.third
                 )
             }.collect { newState ->
                 _uiState.value = newState
@@ -315,6 +335,25 @@ class SettingsViewModel @Inject constructor(
     fun setGeoBypassCountry(country: GeoBypassCountry) {
         viewModelScope.launch {
             preferencesDataStore.setGeoBypassCountry(country.code)
+        }
+    }
+
+    // Remote DNS Settings
+    fun setRemoteDnsMode(mode: String) {
+        viewModelScope.launch {
+            preferencesDataStore.setRemoteDnsMode(mode)
+        }
+    }
+
+    fun setCustomRemoteDns(dns: String) {
+        viewModelScope.launch {
+            preferencesDataStore.setCustomRemoteDns(dns)
+        }
+    }
+
+    fun setCustomRemoteDnsFallback(dns: String) {
+        viewModelScope.launch {
+            preferencesDataStore.setCustomRemoteDnsFallback(dns)
         }
     }
 }

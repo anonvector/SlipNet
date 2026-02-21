@@ -124,24 +124,23 @@ object DnsttBridge {
      * Stop the DNSTT client and wait for port to be released.
      */
     fun stopClient() {
-        client?.let { c ->
-            try {
-                Log.d(TAG, "Stopping DNSTT client...")
-                c.stop()
-                // Verify port is actually released instead of blind sleep.
-                // Go's listener.Close() is synchronous, but give the OS a moment.
-                Thread.sleep(200)
-                val port = currentPort
-                if (port > 0 && isPortInUse(port)) {
-                    Log.w(TAG, "Port $port still in use after DNSTT stop, waiting...")
-                    waitForPortAvailable(port, 3000)
-                }
-                Log.d(TAG, "DNSTT client stopped")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error stopping DNSTT client", e)
+        val c = client ?: return
+        client = null  // Clear reference immediately to prevent new operations
+        try {
+            Log.d(TAG, "Stopping DNSTT client...")
+            c.stop()
+            // Verify port is actually released instead of blind sleep.
+            // Go's listener.Close() is synchronous, but give the OS a moment.
+            Thread.sleep(200)
+            val port = currentPort
+            if (port > 0 && isPortInUse(port)) {
+                Log.w(TAG, "Port $port still in use after DNSTT stop, waiting...")
+                waitForPortAvailable(port, 3000)
             }
+            Log.d(TAG, "DNSTT client stopped")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping DNSTT client", e)
         }
-        client = null
     }
 
     /**

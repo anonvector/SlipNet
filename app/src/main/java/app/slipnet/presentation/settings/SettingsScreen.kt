@@ -115,6 +115,7 @@ fun SettingsScreen(
     var showDomainManagementDialog by remember { mutableStateOf(false) }
     var showGeoBypassCountryDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
+    var showRemoteDnsDialog by remember { mutableStateOf(false) }
 
     // Proxy settings - local state for port text fields to avoid cursor jumps from async DataStore round-trip
     var proxyPort by remember { mutableStateOf(uiState.proxyListenPort.toString()) }
@@ -306,6 +307,25 @@ fun SettingsScreen(
                     description = "Route app traffic through HTTP proxy directly, bypassing TUN for better speeds (Android 10+)",
                     checked = uiState.appendHttpProxyToVpn,
                     onCheckedChange = { viewModel.setAppendHttpProxyToVpn(it) }
+                )
+            }
+
+            // DNS Settings
+            SettingsSection(
+                title = "DNS",
+                subtitle = "Changes apply on next connection"
+            ) {
+                ClickableSettingItem(
+                    icon = Icons.Default.Language,
+                    title = "Remote DNS server",
+                    description = if (uiState.remoteDnsMode == "custom") {
+                        val primary = uiState.customRemoteDns.ifBlank { "8.8.8.8" }
+                        val fallback = uiState.customRemoteDnsFallback.ifBlank { "1.1.1.1" }
+                        "Custom ($primary, $fallback)"
+                    } else {
+                        "Default (8.8.8.8, 1.1.1.1)"
+                    },
+                    onClick = { showRemoteDnsDialog = true }
                 )
             }
 
@@ -693,6 +713,26 @@ fun SettingsScreen(
         )
     }
 
+    // Remote DNS Dialog
+    if (showRemoteDnsDialog) {
+        RemoteDnsDialog(
+            currentMode = uiState.remoteDnsMode,
+            currentCustomDns = uiState.customRemoteDns,
+            currentCustomDnsFallback = uiState.customRemoteDnsFallback,
+            onSelectDefault = {
+                viewModel.setRemoteDnsMode("default")
+                showRemoteDnsDialog = false
+            },
+            onSelectCustom = { dns, fallback ->
+                viewModel.setRemoteDnsMode("custom")
+                viewModel.setCustomRemoteDns(dns)
+                viewModel.setCustomRemoteDnsFallback(fallback)
+                showRemoteDnsDialog = false
+            },
+            onDismiss = { showRemoteDnsDialog = false }
+        )
+    }
+
     // SSH Cipher Dialog
     if (showSshCipherDialog) {
         AlertDialog(
@@ -916,6 +956,121 @@ private fun DomainManagementDialog(
         confirmButton = {
             TextButton(onClick = { addDomain(); onDismiss() }) {
                 Text("Done")
+            }
+        }
+    )
+}
+
+@Composable
+private fun RemoteDnsDialog(
+    currentMode: String,
+    currentCustomDns: String,
+    currentCustomDnsFallback: String,
+    onSelectDefault: () -> Unit,
+    onSelectCustom: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedMode by remember { mutableStateOf(currentMode) }
+    var customDns by remember { mutableStateOf(currentCustomDns) }
+    var customDnsFallback by remember { mutableStateOf(currentCustomDnsFallback) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Remote DNS Server") },
+        text = {
+            Column {
+                Text(
+                    text = "DNS servers used on the remote side of the tunnel for resolving domain names.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+
+                // Default option
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { selectedMode = "default" }
+                        .padding(vertical = 12.dp, horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = selectedMode == "default",
+                        onClick = { selectedMode = "default" }
+                    )
+                    Column(modifier = Modifier.padding(start = 8.dp)) {
+                        Text("Default (8.8.8.8, 1.1.1.1)")
+                        Text(
+                            text = "Google primary, Cloudflare fallback",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // Custom option
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { selectedMode = "custom" }
+                        .padding(vertical = 12.dp, horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = selectedMode == "custom",
+                        onClick = { selectedMode = "custom" }
+                    )
+                    Text(
+                        text = "Custom",
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                }
+
+                if (selectedMode == "custom") {
+                    OutlinedTextField(
+                        value = customDns,
+                        onValueChange = { customDns = it },
+                        placeholder = { Text("e.g., 9.9.9.9") },
+                        supportingText = { Text("Primary DNS server") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 40.dp, top = 4.dp)
+                    )
+
+                    OutlinedTextField(
+                        value = customDnsFallback,
+                        onValueChange = { customDnsFallback = it },
+                        placeholder = { Text("e.g., 8.8.8.8") },
+                        supportingText = { Text("Fallback DNS server") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 40.dp, top = 4.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (selectedMode == "default") {
+                        onSelectDefault()
+                    } else {
+                        onSelectCustom(customDns.trim(), customDnsFallback.trim())
+                    }
+                }
+            ) {
+                Text("OK")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
             }
         }
     )

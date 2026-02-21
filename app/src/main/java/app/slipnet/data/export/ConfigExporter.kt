@@ -80,7 +80,7 @@ class ConfigExporter @Inject constructor() {
             profile.sshPort.toString(),
             "0",
             profile.sshHost,
-            if (profile.useServerDns) "1" else "0",
+            "0", // deprecated useServerDns field (kept for format compatibility)
             profile.dohUrl,
             profile.dnsTransport.value,
             profile.sshAuthType.value,

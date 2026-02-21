@@ -36,7 +36,7 @@ abstract class SlipNetDatabase : RoomDatabase() {
 
         val MIGRATION_8_9 = object : Migration(8, 9) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE server_profiles ADD COLUMN use_server_dns INTEGER NOT NULL DEFAULT 0")
+                // use_server_dns column removed — no-op migration to preserve chain
             }
         }
 

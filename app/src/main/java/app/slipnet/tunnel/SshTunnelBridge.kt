@@ -49,10 +49,8 @@ object SshTunnelBridge {
     private const val CHANNEL_RETRY_DELAY_MS = 100L  // fast retry
     private const val DNS_POOL_SIZE = 10
     private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
-    // systemd-resolved stub listener (standard on Ubuntu/Debian servers)
-    private const val SERVER_DNS_HOST = "127.0.0.53"
     // Fallback DNS when server has no local resolver (works on any server)
-    private const val FALLBACK_DNS_HOST = "8.8.8.8"
+    private const val FALLBACK_DNS_HOST = "1.1.1.1"
     // Auto cipher: prefer hardware-accelerated ciphers first
     private const val AUTO_CIPHER_ORDER =
         "aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes256-ctr"
@@ -75,10 +73,6 @@ object SshTunnelBridge {
     // When true, DNS fallback to direct DatagramSocket is disabled (DNSTT+SSH mode).
     // This prevents DNS leaks: if DNS-via-SSH fails, the query fails rather than leaking.
     private var preventDnsFallback = false
-    // When non-null, override DNS target in forwardDnsViaSsh to the SSH server's local
-    // resolver. In DNSTT+SSH mode, the SSH server's firewall may block outgoing TCP 53
-    // to external DNS servers, but 127.0.0.1:53 (local resolver) always works.
-    private var sshDnsHost: String? = null
     // Persistent DNS workers: pre-opened SSH channels shared across all FWD_UDP handlers.
     // Eliminates per-query channel open overhead (the main DNSTT bottleneck).
     private class DnsWorker(
@@ -91,7 +85,8 @@ object SshTunnelBridge {
     }
     private val dnsWorkers = arrayOfNulls<DnsWorker>(DNS_POOL_SIZE)
     private val dnsRoundRobin = AtomicInteger(0)
-    private var dnsTargetHost: String = "1.1.1.1"
+    private var dnsTargetHost: String = "8.8.8.8"
+    private var dnsFallbackHost: String = FALLBACK_DNS_HOST
     // Per-worker creation locks to prevent duplicate recreation by concurrent threads
     private val workerCreationLocks = Array(DNS_POOL_SIZE) { ReentrantLock() }
     private var dnsKeepaliveJob: Future<*>? = null
@@ -158,10 +153,11 @@ object SshTunnelBridge {
         listenPort: Int,
         listenHost: String = "127.0.0.1",
         forwardDnsThroughSsh: Boolean = false,
-        useServerDns: Boolean = false,
         sshAuthType: SshAuthType = SshAuthType.PASSWORD,
         sshPrivateKey: String = "",
-        sshKeyPassphrase: String = ""
+        sshKeyPassphrase: String = "",
+        remoteDnsHost: String = "8.8.8.8",
+        remoteDnsFallback: String = "1.1.1.1"
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting SSH tunnel (direct mode)")
@@ -169,13 +165,13 @@ object SshTunnelBridge {
         Log.i(TAG, "  SSH User: $sshUsername")
         Log.i(TAG, "  SOCKS5 Listen: $listenHost:$listenPort")
         Log.i(TAG, "  DNS through SSH: $forwardDnsThroughSsh")
-        Log.i(TAG, "  Use server DNS: $useServerDns")
+        Log.i(TAG, "  Remote DNS: $remoteDnsHost (fallback: $remoteDnsFallback)")
         Log.i(TAG, "========================================")
 
         stop()
         directDns = !forwardDnsThroughSsh
-        // When useServerDns is true, route DNS to server's local resolver (systemd-resolved)
-        sshDnsHost = if (useServerDns) SERVER_DNS_HOST else null
+        dnsTargetHost = remoteDnsHost
+        dnsFallbackHost = remoteDnsFallback
         dnsSshFailCount.set(0)
 
         return try {
@@ -250,10 +246,11 @@ object SshTunnelBridge {
         listenPort: Int,
         listenHost: String = "127.0.0.1",
         blockDirectDns: Boolean = false,
-        useServerDns: Boolean = false,
         sshAuthType: SshAuthType = SshAuthType.PASSWORD,
         sshPrivateKey: String = "",
-        sshKeyPassphrase: String = ""
+        sshKeyPassphrase: String = "",
+        remoteDnsHost: String = "8.8.8.8",
+        remoteDnsFallback: String = "1.1.1.1"
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting SSH tunnel (over tunnel)")
@@ -262,15 +259,14 @@ object SshTunnelBridge {
         Log.i(TAG, "  Tunnel: $proxyHost:$proxyPort")
         Log.i(TAG, "  SOCKS5 Listen: $listenHost:$listenPort")
         Log.i(TAG, "  Block direct DNS: $blockDirectDns")
-        Log.i(TAG, "  Use server DNS: $useServerDns")
+        Log.i(TAG, "  Remote DNS: $remoteDnsHost (fallback: $remoteDnsFallback)")
         Log.i(TAG, "========================================")
 
         stop()
         directDns = false
         preventDnsFallback = blockDirectDns
-        // When useServerDns is true, route DNS to server's local resolver (systemd-resolved).
-        // Otherwise, let the original target (e.g. 1.1.1.1) pass through via SSH direct-tcpip.
-        sshDnsHost = if (useServerDns) SERVER_DNS_HOST else null
+        dnsTargetHost = remoteDnsHost
+        dnsFallbackHost = remoteDnsFallback
         dnsSshFailCount.set(0)
 
         return try {
@@ -347,7 +343,9 @@ object SshTunnelBridge {
         listenHost: String = "127.0.0.1",
         sshAuthType: SshAuthType = SshAuthType.PASSWORD,
         sshPrivateKey: String = "",
-        sshKeyPassphrase: String = ""
+        sshKeyPassphrase: String = "",
+        remoteDnsHost: String = "8.8.8.8",
+        remoteDnsFallback: String = "1.1.1.1"
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting SSH tunnel (over Slipstream SOCKS5 proxy)")
@@ -357,13 +355,14 @@ object SshTunnelBridge {
         Log.i(TAG, "  SOCKS5 auth: ${if (!socksUsername.isNullOrBlank()) "enabled" else "disabled"}")
         Log.i(TAG, "  SOCKS5 Listen: $listenHost:$listenPort")
         Log.i(TAG, "  DNS: through SSH to server's local resolver")
+        Log.i(TAG, "  Remote DNS: $remoteDnsHost (fallback: $remoteDnsFallback)")
         Log.i(TAG, "========================================")
 
         stop()
         directDns = false
         preventDnsFallback = false
-        // Route DNS to server's local resolver or let original target pass through
-        sshDnsHost = null // startOverSocks5Proxy doesn't take useServerDns yet
+        dnsTargetHost = remoteDnsHost
+        dnsFallbackHost = remoteDnsFallback
         dnsSshFailCount.set(0)
 
         return try {
@@ -461,7 +460,6 @@ object SshTunnelBridge {
         }
         session = null
         preventDnsFallback = false
-        sshDnsHost = null
 
         logd("SSH tunnel stopped")
     }
@@ -521,9 +519,7 @@ object SshTunnelBridge {
      */
     private fun prewarmDnsChannels() {
         val s = session ?: return
-        // Prefer user-configured sshDnsHost. For DNSTT+SSH, default to server's local
-        // resolver which is faster and doesn't close TCP connections aggressively.
-        dnsTargetHost = sshDnsHost ?: if (preventDnsFallback) SERVER_DNS_HOST else "1.1.1.1"
+        // dnsTargetHost is already set by the start method from the user's global remote DNS setting.
         Log.i(TAG, "DNS workers target: $dnsTargetHost:53 (preventDnsFallback=$preventDnsFallback)")
         executor?.submit {
             for (i in 0 until DNS_POOL_SIZE) {
@@ -536,10 +532,10 @@ object SshTunnelBridge {
                     dnsWorkers[i] = DnsWorker(ch, ch.inputStream, ch.outputStream)
                     logd("DNS worker ${i + 1}/$DNS_POOL_SIZE ready → $dnsTargetHost:53")
                 } catch (e: Exception) {
-                    if (i == 0 && dnsTargetHost == SERVER_DNS_HOST) {
-                        // Server has no local resolver — fall back to public DNS
-                        Log.w(TAG, "DNS worker 1 failed on $SERVER_DNS_HOST, falling back to $FALLBACK_DNS_HOST")
-                        dnsTargetHost = FALLBACK_DNS_HOST
+                    if (i == 0) {
+                        // Primary DNS unreachable — fall back to secondary DNS
+                        Log.w(TAG, "DNS worker 1 failed on $dnsTargetHost, falling back to $dnsFallbackHost")
+                        dnsTargetHost = dnsFallbackHost
                         try {
                             val fallbackCh = s.openChannel("direct-tcpip") as ChannelDirectTCPIP
                             fallbackCh.setHost(dnsTargetHost)

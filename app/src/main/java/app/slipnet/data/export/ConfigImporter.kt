@@ -707,7 +707,7 @@ class ConfigImporter @Inject constructor() {
         val sshPassword = fields[16]
         val sshPort = fields[17].toIntOrNull() ?: 22
         val sshHost = fields[19]
-        val useServerDns = fields[20] == "1"
+        // fields[20] was useServerDns — ignored (removed, now global setting)
 
         if (name.isBlank()) {
             return ProfileParseResult.Error("Line $lineNum: Profile name is required")
@@ -760,8 +760,7 @@ class ConfigImporter @Inject constructor() {
             sshUsername = sshUsername,
             sshPassword = sshPassword,
             sshPort = sshPort,
-            sshHost = sshHost,
-            useServerDns = useServerDns
+            sshHost = sshHost
         )
 
         return ProfileParseResult.Success(profile)
@@ -802,7 +801,7 @@ class ConfigImporter @Inject constructor() {
         val sshPassword = fields[16]
         val sshPort = fields[17].toIntOrNull() ?: 22
         val sshHost = fields[19]
-        val useServerDns = fields[20] == "1"
+        // fields[20] was useServerDns — ignored (removed, now global setting)
         val dohUrl = fields[21]
 
         if (name.isBlank()) {
@@ -866,7 +865,6 @@ class ConfigImporter @Inject constructor() {
             sshPassword = sshPassword,
             sshPort = sshPort,
             sshHost = sshHost,
-            useServerDns = useServerDns,
             dohUrl = dohUrl
         )
 
@@ -908,7 +906,7 @@ class ConfigImporter @Inject constructor() {
         val sshPassword = fields[16]
         val sshPort = fields[17].toIntOrNull() ?: 22
         val sshHost = fields[19]
-        val useServerDns = fields[20] == "1"
+        // fields[20] was useServerDns — ignored (removed, now global setting)
         val dohUrl = fields[21]
         val dnsTransport = DnsTransport.fromValue(fields[22])
 
@@ -978,7 +976,6 @@ class ConfigImporter @Inject constructor() {
             sshPassword = sshPassword,
             sshPort = sshPort,
             sshHost = sshHost,
-            useServerDns = useServerDns,
             dohUrl = dohUrl,
             dnsTransport = dnsTransport
         )
@@ -1035,7 +1032,7 @@ class ConfigImporter @Inject constructor() {
         val sshPassword = fields[16]
         val sshPort = fields[17].toIntOrNull() ?: 22
         val sshHost = fields[19]
-        val useServerDns = fields[20] == "1"
+        // fields[20] was useServerDns — ignored (removed, now global setting)
         val dohUrl = fields[21]
         val dnsTransport = DnsTransport.fromValue(fields[22])
         val sshAuthType = SshAuthType.fromValue(fields[23])
@@ -1115,7 +1112,6 @@ class ConfigImporter @Inject constructor() {
             sshPassword = sshPassword,
             sshPort = sshPort,
             sshHost = sshHost,
-            useServerDns = useServerDns,
             dohUrl = dohUrl,
             dnsTransport = dnsTransport,
             sshAuthType = sshAuthType,
@@ -1164,7 +1160,7 @@ class ConfigImporter @Inject constructor() {
         val sshPassword = fields[16]
         val sshPort = fields[17].toIntOrNull() ?: 22
         val sshHost = fields[19]
-        val useServerDns = fields[20] == "1"
+        // fields[20] was useServerDns — ignored (removed, now global setting)
         val dohUrl = fields[21]
         val dnsTransport = DnsTransport.fromValue(fields[22])
         val sshAuthType = SshAuthType.fromValue(fields[23])
@@ -1249,7 +1245,6 @@ class ConfigImporter @Inject constructor() {
             sshPassword = sshPassword,
             sshPort = sshPort,
             sshHost = sshHost,
-            useServerDns = useServerDns,
             dohUrl = dohUrl,
             dnsTransport = dnsTransport,
             sshAuthType = sshAuthType,
@@ -1300,7 +1295,7 @@ class ConfigImporter @Inject constructor() {
         val sshPassword = fields[16]
         val sshPort = fields[17].toIntOrNull() ?: 22
         val sshHost = fields[19]
-        val useServerDns = fields[20] == "1"
+        // fields[20] was useServerDns — ignored (removed, now global setting)
         val dohUrl = fields[21]
         val dnsTransport = DnsTransport.fromValue(fields[22])
         val sshAuthType = SshAuthType.fromValue(fields[23])
@@ -1386,7 +1381,6 @@ class ConfigImporter @Inject constructor() {
             sshPassword = sshPassword,
             sshPort = sshPort,
             sshHost = sshHost,
-            useServerDns = useServerDns,
             dohUrl = dohUrl,
             dnsTransport = dnsTransport,
             sshAuthType = sshAuthType,

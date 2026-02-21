@@ -209,7 +209,8 @@ class VpnRepositoryImpl @Inject constructor(
         bridgeHost: String,
         socksUsername: String? = null,
         socksPassword: String? = null,
-        dnsServer: String? = null
+        dnsServer: String? = null,
+        dnsFallback: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val result = SlipstreamSocksBridge.start(
             slipstreamPort = slipstreamPort,
@@ -218,7 +219,8 @@ class VpnRepositoryImpl @Inject constructor(
             listenHost = bridgeHost,
             socksUsername = socksUsername,
             socksPassword = socksPassword,
-            dnsServer = dnsServer
+            dnsServer = dnsServer,
+            dnsFallback = dnsFallback
         )
         if (result.isSuccess) {
             Log.i(TAG, "SlipstreamSocksBridge started on $bridgeHost:$bridgePort -> $slipstreamHost:$slipstreamPort")
@@ -238,7 +240,9 @@ class VpnRepositoryImpl @Inject constructor(
         bridgePort: Int,
         bridgeHost: String,
         socksUsername: String? = null,
-        socksPassword: String? = null
+        socksPassword: String? = null,
+        dnsServer: String? = null,
+        dnsFallback: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val result = DnsttSocksBridge.start(
             dnsttPort = dnsttPort,
@@ -246,7 +250,9 @@ class VpnRepositoryImpl @Inject constructor(
             listenPort = bridgePort,
             listenHost = bridgeHost,
             socksUsername = socksUsername,
-            socksPassword = socksPassword
+            socksPassword = socksPassword,
+            dnsServer = dnsServer,
+            dnsFallback = dnsFallback
         )
         if (result.isSuccess) {
             Log.i(TAG, "DnsttSocksBridge started on $bridgeHost:$bridgePort -> $dnsttHost:$dnsttPort")

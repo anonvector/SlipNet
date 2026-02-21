@@ -26,8 +26,6 @@ data class ServerProfile(
     val sshPort: Int = 22,
     // SSH host as seen from DNSTT server (for DNSTT+SSH, default 127.0.0.1 for co-located servers)
     val sshHost: String = "127.0.0.1",
-    // When true, DNS queries go to server's local resolver (127.0.0.53) instead of VPN DNS (e.g. 1.1.1.1)
-    val useServerDns: Boolean = false,
     // DoH (DNS over HTTPS) server URL
     val dohUrl: String = "",
     // Timestamp of last successful connection (0 = never connected)

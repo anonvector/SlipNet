@@ -75,6 +75,10 @@ class PreferencesDataStore @Inject constructor(
         // Geo-Bypass Keys
         val GEO_BYPASS_ENABLED = booleanPreferencesKey("geo_bypass_enabled")
         val GEO_BYPASS_COUNTRY = stringPreferencesKey("geo_bypass_country")
+        // Remote DNS Keys
+        val REMOTE_DNS_MODE = stringPreferencesKey("remote_dns_mode")
+        val CUSTOM_REMOTE_DNS = stringPreferencesKey("custom_remote_dns")
+        val CUSTOM_REMOTE_DNS_FALLBACK = stringPreferencesKey("custom_remote_dns_fallback")
     }
 
     // Auto-connect on boot
@@ -469,6 +473,70 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setGeoBypassCountry(country: String) {
         dataStore.edit { prefs ->
             prefs[Keys.GEO_BYPASS_COUNTRY] = country
+        }
+    }
+
+    // Remote DNS Settings
+    val remoteDnsMode: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.REMOTE_DNS_MODE] ?: "default"
+    }
+
+    suspend fun setRemoteDnsMode(mode: String) {
+        dataStore.edit { prefs ->
+            prefs[Keys.REMOTE_DNS_MODE] = mode
+        }
+    }
+
+    val customRemoteDns: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.CUSTOM_REMOTE_DNS] ?: ""
+    }
+
+    suspend fun setCustomRemoteDns(dns: String) {
+        dataStore.edit { prefs ->
+            prefs[Keys.CUSTOM_REMOTE_DNS] = dns
+        }
+    }
+
+    val customRemoteDnsFallback: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.CUSTOM_REMOTE_DNS_FALLBACK] ?: ""
+    }
+
+    suspend fun setCustomRemoteDnsFallback(dns: String) {
+        dataStore.edit { prefs ->
+            prefs[Keys.CUSTOM_REMOTE_DNS_FALLBACK] = dns
+        }
+    }
+
+    companion object {
+        const val DEFAULT_REMOTE_DNS = "8.8.8.8"
+        const val DEFAULT_REMOTE_DNS_FALLBACK = "1.1.1.1"
+    }
+
+    /**
+     * Returns the effective primary remote DNS server IP.
+     * "8.8.8.8" for default mode, or the custom IP when custom mode is selected.
+     */
+    fun getEffectiveRemoteDns(): Flow<String> = dataStore.data.map { prefs ->
+        val mode = prefs[Keys.REMOTE_DNS_MODE] ?: "default"
+        if (mode == "custom") {
+            val custom = prefs[Keys.CUSTOM_REMOTE_DNS] ?: ""
+            custom.ifBlank { DEFAULT_REMOTE_DNS }
+        } else {
+            DEFAULT_REMOTE_DNS
+        }
+    }
+
+    /**
+     * Returns the effective fallback remote DNS server IP.
+     * "1.1.1.1" for default mode, or the custom fallback when custom mode is selected.
+     */
+    fun getEffectiveRemoteDnsFallback(): Flow<String> = dataStore.data.map { prefs ->
+        val mode = prefs[Keys.REMOTE_DNS_MODE] ?: "default"
+        if (mode == "custom") {
+            val custom = prefs[Keys.CUSTOM_REMOTE_DNS_FALLBACK] ?: ""
+            custom.ifBlank { DEFAULT_REMOTE_DNS_FALLBACK }
+        } else {
+            DEFAULT_REMOTE_DNS_FALLBACK
         }
     }
 

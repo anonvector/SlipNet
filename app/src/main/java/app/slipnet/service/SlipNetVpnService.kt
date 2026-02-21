@@ -301,16 +301,20 @@ class SlipNetVpnService : VpnService() {
                 Log.i(TAG, "Starting VPN with tunnel type: $currentTunnelType")
 
                 val dnsServer = profile.resolvers.firstOrNull()?.host ?: DEFAULT_DNS
+                // Remote DNS: the DNS servers used on the remote side of the tunnel
+                val remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
+                val remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
+                Log.i(TAG, "Remote DNS: $remoteDns (fallback: $remoteDnsFallback)")
 
                 // The startup order differs between tunnel types:
                 // - Slipstream: Start proxy first (Rust uses protect_socket JNI callback)
                 // - DNSTT: Establish VPN first (uses addDisallowedApplication for socket protection)
                 when (currentTunnelType) {
-                    TunnelType.SLIPSTREAM -> connectSlipstream(profile, dnsServer)
-                    TunnelType.SLIPSTREAM_SSH -> connectSlipstreamSsh(profile, dnsServer)
-                    TunnelType.DNSTT -> connectDnstt(profile, dnsServer)
-                    TunnelType.SSH -> connectSsh(profile, dnsServer)
-                    TunnelType.DNSTT_SSH -> connectDnsttSsh(profile, dnsServer)
+                    TunnelType.SLIPSTREAM -> connectSlipstream(profile, dnsServer, remoteDns, remoteDnsFallback)
+                    TunnelType.SLIPSTREAM_SSH -> connectSlipstreamSsh(profile, dnsServer, remoteDns, remoteDnsFallback)
+                    TunnelType.DNSTT -> connectDnstt(profile, dnsServer, remoteDns, remoteDnsFallback)
+                    TunnelType.SSH -> connectSsh(profile, dnsServer, remoteDns, remoteDnsFallback)
+                    TunnelType.DNSTT_SSH -> connectDnsttSsh(profile, dnsServer, remoteDns, remoteDnsFallback)
                     TunnelType.DOH -> connectDoh(profile, dnsServer)
                     TunnelType.SNOWFLAKE -> connectSnowflake(profile, dnsServer)
                 }
@@ -342,7 +346,7 @@ class SlipNetVpnService : VpnService() {
      *
      * addDisallowedApplication ensures the bridge's DatagramSockets bypass VPN.
      */
-    private suspend fun connectSlipstream(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String) {
+    private suspend fun connectSlipstream(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
         val slipstreamPort = proxyPort + 1
@@ -380,7 +384,7 @@ class SlipNetVpnService : VpnService() {
         }
 
         // Step 3: Start SlipstreamSocksBridge on proxyPort (user-facing, with auth for Dante)
-        // DNS target defaults to 1.1.1.1 — resolved at the REMOTE server (through Dante),
+        // DNS target resolved at the REMOTE server (through Dante),
         // not locally. Using local/ISP DNS would give poisoned results in censored networks.
         val bridgeResult = vpnRepository.startSlipstreamSocksBridge(
             slipstreamPort = actualSlipstreamPort,
@@ -388,7 +392,9 @@ class SlipNetVpnService : VpnService() {
             bridgePort = proxyPort,
             bridgeHost = proxyHost,
             socksUsername = profile.socksUsername,
-            socksPassword = profile.socksPassword
+            socksPassword = profile.socksPassword,
+            dnsServer = remoteDns,
+            dnsFallback = remoteDnsFallback
         )
         if (bridgeResult.isFailure) {
             connectionManager.onVpnError(bridgeResult.exceptionOrNull()?.message ?: "Failed to start SOCKS5 bridge")
@@ -514,7 +520,7 @@ class SlipNetVpnService : VpnService() {
         )
     }
 
-    private suspend fun connectSlipstreamSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String) {
+    private suspend fun connectSlipstreamSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
         val slipstreamPort = proxyPort + 1
@@ -580,10 +586,11 @@ class SlipNetVpnService : VpnService() {
                 listenPort = proxyPort,
                 listenHost = proxyHost,
                 blockDirectDns = true,  // No addDisallowedApplication — direct UDP would loop through VPN
-                useServerDns = profile.useServerDns,
                 sshAuthType = profile.sshAuthType,
                 sshPrivateKey = profile.sshPrivateKey,
-                sshKeyPassphrase = profile.sshKeyPassphrase
+                sshKeyPassphrase = profile.sshKeyPassphrase,
+                remoteDnsHost = remoteDns,
+                remoteDnsFallback = remoteDnsFallback
             )
         }
         if (sshResult.isFailure) {
@@ -655,7 +662,7 @@ class SlipNetVpnService : VpnService() {
      * is in effect when DNSTT creates its UDP sockets. This prevents a routing loop where
      * DNSTT's DNS queries would be captured by the VPN.
      */
-    private suspend fun connectDnstt(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String) {
+    private suspend fun connectDnstt(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
         val dnsttPort = proxyPort + 1
@@ -700,7 +707,7 @@ class SlipNetVpnService : VpnService() {
         }
 
         // Step 4: Start DnsttSocksBridge on proxyPort (user-facing, with auth for Dante)
-        // DNS target defaults to 1.1.1.1 — resolved at the REMOTE server (through Dante),
+        // DNS target resolved at the REMOTE server (through Dante),
         // not locally. Using local/ISP DNS would give poisoned results in censored networks.
         val bridgeResult = vpnRepository.startDnsttSocksBridge(
             dnsttPort = dnsttPort,
@@ -708,7 +715,9 @@ class SlipNetVpnService : VpnService() {
             bridgePort = proxyPort,
             bridgeHost = proxyHost,
             socksUsername = profile.socksUsername,
-            socksPassword = profile.socksPassword
+            socksPassword = profile.socksPassword,
+            dnsServer = remoteDns,
+            dnsFallback = remoteDnsFallback
         )
         if (bridgeResult.isFailure) {
             connectionManager.onVpnError(bridgeResult.exceptionOrNull()?.message ?: "Failed to start DNSTT SOCKS5 bridge")
@@ -764,7 +773,7 @@ class SlipNetVpnService : VpnService() {
      * SSH connects directly to the remote server (no DNS tunneling).
      * DNS queries go direct via DatagramSocket (bypasses VPN via addDisallowedApplication).
      */
-    private suspend fun connectSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String) {
+    private suspend fun connectSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
 
@@ -781,10 +790,11 @@ class SlipNetVpnService : VpnService() {
                     listenPort = proxyPort,
                     listenHost = proxyHost,
                     forwardDnsThroughSsh = true,
-                    useServerDns = profile.useServerDns,
                     sshAuthType = profile.sshAuthType,
                     sshPrivateKey = profile.sshPrivateKey,
-                    sshKeyPassphrase = profile.sshKeyPassphrase
+                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                    remoteDnsHost = remoteDns,
+                    remoteDnsFallback = remoteDnsFallback
                 )
             }
             if (sshResult.isFailure) {
@@ -834,10 +844,11 @@ class SlipNetVpnService : VpnService() {
                 listenPort = proxyPort,
                 listenHost = proxyHost,
                 forwardDnsThroughSsh = true,
-                useServerDns = profile.useServerDns,
                 sshAuthType = profile.sshAuthType,
                 sshPrivateKey = profile.sshPrivateKey,
-                sshKeyPassphrase = profile.sshKeyPassphrase
+                sshKeyPassphrase = profile.sshKeyPassphrase,
+                remoteDnsHost = remoteDns,
+                remoteDnsFallback = remoteDnsFallback
             )
         }
         if (sshResult.isFailure) {
@@ -887,7 +898,7 @@ class SlipNetVpnService : VpnService() {
      *   -> SSH direct-tcpip -> DNSTT (proxyPort+1, 127.0.0.1, raw TCP tunnel)
      *   -> DNS tunnel (UDP 53) -> DNSTT Server -> SSH Server -> Internet
      */
-    private suspend fun connectDnsttSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String) {
+    private suspend fun connectDnsttSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
         val dnsttPort = proxyPort + 1
@@ -949,10 +960,11 @@ class SlipNetVpnService : VpnService() {
                 listenPort = proxyPort,
                 listenHost = proxyHost,
                 blockDirectDns = true,
-                useServerDns = profile.useServerDns,
                 sshAuthType = profile.sshAuthType,
                 sshPrivateKey = profile.sshPrivateKey,
-                sshKeyPassphrase = profile.sshKeyPassphrase
+                sshKeyPassphrase = profile.sshKeyPassphrase,
+                remoteDnsHost = remoteDns,
+                remoteDnsFallback = remoteDnsFallback
             )
         }
         if (sshResult.isFailure) {
@@ -1747,6 +1759,8 @@ class SlipNetVpnService : VpnService() {
 
                 val proxyPort = preferencesDataStore.proxyListenPort.first()
                 val proxyHost = preferencesDataStore.proxyListenAddress.first()
+                val remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
+                val remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
 
                 // Restart the appropriate proxy
                 if (currentTunnelType == TunnelType.SSH) {
@@ -1761,10 +1775,11 @@ class SlipNetVpnService : VpnService() {
                             listenPort = proxyPort,
                             listenHost = proxyHost,
                             forwardDnsThroughSsh = true,
-                            useServerDns = profile.useServerDns,
                             sshAuthType = profile.sshAuthType,
                             sshPrivateKey = profile.sshPrivateKey,
-                            sshKeyPassphrase = profile.sshKeyPassphrase
+                            sshKeyPassphrase = profile.sshKeyPassphrase,
+                            remoteDnsHost = remoteDns,
+                            remoteDnsFallback = remoteDnsFallback
                         )
                     }
                     if (sshResult.isFailure) {
@@ -1811,10 +1826,11 @@ class SlipNetVpnService : VpnService() {
                             listenPort = proxyPort,
                             listenHost = proxyHost,
                             blockDirectDns = true,
-                            useServerDns = profile.useServerDns,
                             sshAuthType = profile.sshAuthType,
                             sshPrivateKey = profile.sshPrivateKey,
-                            sshKeyPassphrase = profile.sshKeyPassphrase
+                            sshKeyPassphrase = profile.sshKeyPassphrase,
+                            remoteDnsHost = remoteDns,
+                            remoteDnsFallback = remoteDnsFallback
                         )
                     }
                     if (sshResult.isFailure) {
@@ -1866,10 +1882,11 @@ class SlipNetVpnService : VpnService() {
                             listenPort = proxyPort,
                             listenHost = proxyHost,
                             blockDirectDns = true,
-                            useServerDns = profile.useServerDns,
                             sshAuthType = profile.sshAuthType,
                             sshPrivateKey = profile.sshPrivateKey,
-                            sshKeyPassphrase = profile.sshKeyPassphrase
+                            sshKeyPassphrase = profile.sshKeyPassphrase,
+                            remoteDnsHost = remoteDns,
+                            remoteDnsFallback = remoteDnsFallback
                         )
                     }
                     if (sshResult.isFailure) {
