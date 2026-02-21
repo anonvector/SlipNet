@@ -63,6 +63,7 @@ sealed class ImportResult {
  *
  * Decoded profile format v13 (extends v12 with DNSTT authoritative mode):
  * v13|..same as v12..|dnsttAuthoritative
+ *
  */
 @Singleton
 class ConfigImporter @Inject constructor() {
@@ -1397,7 +1398,6 @@ class ConfigImporter @Inject constructor() {
 
         return ProfileParseResult.Success(profile)
     }
-
 
     private fun parseResolvers(resolversStr: String): List<DnsResolver> {
         if (resolversStr.isBlank()) return emptyList()

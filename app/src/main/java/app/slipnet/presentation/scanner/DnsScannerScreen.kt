@@ -226,11 +226,14 @@ fun DnsScannerScreen(
                 isLoading = uiState.isLoadingList,
                 selectedCountry = uiState.selectedCountry,
                 sampleCount = uiState.sampleCount,
+                customRangeInput = uiState.customRangeInput,
                 onLoadDefault = { viewModel.loadDefaultList() },
                 onImportFile = { filePickerLauncher.launch("text/*") },
                 onSelectCountry = { viewModel.updateSelectedCountry(it) },
                 onSelectSampleCount = { viewModel.updateSampleCount(it) },
-                onGenerateCountryList = { viewModel.loadCountryRangeList() }
+                onGenerateCountryList = { viewModel.loadCountryRangeList() },
+                onCustomRangeInputChange = { viewModel.updateCustomRangeInput(it) },
+                onLoadCustomRange = { viewModel.loadCustomRangeList() }
             )
 
             // Recent DNS
@@ -561,13 +564,17 @@ private fun ResolverListSection(
     isLoading: Boolean,
     selectedCountry: GeoBypassCountry,
     sampleCount: Int,
+    customRangeInput: String,
     onLoadDefault: () -> Unit,
     onImportFile: () -> Unit,
     onSelectCountry: (GeoBypassCountry) -> Unit,
     onSelectSampleCount: (Int) -> Unit,
-    onGenerateCountryList: () -> Unit
+    onGenerateCountryList: () -> Unit,
+    onCustomRangeInputChange: (String) -> Unit,
+    onLoadCustomRange: () -> Unit
 ) {
     var showCountryOptions by remember { mutableStateOf(listSource == ListSource.COUNTRY_RANGE) }
+    var showCustomRangeOptions by remember { mutableStateOf(listSource == ListSource.CUSTOM_RANGE) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -625,6 +632,7 @@ private fun ResolverListSection(
                             ListSource.DEFAULT -> "Built-in list"
                             ListSource.IMPORTED -> "Imported from file"
                             ListSource.COUNTRY_RANGE -> "${selectedCountry.displayName} IP range ($sampleCount random IPs)"
+                            ListSource.CUSTOM_RANGE -> "Custom range ($resolverCount IPs)"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -639,6 +647,7 @@ private fun ResolverListSection(
                 OutlinedButton(
                     onClick = {
                         showCountryOptions = false
+                        showCustomRangeOptions = false
                         onLoadDefault()
                     },
                     modifier = Modifier.weight(1f),
@@ -657,6 +666,7 @@ private fun ResolverListSection(
                 OutlinedButton(
                     onClick = {
                         showCountryOptions = false
+                        showCustomRangeOptions = false
                         onImportFile()
                     },
                     modifier = Modifier.weight(1f),
@@ -671,9 +681,17 @@ private fun ResolverListSection(
                     Spacer(Modifier.width(6.dp))
                     Text("Import", maxLines = 1)
                 }
+            }
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 OutlinedButton(
-                    onClick = { showCountryOptions = !showCountryOptions },
+                    onClick = {
+                        showCustomRangeOptions = false
+                        showCountryOptions = !showCountryOptions
+                    },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(vertical = 10.dp),
@@ -692,6 +710,86 @@ private fun ResolverListSection(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text("Country", maxLines = 1)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        showCountryOptions = false
+                        showCustomRangeOptions = !showCustomRangeOptions
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(vertical = 10.dp),
+                    colors = if (showCustomRangeOptions || listSource == ListSource.CUSTOM_RANGE) {
+                        ButtonDefaults.outlinedButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                    } else {
+                        ButtonDefaults.outlinedButtonColors()
+                    }
+                ) {
+                    Icon(
+                        Icons.Default.Dns,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Custom", maxLines = 1)
+                }
+            }
+
+            // Custom range options
+            AnimatedVisibility(visible = showCustomRangeOptions) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedTextField(
+                        value = customRangeInput,
+                        onValueChange = onCustomRangeInputChange,
+                        label = { Text("IP Ranges") },
+                        placeholder = { Text("8.8.8.0/24\n1.1.1.1-1.1.1.10\n9.9.9.9") },
+                        supportingText = { Text("One per line: CIDR, range, or single IP") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(140.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        maxLines = 8
+                    )
+
+                    FilledTonalButton(
+                        onClick = onLoadCustomRange,
+                        enabled = !isLoading && customRangeInput.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text("Load IPs")
+                    }
+
+                    AnimatedVisibility(
+                        visible = listSource == ListSource.CUSTOM_RANGE && !isLoading && resolverCount > 0
+                    ) {
+                        Text(
+                            text = "Ready! Scroll up and tap Start Scan to begin.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
 

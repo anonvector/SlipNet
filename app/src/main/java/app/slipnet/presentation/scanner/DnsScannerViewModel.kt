@@ -11,6 +11,7 @@ import app.slipnet.domain.model.ScanMode
 import app.slipnet.domain.model.ScannerState
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.repository.ResolverScannerRepository
+import app.slipnet.tunnel.DomainRouter
 import app.slipnet.tunnel.GeoBypassCountry
 import com.google.gson.Gson
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -40,6 +41,7 @@ data class DnsScannerUiState(
     val listSource: ListSource = ListSource.DEFAULT,
     val selectedCountry: GeoBypassCountry = GeoBypassCountry.IR,
     val sampleCount: Int = 2000,
+    val customRangeInput: String = "",
     val showResumeDialog: Boolean = false
 ) {
     companion object {
@@ -56,7 +58,8 @@ data class DnsScannerUiState(
 enum class ListSource {
     DEFAULT,
     IMPORTED,
-    COUNTRY_RANGE
+    COUNTRY_RANGE,
+    CUSTOM_RANGE
 }
 
 // Lightweight models for JSON serialization of scan sessions.
@@ -69,7 +72,8 @@ private data class SavedScanSession(
     val listSource: String,
     val scannedCount: Int,
     val workingCount: Int,
-    val results: List<SavedResult>
+    val results: List<SavedResult>,
+    val customRangeInput: String? = null
 )
 
 private data class SavedResult(
@@ -151,7 +155,8 @@ class DnsScannerViewModel @Inject constructor(
                                 workingCount = session.workingCount,
                                 results = results
                             ),
-                            selectedResolvers = emptySet()
+                            selectedResolvers = emptySet(),
+                            customRangeInput = session.customRangeInput ?: ""
                         )
                         return@launch
                     }
@@ -182,7 +187,8 @@ class DnsScannerViewModel @Inject constructor(
             listSource = state.listSource.name,
             scannedCount = scanState.scannedCount,
             workingCount = scanState.workingCount,
-            results = savedResults
+            results = savedResults,
+            customRangeInput = state.customRangeInput.ifEmpty { null }
         )
 
         viewModelScope.launch {
@@ -303,6 +309,89 @@ class DnsScannerViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    fun updateCustomRangeInput(text: String) {
+        _uiState.value = _uiState.value.copy(customRangeInput = text)
+    }
+
+    fun loadCustomRangeList() {
+        val input = _uiState.value.customRangeInput
+        val ranges = mutableListOf<Pair<Long, Long>>()
+
+        for (line in input.lines()) {
+            val trimmed = line.trim()
+            if (trimmed.isBlank()) continue
+            val range = parseIpRange(trimmed)
+            if (range != null) {
+                ranges.add(range)
+            }
+        }
+
+        if (ranges.isEmpty()) {
+            _uiState.value = _uiState.value.copy(
+                error = "No valid IP ranges found. Use CIDR (8.8.8.0/24), range (8.8.8.1-8.8.8.254), or single IP."
+            )
+            return
+        }
+
+        // Safety cap check
+        var totalCount = 0L
+        for ((start, end) in ranges) {
+            totalCount += (end - start + 1)
+            if (totalCount > 100_000) {
+                _uiState.value = _uiState.value.copy(
+                    error = "Too many IPs (over 100,000). Use smaller ranges."
+                )
+                return
+            }
+        }
+
+        _uiState.value = _uiState.value.copy(isLoadingList = true)
+
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                val ips = scannerRepository.expandIpRanges(ranges)
+                clearSavedSession()
+                _uiState.value = _uiState.value.copy(
+                    resolverList = ips,
+                    listSource = ListSource.CUSTOM_RANGE,
+                    scannerState = ScannerState(),
+                    selectedResolvers = emptySet(),
+                    isLoadingList = false,
+                    timeoutMs = "1500"
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isLoadingList = false,
+                    error = "Failed to expand IP ranges: ${e.message}"
+                )
+            }
+        }
+    }
+
+    private fun parseIpRange(line: String): Pair<Long, Long>? {
+        // Try CIDR first (e.g. 8.8.8.0/24)
+        DomainRouter.parseCidr(line)?.let { return it }
+
+        // Try range format (e.g. 8.8.8.1-8.8.8.254)
+        if ('-' in line) {
+            val parts = line.split('-', limit = 2)
+            if (parts.size == 2) {
+                val start = DomainRouter.ipToLong(parts[0].trim())
+                val end = DomainRouter.ipToLong(parts[1].trim())
+                if (start != null && end != null && start <= end) {
+                    return Pair(start, end)
+                }
+            }
+        }
+
+        // Try single IP (e.g. 8.8.8.8)
+        DomainRouter.ipToLong(line)?.let { ip ->
+            return Pair(ip, ip)
+        }
+
+        return null
     }
 
     fun toggleResolverSelection(host: String) {
@@ -534,7 +623,8 @@ class DnsScannerViewModel @Inject constructor(
                 listSource = state.listSource.name,
                 scannedCount = ss.scannedCount,
                 workingCount = ss.workingCount,
-                results = savedResults
+                results = savedResults,
+                customRangeInput = state.customRangeInput.ifEmpty { null }
             )
             try {
                 val file = java.io.File(appContext.cacheDir, "scan_session.json")

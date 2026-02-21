@@ -28,6 +28,13 @@ interface ResolverScannerRepository {
     fun generateCountryRangeIps(context: Context, countryCode: String, count: Int): List<String>
 
     /**
+     * Expand IP ranges into a full list of individual IP addresses
+     * @param ranges List of (startIpLong, endIpLong) pairs
+     * @return List of all IP address strings in the ranges
+     */
+    fun expandIpRanges(ranges: List<Pair<Long, Long>>): List<String>
+
+    /**
      * Scan a single resolver for DNS connectivity
      * @param host The IP address to scan
      * @param port The DNS port (default 53)

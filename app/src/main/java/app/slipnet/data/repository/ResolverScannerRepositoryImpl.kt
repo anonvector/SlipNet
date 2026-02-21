@@ -270,6 +270,18 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         }
     }
 
+    override fun expandIpRanges(ranges: List<Pair<Long, Long>>): List<String> {
+        val result = mutableListOf<String>()
+        for ((start, end) in ranges) {
+            var ip = start
+            while (ip <= end) {
+                result.add(longToIp(ip))
+                ip++
+            }
+        }
+        return result
+    }
+
     override fun generateCountryRangeIps(
         context: android.content.Context,
         countryCode: String,

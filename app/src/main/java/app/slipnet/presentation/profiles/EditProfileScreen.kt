@@ -182,7 +182,14 @@ fun EditProfileScreen(
                     OutlinedTextField(
                         value = uiState.domain,
                         onValueChange = { viewModel.updateDomain(it) },
-                        label = { Text(if (uiState.isSshOnly) "SSH Server" else "Domain") },
+                        label = {
+                            Text(
+                                when {
+                                    uiState.isSshOnly -> "SSH Server"
+                                    else -> "Domain"
+                                }
+                            )
+                        },
                         placeholder = {
                             Text(
                                 when {

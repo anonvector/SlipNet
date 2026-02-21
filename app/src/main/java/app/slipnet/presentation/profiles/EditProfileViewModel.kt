@@ -119,7 +119,7 @@ data class EditProfileUiState(
     val isRequestingBridges: Boolean = false,
     val isAskingTor: Boolean = false,
     // DNSTT authoritative mode (aggressive query rate for own servers)
-    val dnsttAuthoritative: Boolean = false
+    val dnsttAuthoritative: Boolean = false,
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH
@@ -879,7 +879,7 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
-        // Resolver validation (SSH-only, DOH profiles, and DNSTT with DoH transport don't need resolvers)
+        // Resolver validation (SSH-only, DOH, Snowflake, and DNSTT with DoH transport don't need resolvers)
         val skipResolvers = state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
                 state.tunnelType == TunnelType.SNOWFLAKE ||
                 (state.isDnsttBased && state.dnsTransport == DnsTransport.DOH)
@@ -977,7 +977,7 @@ class EditProfileViewModel @Inject constructor(
                     sshPrivateKey = if (state.useSsh && state.sshAuthType == SshAuthType.KEY) state.sshPrivateKey else "",
                     sshKeyPassphrase = if (state.useSsh && state.sshAuthType == SshAuthType.KEY) state.sshKeyPassphrase else "",
                     torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else "",
-                    dnsttAuthoritative = if (state.isDnsttBased) state.dnsttAuthoritative else false
+                    dnsttAuthoritative = if (state.isDnsttBased) state.dnsttAuthoritative else false,
                 )
 
                 val savedId = saveProfileUseCase(profile)
@@ -1026,6 +1026,7 @@ class EditProfileViewModel @Inject constructor(
         val isDnsTunnel = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH ||
                 tunnelType == TunnelType.SLIPSTREAM || tunnelType == TunnelType.SLIPSTREAM_SSH
 
+        // SSH accepts hostnames and IPs — no DNS domain validation needed
         if (!isDnsTunnel) return null
 
         // Must not be an IP address

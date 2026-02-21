@@ -1,7 +1,6 @@
 package app.slipnet.data.export
 
 import android.util.Base64
-import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
