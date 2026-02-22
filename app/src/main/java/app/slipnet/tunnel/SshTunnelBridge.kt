@@ -345,13 +345,15 @@ object SshTunnelBridge {
         sshPrivateKey: String = "",
         sshKeyPassphrase: String = "",
         remoteDnsHost: String = "8.8.8.8",
-        remoteDnsFallback: String = "1.1.1.1"
+        remoteDnsFallback: String = "1.1.1.1",
+        naiveMode: Boolean = false
     ): Result<Unit> {
+        val proxyLabel = if (naiveMode) "NaiveProxy" else "Slipstream"
         Log.i(TAG, "========================================")
-        Log.i(TAG, "Starting SSH tunnel (over Slipstream SOCKS5 proxy)")
+        Log.i(TAG, "Starting SSH tunnel (over $proxyLabel SOCKS5 proxy)")
         Log.i(TAG, "  SSH target: $sshHost:$sshPort")
         Log.i(TAG, "  SSH User: $sshUsername")
-        Log.i(TAG, "  Slipstream proxy: $proxyHost:$proxyPort")
+        Log.i(TAG, "  $proxyLabel proxy: $proxyHost:$proxyPort")
         Log.i(TAG, "  SOCKS5 auth: ${if (!socksUsername.isNullOrBlank()) "enabled" else "disabled"}")
         Log.i(TAG, "  SOCKS5 Listen: $listenHost:$listenPort")
         Log.i(TAG, "  DNS: through SSH to server's local resolver")
@@ -383,32 +385,39 @@ object SshTunnelBridge {
                 newSession.setPassword(sshPassword)
             }
 
-            // Set up SOCKS5 proxy through Slipstream
-            val proxy = ProxySOCKS5(proxyHost, proxyPort)
-            if (!socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()) {
-                proxy.setUserPasswd(socksUsername, socksPassword)
+            // Set up SOCKS5 proxy
+            val proxy: com.jcraft.jsch.Proxy = if (naiveMode) {
+                // NaiveProxy: use custom SOCKS5 proxy (NO_AUTH only, proper ATYP, logging)
+                NaiveSocksProxy(proxyHost, proxyPort)
+            } else {
+                // Slipstream: use JSch's ProxySOCKS5 (with optional Dante auth)
+                ProxySOCKS5(proxyHost, proxyPort).also { p ->
+                    if (!socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()) {
+                        p.setUserPasswd(socksUsername, socksPassword)
+                    }
+                }
             }
             newSession.setProxy(proxy)
             applySessionConfig(newSession)
             newSession.connect(CONNECT_TIMEOUT_MS)
 
             if (!newSession.isConnected) {
-                return Result.failure(RuntimeException("SSH session failed to connect through Slipstream"))
+                return Result.failure(RuntimeException("SSH session failed to connect through $proxyLabel"))
             }
 
             session = newSession
-            Log.i(TAG, "SSH session connected (over Slipstream SOCKS5 proxy, auth=${sshAuthType.value})")
+            Log.i(TAG, "SSH session connected (over $proxyLabel SOCKS5 proxy, auth=${sshAuthType.value})")
 
             startSocksServer(listenHost, listenPort)
 
-            Log.i(TAG, "SSH SOCKS5 proxy started on $listenHost:$listenPort (over Slipstream)")
+            Log.i(TAG, "SSH SOCKS5 proxy started on $listenHost:$listenPort (over $proxyLabel)")
 
             // Pre-warm DNS channel pool in background (DNS goes through SSH)
             prewarmDnsChannels()
 
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start SSH tunnel over Slipstream", e)
+            Log.e(TAG, "Failed to start SSH tunnel over $proxyLabel", e)
             stop()
             Result.failure(e)
         }

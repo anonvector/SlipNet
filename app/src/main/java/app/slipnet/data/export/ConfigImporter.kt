@@ -68,6 +68,9 @@ sealed class ImportResult {
  * Decoded profile format v13 (extends v12 with DNSTT authoritative mode):
  * v13|..same as v12..|dnsttAuthoritative
  *
+ * Decoded profile format v14 (extends v13 with NaiveProxy fields):
+ * v14|..same as v13..|naivePort|naiveUsername|naivePassword(b64)|naiveSni
+ *
  */
 @Singleton
 class ConfigImporter @Inject constructor() {
@@ -81,6 +84,7 @@ class ConfigImporter @Inject constructor() {
         private const val MODE_SSH = "ssh"
         private const val MODE_DOH = "doh"
         private const val MODE_SNOWFLAKE = "snowflake"
+        private const val MODE_NAIVE_SSH = "naive_ssh"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -97,7 +101,8 @@ class ConfigImporter @Inject constructor() {
         private const val V11_FIELD_COUNT = 26
         private const val V12_FIELD_COUNT = 27
         private const val V13_FIELD_COUNT = 28
-        private const val CURRENT_MAX_VERSION = 13
+        private const val V14_FIELD_COUNT = 32
+        private const val CURRENT_MAX_VERSION = 14
     }
 
     fun parseAndImport(input: String): ImportResult {
@@ -179,12 +184,13 @@ class ConfigImporter @Inject constructor() {
             "11" -> parseProfileV11(fields, lineNum)
             "12" -> parseProfileV12(fields, lineNum)
             "13" -> parseProfileV13(fields, lineNum)
+            "14" -> parseProfileV14(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 13) {
-                    parseProfileV13(fields, lineNum)
+                if (versionNum != null && versionNum > 14) {
+                    parseProfileV14(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -264,6 +270,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -342,6 +349,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -425,6 +433,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -511,6 +520,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -609,6 +619,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -707,6 +718,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -753,7 +765,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -801,6 +813,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -848,7 +861,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -906,6 +919,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -958,7 +972,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -1032,6 +1046,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1091,7 +1106,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -1160,6 +1175,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1224,7 +1240,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -1295,6 +1311,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1360,7 +1377,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -1409,6 +1426,163 @@ class ConfigImporter @Inject constructor() {
             sshKeyPassphrase = sshKeyPassphrase,
             torBridgeLines = torBridgeLines,
             dnsttAuthoritative = dnsttAuthoritative
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    /**
+     * Parse v14 profile format (extends v13 with NaiveProxy fields).
+     */
+    private fun parseProfileV14(fields: List<String>, lineNum: Int): ProfileParseResult {
+        if (fields.size < V14_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v14 format (expected $V14_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        val tunnelTypeStr = fields[1]
+        val tunnelType = when (tunnelTypeStr) {
+            MODE_SLIPSTREAM -> TunnelType.SLIPSTREAM
+            MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
+            MODE_DNSTT -> TunnelType.DNSTT
+            MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_SSH -> TunnelType.SSH
+            MODE_DOH -> TunnelType.DOH
+            MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
+            MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            else -> {
+                return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
+            }
+        }
+
+        val name = fields[2]
+        val domain = fields[3]
+        val resolversStr = fields[4]
+        val authMode = fields[5] == "1"
+        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val cc = fields[7]
+        val port = fields[8].toIntOrNull() ?: 1080
+        val host = fields[9]
+        val gso = fields[10] == "1"
+        val dnsttPublicKey = fields[11]
+        val socksUsername = fields[12].takeIf { it.isNotBlank() }
+        val socksPassword = fields[13].takeIf { it.isNotBlank() }
+        val sshUsername = fields[15]
+        val sshPassword = fields[16]
+        val sshPort = fields[17].toIntOrNull() ?: 22
+        val sshHost = fields[19]
+        // fields[20] was useServerDns — ignored (removed, now global setting)
+        val dohUrl = fields[21]
+        val dnsTransport = DnsTransport.fromValue(fields[22])
+        val sshAuthType = SshAuthType.fromValue(fields[23])
+        val sshPrivateKey = try {
+            String(Base64.decode(fields[24], Base64.NO_WRAP), Charsets.UTF_8)
+        } catch (_: Exception) { "" }
+        val sshKeyPassphrase = try {
+            String(Base64.decode(fields[25], Base64.NO_WRAP), Charsets.UTF_8)
+        } catch (_: Exception) { "" }
+        val torBridgeLines = try {
+            String(Base64.decode(fields[26], Base64.NO_WRAP), Charsets.UTF_8)
+        } catch (_: Exception) { "" }
+        val dnsttAuthoritative = fields[27] == "1"
+
+        // v14 new fields: NaiveProxy
+        val naivePort = fields[28].toIntOrNull() ?: 443
+        val naiveUsername = fields[29]
+        val naivePassword = try {
+            String(Base64.decode(fields[30], Base64.NO_WRAP), Charsets.UTF_8)
+        } catch (_: Exception) { "" }
+        val naiveSni = fields[31]
+
+        if (name.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Profile name is required")
+        }
+        if (tunnelType != TunnelType.DOH && tunnelType != TunnelType.SNOWFLAKE && domain.isBlank()) {
+            return ProfileParseResult.Error("Line $lineNum: Domain is required")
+        }
+
+        val resolvers = parseResolvers(resolversStr)
+        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
+        val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
+                tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.NAIVE_SSH ||
+                (isDnsttBased && dnsTransport == DnsTransport.DOH)
+        if (resolvers.isEmpty() && !skipResolvers) {
+            return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
+        }
+
+        if (port !in 1..65535) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid port $port")
+        }
+
+        if (isDnsttBased) {
+            val keyError = validateDnsttPublicKey(dnsttPublicKey)
+            if (keyError != null) {
+                return ProfileParseResult.Error("Line $lineNum: $keyError")
+            }
+        }
+
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
+            if (sshUsername.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
+            }
+            if (sshAuthType == SshAuthType.PASSWORD && sshPassword.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH password")
+            }
+            if (sshAuthType == SshAuthType.KEY && sshPrivateKey.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH private key")
+            }
+        }
+
+        val needsDohUrl = tunnelType == TunnelType.DOH || (isDnsttBased && dnsTransport == DnsTransport.DOH)
+        if (needsDohUrl) {
+            if (dohUrl.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: DoH URL is required")
+            }
+            if (!dohUrl.startsWith("https://")) {
+                return ProfileParseResult.Error("Line $lineNum: DoH URL must start with https://")
+            }
+        }
+
+        // NaiveProxy validation
+        if (tunnelType == TunnelType.NAIVE_SSH) {
+            if (naiveUsername.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: NaiveProxy profiles require proxy username")
+            }
+            if (naivePassword.isBlank()) {
+                return ProfileParseResult.Error("Line $lineNum: NaiveProxy profiles require proxy password")
+            }
+        }
+
+        val profile = ServerProfile(
+            id = 0,
+            name = name,
+            domain = domain,
+            resolvers = resolvers,
+            authoritativeMode = authMode,
+            keepAliveInterval = keepAlive,
+            congestionControl = CongestionControl.fromValue(cc),
+            tcpListenPort = port,
+            tcpListenHost = host,
+            gsoEnabled = gso,
+            isActive = false,
+            tunnelType = tunnelType,
+            dnsttPublicKey = dnsttPublicKey,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword,
+            sshUsername = sshUsername,
+            sshPassword = sshPassword,
+            sshPort = sshPort,
+            sshHost = sshHost,
+            dohUrl = dohUrl,
+            dnsTransport = dnsTransport,
+            sshAuthType = sshAuthType,
+            sshPrivateKey = sshPrivateKey,
+            sshKeyPassphrase = sshKeyPassphrase,
+            torBridgeLines = torBridgeLines,
+            dnsttAuthoritative = dnsttAuthoritative,
+            naivePort = naivePort,
+            naiveUsername = naiveUsername,
+            naivePassword = naivePassword,
+            naiveSni = naiveSni
         )
 
         return ProfileParseResult.Success(profile)

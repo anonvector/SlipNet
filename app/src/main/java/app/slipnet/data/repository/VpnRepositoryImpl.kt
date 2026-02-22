@@ -17,6 +17,7 @@ import app.slipnet.tunnel.ResolverConfig
 import app.slipnet.tunnel.SlipstreamBridge
 import app.slipnet.tunnel.DnsttSocksBridge
 import app.slipnet.tunnel.SlipstreamSocksBridge
+import app.slipnet.tunnel.NaiveBridge
 import app.slipnet.tunnel.SnowflakeBridge
 import app.slipnet.tunnel.SshTunnelBridge
 import app.slipnet.tunnel.TorSocksBridge
@@ -415,6 +416,11 @@ class VpnRepositoryImpl @Inject constructor(
                 TorSocksBridge.stop()
                 SnowflakeBridge.stopClient()
             }
+            TunnelType.NAIVE_SSH -> {
+                Log.d(TAG, "Stopping NaiveProxy+SSH: SSH first, then NaiveProxy")
+                SshTunnelBridge.stop()
+                NaiveBridge.stop()
+            }
             null -> {
                 // Try to stop all just in case
                 Log.d(TAG, "No tunnel type set, stopping all proxies")
@@ -425,6 +431,7 @@ class VpnRepositoryImpl @Inject constructor(
                 DnsDoHProxy.stop()
                 TorSocksBridge.stop()
                 SnowflakeBridge.stopClient()
+                NaiveBridge.stop()
             }
         }
         currentTunnelType = null

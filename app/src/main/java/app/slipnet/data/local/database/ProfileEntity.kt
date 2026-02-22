@@ -103,5 +103,17 @@ data class ProfileEntity(
     val sortOrder: Int = 0,
 
     @ColumnInfo(name = "dnstt_authoritative", defaultValue = "0")
-    val dnsttAuthoritative: Boolean = false
+    val dnsttAuthoritative: Boolean = false,
+
+    @ColumnInfo(name = "naive_port", defaultValue = "443")
+    val naivePort: Int = 443,
+
+    @ColumnInfo(name = "naive_username", defaultValue = "")
+    val naiveUsername: String = "",
+
+    @ColumnInfo(name = "naive_password", defaultValue = "")
+    val naivePassword: String = "",
+
+    @ColumnInfo(name = "naive_sni", defaultValue = "")
+    val naiveSni: String = ""
 )

@@ -44,7 +44,12 @@ data class ServerProfile(
     // User-defined sort order for profile list (lower = higher in list)
     val sortOrder: Int = 0,
     // When true, DNSTT uses aggressive query rates (authoritative mode for own servers)
-    val dnsttAuthoritative: Boolean = false
+    val dnsttAuthoritative: Boolean = false,
+    // NaiveProxy fields (NAIVE_SSH tunnel type)
+    val naivePort: Int = 443,
+    val naiveUsername: String = "",
+    val naivePassword: String = "",
+    val naiveSni: String = ""
 )
 
 data class DnsResolver(
@@ -71,7 +76,8 @@ enum class TunnelType(val value: String, val displayName: String) {
     DNSTT_SSH("dnstt_ssh", "DNSTT + SSH"),
     SSH("ssh", "SSH"),
     DOH("doh", "DOH (DNS over HTTPS)"),
-    SNOWFLAKE("snowflake", "Tor");
+    SNOWFLAKE("snowflake", "Tor"),
+    NAIVE_SSH("naive_ssh", "NaiveProxy + SSH");
 
     companion object {
         fun fromValue(value: String): TunnelType {

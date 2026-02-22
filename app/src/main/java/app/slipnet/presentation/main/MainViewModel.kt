@@ -423,7 +423,7 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(qrCodeData = null)
     }
 
-    // ── Test Server Reachability (SSH-only) ────────────────────────────
+    // ── Test Server Reachability ────────────────────────────────────────
 
     fun pingAllProfiles() {
         if (_uiState.value.isPingRunning) {
@@ -434,13 +434,13 @@ class MainViewModel @Inject constructor(
         val profiles = _uiState.value.profiles
         if (profiles.isEmpty()) return
 
-        // Only SSH profiles can be tested directly; others tunnel through
-        // DNS/Tor/etc. so a direct ping is misleading.
+        // Snowflake/Tor uses relays — direct ping is meaningless
+        val skipped = setOf(TunnelType.SNOWFLAKE)
         val initial = profiles.associate { profile ->
-            profile.id to if (profile.tunnelType == TunnelType.SSH) {
-                PingResult.Pending
-            } else {
+            profile.id to if (profile.tunnelType in skipped) {
                 PingResult.Skipped
+            } else {
+                PingResult.Pending
             }
         }
         _uiState.value = _uiState.value.copy(pingResults = initial, isPingRunning = true)
@@ -448,7 +448,7 @@ class MainViewModel @Inject constructor(
         pingJob = viewModelScope.launch {
             try {
                 for (profile in profiles) {
-                    if (profile.tunnelType != TunnelType.SSH) continue
+                    if (profile.tunnelType in skipped) continue
 
                     val result = pingProfile(profile)
                     _uiState.value = _uiState.value.copy(
@@ -504,7 +504,22 @@ class MainViewModel @Inject constructor(
     private fun getPingTarget(profile: ServerProfile): PingTarget? {
         return when (profile.tunnelType) {
             TunnelType.SSH -> PingTarget.Tcp(profile.domain, profile.sshPort)
-            else -> null
+            TunnelType.NAIVE_SSH -> PingTarget.Tcp(profile.domain, profile.naivePort)
+            TunnelType.DNSTT, TunnelType.DNSTT_SSH,
+            TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH -> {
+                // DNS-tunneled: ping the first resolver
+                val resolver = profile.resolvers.firstOrNull()
+                    ?: return null
+                PingTarget.Tcp(resolver.host, resolver.port)
+            }
+            TunnelType.DOH -> {
+                // DoH: ping the DoH server on HTTPS port
+                val host = try {
+                    java.net.URL(profile.dohUrl).host
+                } catch (_: Exception) { return null }
+                PingTarget.Tcp(host, 443)
+            }
+            TunnelType.SNOWFLAKE -> null
         }
     }
 }

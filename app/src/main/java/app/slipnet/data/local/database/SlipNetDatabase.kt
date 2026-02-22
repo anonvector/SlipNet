@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class],
-    version = 16,
+    version = 17,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -169,6 +169,100 @@ abstract class SlipNetDatabase : RoomDatabase() {
                 } else {
                     // Column doesn't exist (fresh install path) — just add dnstt_authoritative
                     db.execSQL("ALTER TABLE server_profiles ADD COLUMN dnstt_authoritative INTEGER NOT NULL DEFAULT 0")
+                }
+            }
+        }
+
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Drop use_server_dns column if it still exists (v1.8.5 had it in the Entity
+                // at version 16; v1.8.7 removed it from the Entity without bumping the version,
+                // so users on v1.8.5 DB still have the column but MIGRATION_15_16 never ran for them).
+                val cursor = db.query("PRAGMA table_info(server_profiles)")
+                var hasUseServerDns = false
+                while (cursor.moveToNext()) {
+                    val nameIdx = cursor.getColumnIndex("name")
+                    if (nameIdx >= 0 && cursor.getString(nameIdx) == "use_server_dns") {
+                        hasUseServerDns = true
+                        break
+                    }
+                }
+                cursor.close()
+
+                if (hasUseServerDns) {
+                    // Recreate table without use_server_dns, adding naive_* columns.
+                    // ALTER TABLE DROP COLUMN requires SQLite 3.35.0+ (Android 13+),
+                    // so use table-recreation for minSdk 24 compatibility.
+                    db.execSQL("""
+                        CREATE TABLE server_profiles_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            name TEXT NOT NULL,
+                            domain TEXT NOT NULL,
+                            resolvers_json TEXT NOT NULL,
+                            authoritative_mode INTEGER NOT NULL,
+                            keep_alive_interval INTEGER NOT NULL,
+                            congestion_control TEXT NOT NULL,
+                            gso_enabled INTEGER NOT NULL,
+                            tcp_listen_port INTEGER NOT NULL,
+                            tcp_listen_host TEXT NOT NULL,
+                            socks_username TEXT NOT NULL DEFAULT '',
+                            socks_password TEXT NOT NULL DEFAULT '',
+                            is_active INTEGER NOT NULL,
+                            created_at INTEGER NOT NULL,
+                            updated_at INTEGER NOT NULL,
+                            tunnel_type TEXT NOT NULL DEFAULT 'slipstream',
+                            dnstt_public_key TEXT NOT NULL DEFAULT '',
+                            ssh_enabled INTEGER NOT NULL DEFAULT 0,
+                            ssh_username TEXT NOT NULL DEFAULT '',
+                            ssh_password TEXT NOT NULL DEFAULT '',
+                            ssh_port INTEGER NOT NULL DEFAULT 22,
+                            forward_dns_through_ssh INTEGER NOT NULL DEFAULT 0,
+                            ssh_host TEXT NOT NULL DEFAULT '127.0.0.1',
+                            doh_url TEXT NOT NULL DEFAULT '',
+                            last_connected_at INTEGER NOT NULL DEFAULT 0,
+                            dns_transport TEXT NOT NULL DEFAULT 'udp',
+                            ssh_auth_type TEXT NOT NULL DEFAULT 'password',
+                            ssh_private_key TEXT NOT NULL DEFAULT '',
+                            ssh_key_passphrase TEXT NOT NULL DEFAULT '',
+                            tor_bridge_lines TEXT NOT NULL DEFAULT '',
+                            sort_order INTEGER NOT NULL DEFAULT 0,
+                            dnstt_authoritative INTEGER NOT NULL DEFAULT 0,
+                            naive_port INTEGER NOT NULL DEFAULT 443,
+                            naive_username TEXT NOT NULL DEFAULT '',
+                            naive_password TEXT NOT NULL DEFAULT '',
+                            naive_sni TEXT NOT NULL DEFAULT ''
+                        )
+                    """.trimIndent())
+                    db.execSQL("""
+                        INSERT INTO server_profiles_new (
+                            id, name, domain, resolvers_json, authoritative_mode,
+                            keep_alive_interval, congestion_control, gso_enabled,
+                            tcp_listen_port, tcp_listen_host, socks_username, socks_password,
+                            is_active, created_at, updated_at, tunnel_type, dnstt_public_key,
+                            ssh_enabled, ssh_username, ssh_password, ssh_port,
+                            forward_dns_through_ssh, ssh_host, doh_url, last_connected_at,
+                            dns_transport, ssh_auth_type, ssh_private_key, ssh_key_passphrase,
+                            tor_bridge_lines, sort_order, dnstt_authoritative
+                        )
+                        SELECT
+                            id, name, domain, resolvers_json, authoritative_mode,
+                            keep_alive_interval, congestion_control, gso_enabled,
+                            tcp_listen_port, tcp_listen_host, socks_username, socks_password,
+                            is_active, created_at, updated_at, tunnel_type, dnstt_public_key,
+                            ssh_enabled, ssh_username, ssh_password, ssh_port,
+                            forward_dns_through_ssh, ssh_host, doh_url, last_connected_at,
+                            dns_transport, ssh_auth_type, ssh_private_key, ssh_key_passphrase,
+                            tor_bridge_lines, sort_order, dnstt_authoritative
+                        FROM server_profiles
+                    """.trimIndent())
+                    db.execSQL("DROP TABLE server_profiles")
+                    db.execSQL("ALTER TABLE server_profiles_new RENAME TO server_profiles")
+                } else {
+                    // Column already removed (fresh install or MIGRATION_15_16 handled it)
+                    db.execSQL("ALTER TABLE server_profiles ADD COLUMN naive_port INTEGER NOT NULL DEFAULT 443")
+                    db.execSQL("ALTER TABLE server_profiles ADD COLUMN naive_username TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE server_profiles ADD COLUMN naive_password TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE server_profiles ADD COLUMN naive_sni TEXT NOT NULL DEFAULT ''")
                 }
             }
         }

@@ -420,6 +420,15 @@ fun MainScreen(
                                 }
                             )
                             AddMenuOption(
+                                icon = Icons.Default.Shield,
+                                title = "NaiveProxy + SSH",
+                                description = "Stealth HTTPS tunnel",
+                                onClick = {
+                                    showAddMenu = false
+                                    onNavigateToAddProfile("naive_ssh")
+                                }
+                            )
+                            AddMenuOption(
                                 icon = TorIcon,
                                 title = "Tor",
                                 description = "Connect via Tor network",

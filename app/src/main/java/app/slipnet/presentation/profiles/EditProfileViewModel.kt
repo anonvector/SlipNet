@@ -120,11 +120,19 @@ data class EditProfileUiState(
     val isAskingTor: Boolean = false,
     // DNSTT authoritative mode (aggressive query rate for own servers)
     val dnsttAuthoritative: Boolean = false,
+    // NaiveProxy fields (NAIVE_SSH tunnel type)
+    val naivePort: String = "443",
+    val naiveUsername: String = "",
+    val naivePassword: String = "",
+    val naiveSni: String = "",
+    val naivePortError: String? = null,
+    val naiveUsernameError: String? = null,
+    val naivePasswordError: String? = null,
     // Preserved sort order for updates (not editable)
     val sortOrder: Int = 0,
 ) {
     val useSsh: Boolean
-        get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH
+        get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH
 
     val isDnsttBased: Boolean
         get() = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
@@ -141,8 +149,11 @@ data class EditProfileUiState(
     val isSnowflake: Boolean
         get() = tunnelType == TunnelType.SNOWFLAKE
 
+    val isNaiveSsh: Boolean
+        get() = tunnelType == TunnelType.NAIVE_SSH
+
     val showConnectionMethod: Boolean
-        get() = !isSshOnly && !isDoh && !isSnowflake
+        get() = !isSshOnly && !isDoh && !isSnowflake && !isNaiveSsh
 }
 
 @HiltViewModel
@@ -212,6 +223,10 @@ class EditProfileViewModel @Inject constructor(
                     torBridgeType = detectBridgeType(profile.torBridgeLines),
                     torBridgeLines = profile.torBridgeLines,
                     dnsttAuthoritative = profile.dnsttAuthoritative,
+                    naivePort = profile.naivePort.toString(),
+                    naiveUsername = profile.naiveUsername,
+                    naivePassword = profile.naivePassword,
+                    naiveSni = profile.naiveSni,
                     sortOrder = profile.sortOrder,
                     isLoading = false
                 )
@@ -316,6 +331,22 @@ class EditProfileViewModel @Inject constructor(
 
     fun updateDnsttAuthoritative(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(dnsttAuthoritative = enabled)
+    }
+
+    fun updateNaivePort(port: String) {
+        _uiState.value = _uiState.value.copy(naivePort = port, naivePortError = null)
+    }
+
+    fun updateNaiveUsername(username: String) {
+        _uiState.value = _uiState.value.copy(naiveUsername = username, naiveUsernameError = null)
+    }
+
+    fun updateNaivePassword(password: String) {
+        _uiState.value = _uiState.value.copy(naivePassword = password, naivePasswordError = null)
+    }
+
+    fun updateNaiveSni(sni: String) {
+        _uiState.value = _uiState.value.copy(naiveSni = sni)
     }
 
     fun updateDohUrl(url: String) {
@@ -882,9 +913,9 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
-        // Resolver validation (SSH-only, DOH, Snowflake, and DNSTT with DoH transport don't need resolvers)
+        // Resolver validation (SSH-only, DOH, Snowflake, NAIVE_SSH, and DNSTT with DoH transport don't need resolvers)
         val skipResolvers = state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
-                state.tunnelType == TunnelType.SNOWFLAKE ||
+                state.tunnelType == TunnelType.SNOWFLAKE || state.tunnelType == TunnelType.NAIVE_SSH ||
                 (state.isDnsttBased && state.dnsTransport == DnsTransport.DOH)
         if (!skipResolvers) {
             if (state.resolvers.isBlank()) {
@@ -916,8 +947,25 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
-        // SSH validation (SSH-only, DNSTT+SSH, and Slipstream+SSH tunnel types)
-        if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH) {
+        // NaiveProxy validation (NAIVE_SSH tunnel type)
+        if (state.tunnelType == TunnelType.NAIVE_SSH) {
+            val naivePort = state.naivePort.toIntOrNull()
+            if (naivePort == null || naivePort !in 1..65535) {
+                _uiState.value = _uiState.value.copy(naivePortError = "Port must be between 1 and 65535")
+                hasError = true
+            }
+            if (state.naiveUsername.isBlank()) {
+                _uiState.value = _uiState.value.copy(naiveUsernameError = "Proxy username is required")
+                hasError = true
+            }
+            if (state.naivePassword.isBlank()) {
+                _uiState.value = _uiState.value.copy(naivePasswordError = "Proxy password is required")
+                hasError = true
+            }
+        }
+
+        // SSH validation (SSH-only, DNSTT+SSH, Slipstream+SSH, and NAIVE_SSH tunnel types)
+        if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH || state.tunnelType == TunnelType.NAIVE_SSH) {
             if (state.sshUsername.isBlank()) {
                 _uiState.value = _uiState.value.copy(sshUsernameError = "SSH username is required")
                 hasError = true
@@ -938,8 +986,8 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
-        // SSH port validation (SSH-only, DNSTT+SSH, and Slipstream+SSH)
-        if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH) {
+        // SSH port validation (SSH-only, DNSTT+SSH, Slipstream+SSH, and NAIVE_SSH)
+        if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH || state.tunnelType == TunnelType.NAIVE_SSH) {
             val sshPort = state.sshPort.toIntOrNull()
             if (sshPort == null || sshPort !in 1..65535) {
                 _uiState.value = _uiState.value.copy(sshPortError = "Port must be between 1 and 65535")
@@ -980,6 +1028,10 @@ class EditProfileViewModel @Inject constructor(
                     sshKeyPassphrase = if (state.useSsh && state.sshAuthType == SshAuthType.KEY) state.sshKeyPassphrase else "",
                     torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else "",
                     dnsttAuthoritative = if (state.isDnsttBased) state.dnsttAuthoritative else false,
+                    naivePort = if (state.isNaiveSsh) (state.naivePort.toIntOrNull() ?: 443) else 443,
+                    naiveUsername = if (state.isNaiveSsh) state.naiveUsername.trim() else "",
+                    naivePassword = if (state.isNaiveSsh) state.naivePassword else "",
+                    naiveSni = if (state.isNaiveSsh) state.naiveSni.trim() else "",
                     sortOrder = state.sortOrder,
                 )
 

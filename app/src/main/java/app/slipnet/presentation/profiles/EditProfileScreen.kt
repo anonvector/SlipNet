@@ -186,6 +186,7 @@ fun EditProfileScreen(
                             Text(
                                 when {
                                     uiState.isSshOnly -> "SSH Server"
+                                    uiState.isNaiveSsh -> "Server"
                                     else -> "Domain"
                                 }
                             )
@@ -195,6 +196,7 @@ fun EditProfileScreen(
                                 when {
                                     uiState.isDnsttBased -> "t.example.com"
                                     uiState.isSshOnly -> "ssh.example.com"
+                                    uiState.isNaiveSsh -> "proxy.example.com"
                                     else -> "vpn.example.com"
                                 }
                             )
@@ -205,6 +207,7 @@ fun EditProfileScreen(
                                 uiState.domainError ?: when {
                                     uiState.isDnsttBased -> "DNSTT tunnel domain"
                                     uiState.isSlipstreamBased -> "Slipstream tunnel domain"
+                                    uiState.isNaiveSsh -> "Caddy server hostname"
                                     else -> "SSH server hostname or IP"
                                 }
                             )
@@ -255,6 +258,83 @@ fun EditProfileScreen(
                                     color = MaterialTheme.colorScheme.onErrorContainer
                                 )
                             }
+                        }
+                    }
+                }
+
+                // NaiveProxy fields (shown only for NAIVE_SSH)
+                if (uiState.isNaiveSsh) {
+                    OutlinedTextField(
+                        value = uiState.naivePort,
+                        onValueChange = { viewModel.updateNaivePort(it) },
+                        label = { Text("Server Port") },
+                        placeholder = { Text("443") },
+                        isError = uiState.naivePortError != null,
+                        supportingText = uiState.naivePortError?.let { { Text(it) } },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = uiState.naiveUsername,
+                        onValueChange = { viewModel.updateNaiveUsername(it) },
+                        label = { Text("Proxy Username") },
+                        placeholder = { Text("HTTP proxy auth username") },
+                        isError = uiState.naiveUsernameError != null,
+                        supportingText = uiState.naiveUsernameError?.let { { Text(it) } },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = uiState.naivePassword,
+                        onValueChange = { viewModel.updateNaivePassword(it) },
+                        label = { Text("Proxy Password") },
+                        placeholder = { Text("HTTP proxy auth password") },
+                        isError = uiState.naivePasswordError != null,
+                        supportingText = uiState.naivePasswordError?.let { { Text(it) } },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = uiState.naiveSni,
+                        onValueChange = { viewModel.updateNaiveSni(it) },
+                        label = { Text("SNI Hostname (Optional)") },
+                        placeholder = { Text("Leave empty for direct connections") },
+                        supportingText = { Text("Only for CDN-fronted setups (e.g. Cloudflare). Leave empty if connecting directly to your server.") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Surface(
+                        onClick = {
+                            val intent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://github.com/anonvector/slipgate")
+                            )
+                            context.startActivity(intent)
+                        },
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp, horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Server setup guide",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
                     }
                 }
@@ -371,7 +451,7 @@ fun EditProfileScreen(
                 }
 
                 // Resolvers (not shown for SSH-only, DOH, or DNSTT with DoH transport)
-                val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake &&
+                val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake && !uiState.isNaiveSsh &&
                         !(uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOH)
                 if (showResolvers) {
                     val isDoT = uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOT
@@ -821,8 +901,8 @@ fun EditProfileScreen(
                         modifier = Modifier.padding(top = 8.dp)
                     )
 
-                    // SSH Port (only for DNSTT+SSH / Slipstream+SSH, not SSH-only which has it near domain)
-                    if (uiState.showConnectionMethod) {
+                    // SSH Port (only for DNSTT+SSH / Slipstream+SSH / NAIVE_SSH, not SSH-only which has it near domain)
+                    if (uiState.showConnectionMethod || uiState.isNaiveSsh) {
                         OutlinedTextField(
                             value = uiState.sshPort,
                             onValueChange = { viewModel.updateSshPort(it) },
