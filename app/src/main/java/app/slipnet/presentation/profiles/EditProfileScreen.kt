@@ -296,15 +296,6 @@ fun EditProfileScreen(
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth()
                     )
-                    OutlinedTextField(
-                        value = uiState.naiveSni,
-                        onValueChange = { viewModel.updateNaiveSni(it) },
-                        label = { Text("SNI Hostname (Optional)") },
-                        placeholder = { Text("Leave empty for direct connections") },
-                        supportingText = { Text("Only for CDN-fronted setups (e.g. Cloudflare). Leave empty if connecting directly to your server.") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
                     Surface(
                         onClick = {
                             val intent = android.content.Intent(

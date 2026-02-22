@@ -36,7 +36,6 @@ object NaiveBridge {
      * @param serverPort Caddy HTTPS port (naivePort, default 443)
      * @param username HTTP proxy auth username
      * @param password HTTP proxy auth password
-     * @param sni SNI hostname for spoofing (empty = use serverHost)
      */
     fun start(
         context: Context,
@@ -45,14 +44,12 @@ object NaiveBridge {
         serverHost: String,
         serverPort: Int,
         username: String,
-        password: String,
-        sni: String
+        password: String
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting NaiveProxy")
         Log.i(TAG, "  Listen: socks://$listenHost:$listenPort")
         Log.i(TAG, "  Server: $serverHost:$serverPort")
-        Log.i(TAG, "  SNI: ${sni.ifBlank { "(none, using server hostname)" }}")
         Log.i(TAG, "========================================")
 
         stop()
@@ -75,7 +72,7 @@ object NaiveBridge {
                 "--log"
             )
 
-            // Always pre-resolve server IP to avoid ISP DNS poisoning.
+            // Pre-resolve server IP to avoid ISP DNS poisoning.
             // NaiveProxy (Chromium) would otherwise use its own DNS resolver,
             // which goes through ISP DNS since the app is excluded from VPN.
             val resolvedIp = try {
@@ -85,17 +82,9 @@ object NaiveBridge {
                 return Result.failure(RuntimeException("Cannot resolve server hostname '$serverHost'"))
             }
 
-            if (sni.isNotBlank() && sni != serverHost) {
-                // SNI spoofing: connect to SNI hostname but resolve it to the real server IP
-                args.add("--proxy=https://$username:$password@$sni:$serverPort")
-                args.add("--host-resolver-rules=MAP $sni $resolvedIp")
-                Log.i(TAG, "SNI spoofing: $sni -> $resolvedIp")
-            } else {
-                // No SNI: connect to serverHost, but still use pre-resolved IP
-                args.add("--proxy=https://$username:$password@$serverHost:$serverPort")
-                args.add("--host-resolver-rules=MAP $serverHost $resolvedIp")
-                Log.i(TAG, "Pre-resolved: $serverHost -> $resolvedIp")
-            }
+            args.add("--proxy=https://$username:$password@$serverHost:$serverPort")
+            args.add("--host-resolver-rules=MAP $serverHost $resolvedIp")
+            Log.i(TAG, "Pre-resolved: $serverHost -> $resolvedIp")
 
             val pb = ProcessBuilder(args)
             pb.redirectErrorStream(true)

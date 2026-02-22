@@ -933,7 +933,6 @@ class SlipNetVpnService : VpnService() {
                     serverPort = profile.naivePort,
                     username = profile.naiveUsername,
                     password = profile.naivePassword,
-                    sni = profile.naiveSni
                 )
             }
             if (naiveResult.isFailure) {
@@ -1027,8 +1026,7 @@ class SlipNetVpnService : VpnService() {
                 serverHost = profile.domain,
                 serverPort = profile.naivePort,
                 username = profile.naiveUsername,
-                password = profile.naivePassword,
-                sni = profile.naiveSni
+                password = profile.naivePassword
             )
         }
         if (naiveResult.isFailure) {
@@ -2258,8 +2256,7 @@ class SlipNetVpnService : VpnService() {
                             serverPort = profile.naivePort,
                             username = profile.naiveUsername,
                             password = profile.naivePassword,
-                            sni = profile.naiveSni
-                        )
+                                )
                     }
                     if (naiveResult.isFailure) {
                         Log.e(TAG, "Failed to restart NaiveProxy after network change", naiveResult.exceptionOrNull())
