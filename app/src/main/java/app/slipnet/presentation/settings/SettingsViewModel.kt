@@ -41,6 +41,7 @@ data class SettingsUiState(
     val sshCipher: SshCipher = SshCipher.AUTO,
     val sshCompression: Boolean = false,
     val sshMaxChannels: Int = 16,
+    val sshMaxChannelsIsCustom: Boolean = false,
     // Domain Routing Settings
     val domainRoutingEnabled: Boolean = false,
     val domainRoutingMode: DomainRoutingMode = DomainRoutingMode.BYPASS,
@@ -79,12 +80,14 @@ class SettingsViewModel @Inject constructor(
                 arrayOf(values[0], values[1], values[2], values[3], values[4], values[5])
             }
 
+            data class SshSettings(val cipher: SshCipher, val compression: Boolean, val maxChannels: Int, val maxChannelsIsCustom: Boolean)
             val sshFlow = combine(
                 preferencesDataStore.sshCipher,
                 preferencesDataStore.sshCompression,
-                preferencesDataStore.sshMaxChannels
-            ) { cipher, compression, maxChannels ->
-                Triple(cipher, compression, maxChannels)
+                preferencesDataStore.sshMaxChannels,
+                preferencesDataStore.sshMaxChannelsIsCustom
+            ) { cipher, compression, maxChannels, isCustom ->
+                SshSettings(cipher, compression, maxChannels, isCustom)
             }
 
             val splitFlow = combine(
@@ -152,9 +155,10 @@ class SettingsViewModel @Inject constructor(
                     splitTunnelingEnabled = split.first,
                     splitTunnelingMode = split.second,
                     splitTunnelingApps = split.third,
-                    sshCipher = ssh.first,
-                    sshCompression = ssh.second,
-                    sshMaxChannels = ssh.third
+                    sshCipher = ssh.cipher,
+                    sshCompression = ssh.compression,
+                    sshMaxChannels = ssh.maxChannels,
+                    sshMaxChannelsIsCustom = ssh.maxChannelsIsCustom
                 )
             }
 
@@ -273,6 +277,12 @@ class SettingsViewModel @Inject constructor(
     fun setSshMaxChannels(count: Int) {
         viewModelScope.launch {
             preferencesDataStore.setSshMaxChannels(count)
+        }
+    }
+
+    fun resetSshMaxChannelsToAuto() {
+        viewModelScope.launch {
+            preferencesDataStore.resetSshMaxChannelsToAuto()
         }
     }
 

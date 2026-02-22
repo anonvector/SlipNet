@@ -508,11 +508,26 @@ class SlipNetVpnService : VpnService() {
     /**
      * Read SSH tunnel settings from DataStore and apply to SshTunnelBridge.
      * Must be called before any SshTunnelBridge.start* method.
+     *
+     * If the user hasn't manually set Max Channels, uses a tunnel-type-aware default:
+     * - SSH-only: 32 (direct TCP, good bandwidth)
+     * - Slipstream+SSH: 24 (moderate throughput)
+     * - DNSTT+SSH: 12 (limited DNS throughput, too many channels choke the tunnel)
      */
     private suspend fun configureSshBridge() {
         val cipher = preferencesDataStore.sshCipher.first()
         val compression = preferencesDataStore.sshCompression.first()
-        val maxChannels = preferencesDataStore.sshMaxChannels.first()
+        val isCustom = preferencesDataStore.sshMaxChannelsIsCustom.first()
+        val maxChannels = if (isCustom) {
+            preferencesDataStore.sshMaxChannels.first()
+        } else {
+            when (currentTunnelType) {
+                TunnelType.SSH -> 32
+                TunnelType.SLIPSTREAM_SSH -> 24
+                TunnelType.DNSTT_SSH -> 12
+                else -> 16
+            }
+        }
         SshTunnelBridge.configure(
             cipher = cipher.jschConfig,
             compression = compression,

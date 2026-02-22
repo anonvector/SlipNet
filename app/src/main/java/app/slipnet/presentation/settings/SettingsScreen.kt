@@ -460,11 +460,13 @@ fun SettingsScreen(
                 SliderSettingItem(
                     icon = Icons.Default.Hub,
                     title = "Max Channels",
+                    subtitle = if (!uiState.sshMaxChannelsIsCustom) "Auto (adapts per tunnel type)" else null,
                     value = uiState.sshMaxChannels,
                     valueRange = 4f..64f,
                     steps = 14,
                     valueFormatter = { "${it.roundToInt()}" },
-                    onValueChange = { viewModel.setSshMaxChannels(it.roundToInt()) }
+                    onValueChange = { viewModel.setSshMaxChannels(it.roundToInt()) },
+                    onReset = if (uiState.sshMaxChannelsIsCustom) {{ viewModel.resetSshMaxChannelsToAuto() }} else null
                 )
             }
 
@@ -1212,11 +1214,13 @@ private fun ClickableSettingItem(
 private fun SliderSettingItem(
     icon: ImageVector,
     title: String,
+    subtitle: String? = null,
     value: Int,
     valueRange: ClosedFloatingPointRange<Float>,
     steps: Int,
     valueFormatter: (Float) -> String,
-    onValueChange: (Float) -> Unit
+    onValueChange: (Float) -> Unit,
+    onReset: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -1233,13 +1237,28 @@ private fun SliderSettingItem(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(24.dp)
             )
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyLarge,
+            Column(
                 modifier = Modifier
                     .weight(1f)
                     .padding(horizontal = 16.dp)
-            )
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (onReset != null) {
+                TextButton(onClick = onReset) {
+                    Text("Auto", style = MaterialTheme.typography.labelSmall)
+                }
+            }
             Text(
                 text = valueFormatter(value.toFloat()),
                 style = MaterialTheme.typography.labelLarge,

@@ -50,6 +50,7 @@ class PreferencesDataStore @Inject constructor(
         val SSH_CIPHER = stringPreferencesKey("ssh_cipher")
         val SSH_COMPRESSION = booleanPreferencesKey("ssh_compression")
         val SSH_MAX_CHANNELS = intPreferencesKey("ssh_max_channels")
+        val SSH_MAX_CHANNELS_CUSTOM = booleanPreferencesKey("ssh_max_channels_custom")
         // Split Tunneling Keys
         val SPLIT_TUNNELING_ENABLED = booleanPreferencesKey("split_tunneling_enabled")
         val SPLIT_TUNNELING_MODE = stringPreferencesKey("split_tunneling_mode")
@@ -271,9 +272,21 @@ class PreferencesDataStore @Inject constructor(
         prefs[Keys.SSH_MAX_CHANNELS] ?: 16
     }
 
+    val sshMaxChannelsIsCustom: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.SSH_MAX_CHANNELS_CUSTOM] ?: false
+    }
+
     suspend fun setSshMaxChannels(count: Int) {
         dataStore.edit { prefs ->
             prefs[Keys.SSH_MAX_CHANNELS] = count.coerceIn(4, 64)
+            prefs[Keys.SSH_MAX_CHANNELS_CUSTOM] = true
+        }
+    }
+
+    suspend fun resetSshMaxChannelsToAuto() {
+        dataStore.edit { prefs ->
+            prefs.remove(Keys.SSH_MAX_CHANNELS)
+            prefs.remove(Keys.SSH_MAX_CHANNELS_CUSTOM)
         }
     }
 
