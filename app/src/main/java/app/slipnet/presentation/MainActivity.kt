@@ -24,6 +24,9 @@ import app.slipnet.presentation.navigation.NavGraph
 import app.slipnet.presentation.theme.SlipstreamTheme
 import app.slipnet.service.VpnConnectionManager
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -34,6 +37,13 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var connectionManager: VpnConnectionManager
+
+    private val _deepLinkUri = MutableStateFlow<String?>(null)
+    val deepLinkUri: StateFlow<String?> = _deepLinkUri.asStateFlow()
+
+    fun consumeDeepLink() {
+        _deepLinkUri.value = null
+    }
 
     private var pendingVpnAction: (() -> Unit)? = null
 
@@ -56,6 +66,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
+        handleDeepLink(intent)
         requestNotificationPermissionIfNeeded()
 
         setContent {
@@ -70,6 +81,18 @@ class MainActivity : ComponentActivity() {
                     NavGraph(navController = navController)
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleDeepLink(intent)
+    }
+
+    private fun handleDeepLink(intent: Intent?) {
+        val uri = intent?.data?.toString()
+        if (uri != null && uri.startsWith("slipnet://")) {
+            _deepLinkUri.value = uri
         }
     }
 

@@ -148,6 +148,16 @@ fun MainScreen(
     val context = LocalContext.current
     val activity = context.findActivity()
 
+    // Handle deep link (slipnet:// URI from external QR scanner or link)
+    val mainActivity = activity as? app.slipnet.presentation.MainActivity
+    val deepLinkUri by mainActivity?.deepLinkUri?.collectAsState() ?: remember { mutableStateOf(null) }
+    LaunchedEffect(deepLinkUri) {
+        deepLinkUri?.let { uri ->
+            viewModel.parseImportConfig(uri)
+            mainActivity?.consumeDeepLink()
+        }
+    }
+
     // VPN permission flow
     var pendingConnect by remember { mutableStateOf(false) }
     var pendingProfile by remember { mutableStateOf<ServerProfile?>(null) }
