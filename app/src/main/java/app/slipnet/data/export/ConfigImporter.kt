@@ -43,6 +43,10 @@ sealed class ImportResult {
  * Decoded profile format v6 (same fields as v5, adds slipstream_ssh tunnel type):
  * v6|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost
  *
+ * NOTE: Position 20 (useServerDns) is deprecated and ignored since v1.8.6 (now a global setting).
+ * It is safe to reuse this position for a new field in v14+. Parsers v7-v13 skip it,
+ * and v1-v6 don't have it. Just bump VERSION to "14" and add a parseProfileV14.
+ *
  * Decoded profile format v7 (extends v6 with useServerDns):
  * v7|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns
  *
@@ -93,6 +97,7 @@ class ConfigImporter @Inject constructor() {
         private const val V11_FIELD_COUNT = 26
         private const val V12_FIELD_COUNT = 27
         private const val V13_FIELD_COUNT = 28
+        private const val CURRENT_MAX_VERSION = 13
     }
 
     fun parseAndImport(input: String): ImportResult {
@@ -122,7 +127,14 @@ class ConfigImporter @Inject constructor() {
 
             val parseResult = parseProfile(decoded, index + 1)
             when (parseResult) {
-                is ProfileParseResult.Success -> profiles.add(parseResult.profile)
+                is ProfileParseResult.Success -> {
+                    profiles.add(parseResult.profile)
+                    // Warn if this profile was from a newer format version
+                    val version = decoded.split(FIELD_DELIMITER).firstOrNull()?.toIntOrNull()
+                    if (version != null && version > CURRENT_MAX_VERSION) {
+                        warnings.add("Line ${index + 1}: Exported from a newer app version — some settings may be missing")
+                    }
+                }
                 is ProfileParseResult.Warning -> warnings.add(parseResult.message)
                 is ProfileParseResult.Error -> warnings.add(parseResult.message)
             }
@@ -167,7 +179,16 @@ class ConfigImporter @Inject constructor() {
             "11" -> parseProfileV11(fields, lineNum)
             "12" -> parseProfileV12(fields, lineNum)
             "13" -> parseProfileV13(fields, lineNum)
-            else -> ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
+            else -> {
+                // Forward compatibility: try the highest known parser for newer versions.
+                // Extra trailing fields are safely ignored (parsers only check minimum count).
+                val versionNum = version.toIntOrNull()
+                if (versionNum != null && versionNum > 13) {
+                    parseProfileV13(fields, lineNum)
+                } else {
+                    ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
+                }
+            }
         }
     }
 

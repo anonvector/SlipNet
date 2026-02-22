@@ -109,7 +109,9 @@ class ResolverScannerRepositoryImpl @Inject constructor(
     }
 
     /**
-     * Simple ping scan - just check if resolver responds to A record query
+     * Simple ping scan - check if resolver responds to A record query.
+     * Uses a single reused socket with pre-resolved address and nanoTime for precision.
+     * Runs 1 warm-up query (discarded) + 4 measured queries, reports the median.
      */
     private suspend fun scanResolverSimple(
         host: String,
@@ -118,38 +120,140 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         timeoutMs: Long,
         startTime: Long
     ): ResolverScanResult = withContext(Dispatchers.IO) {
-        val result = withTimeoutOrNull(timeoutMs) {
-            performDnsQuery(host, port, testDomain, DNS_TYPE_A)
-        }
+        var socket: DatagramSocket? = null
+        try {
+            // Pre-resolve address and create socket OUTSIDE the measurement window
+            val serverAddress = InetAddress.getByName(host)
+            socket = DatagramSocket()
+            socket.soTimeout = timeoutMs.coerceAtMost(3000).toInt()
 
-        val responseTime = System.currentTimeMillis() - startTime
+            val responseBuffer = ByteArray(512)
 
-        when {
-            result == null -> ResolverScanResult(
-                host = host,
-                port = port,
-                status = ResolverStatus.TIMEOUT,
-                responseTimeMs = responseTime
-            )
-            result.isCensored -> ResolverScanResult(
-                host = host,
-                port = port,
-                status = ResolverStatus.CENSORED,
-                responseTimeMs = responseTime,
-                errorMessage = "Hijacked to ${result.resolvedIp}"
-            )
-            result.success -> ResolverScanResult(
+            // Warm-up query — pays for any OS/network path setup, result discarded
+            val warmupResult = try {
+                performDnsQueryOnSocket(socket, serverAddress, port, testDomain, DNS_TYPE_A, responseBuffer)
+            } catch (_: Exception) { null }
+
+            if (warmupResult == null) {
+                val responseTime = System.currentTimeMillis() - startTime
+                return@withContext ResolverScanResult(
+                    host = host, port = port,
+                    status = ResolverStatus.TIMEOUT,
+                    responseTimeMs = responseTime
+                )
+            }
+            if (warmupResult.isCensored) {
+                val responseTime = System.currentTimeMillis() - startTime
+                return@withContext ResolverScanResult(
+                    host = host, port = port,
+                    status = ResolverStatus.CENSORED,
+                    responseTimeMs = responseTime,
+                    errorMessage = "Hijacked to ${warmupResult.resolvedIp}"
+                )
+            }
+            if (!warmupResult.success) {
+                val responseTime = System.currentTimeMillis() - startTime
+                return@withContext ResolverScanResult(
+                    host = host, port = port,
+                    status = ResolverStatus.ERROR,
+                    responseTimeMs = responseTime,
+                    errorMessage = warmupResult.error
+                )
+            }
+
+            // 4 measured queries — only time send+receive (pure network RTT)
+            val samples = mutableListOf<Long>()
+            for (i in 0 until 4) {
+                val elapsed = System.currentTimeMillis() - startTime
+                if (elapsed >= timeoutMs) break
+                try {
+                    val t0 = System.nanoTime()
+                    val result = performDnsQueryOnSocket(socket, serverAddress, port, testDomain, DNS_TYPE_A, responseBuffer)
+                    val rttNs = System.nanoTime() - t0
+                    if (result.success) {
+                        samples.add(rttNs / 1_000_000) // ns → ms
+                    }
+                } catch (_: Exception) { /* skip failed sample */ }
+            }
+
+            if (samples.isEmpty()) {
+                val responseTime = System.currentTimeMillis() - startTime
+                return@withContext ResolverScanResult(
+                    host = host, port = port,
+                    status = ResolverStatus.TIMEOUT,
+                    responseTimeMs = responseTime
+                )
+            }
+
+            val medianTime = samples.sorted()[samples.size / 2]
+
+            ResolverScanResult(
                 host = host,
                 port = port,
                 status = ResolverStatus.WORKING,
-                responseTimeMs = responseTime
+                responseTimeMs = medianTime
             )
-            else -> ResolverScanResult(
-                host = host,
-                port = port,
+        } catch (e: Exception) {
+            val responseTime = System.currentTimeMillis() - startTime
+            ResolverScanResult(
+                host = host, port = port,
                 status = ResolverStatus.ERROR,
                 responseTimeMs = responseTime,
-                errorMessage = result.error
+                errorMessage = e.message ?: "Unknown error"
+            )
+        } finally {
+            socket?.close()
+        }
+    }
+
+    /**
+     * Send a DNS query on an existing socket (no socket/address creation overhead).
+     * Caller owns the socket lifecycle.
+     */
+    private fun performDnsQueryOnSocket(
+        socket: DatagramSocket,
+        serverAddress: InetAddress,
+        port: Int,
+        domain: String,
+        recordType: Int,
+        responseBuffer: ByteArray
+    ): DnsQueryResult {
+        val dnsQuery = buildDnsQuery(domain, recordType)
+        val requestPacket = DatagramPacket(dnsQuery, dnsQuery.size, serverAddress, port)
+
+        socket.send(requestPacket)
+
+        val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
+        socket.receive(responsePacket)
+
+        val responseCode = if (responsePacket.length >= 4) {
+            responseBuffer[3].toInt() and 0x0F
+        } else 0
+
+        if (recordType == DNS_TYPE_A) {
+            val resolvedIp = parseDnsResponse(responseBuffer, responsePacket.length)
+            if (resolvedIp != null) {
+                val isCensored = resolvedIp.startsWith("10.") ||
+                        resolvedIp == "0.0.0.0" ||
+                        resolvedIp.startsWith("127.")
+                return DnsQueryResult(
+                    success = true,
+                    resolvedIp = resolvedIp,
+                    isCensored = isCensored,
+                    responseCode = responseCode
+                )
+            } else {
+                return DnsQueryResult(
+                    success = responseCode == 0 || responseCode == 3,
+                    error = if (responseCode != 0 && responseCode != 3) "Response code: $responseCode" else null,
+                    responseCode = responseCode
+                )
+            }
+        } else {
+            return DnsQueryResult(
+                success = responseCode == 0 || responseCode == 3,
+                responseCode = responseCode,
+                error = if (responseCode != 0 && responseCode != 3) "Response code: $responseCode" else null
             )
         }
     }

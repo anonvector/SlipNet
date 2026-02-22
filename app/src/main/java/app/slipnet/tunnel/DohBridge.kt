@@ -100,6 +100,60 @@ val DOH_SERVERS = listOf(
     ),
     DohServer("Rethink DNS", "https://sky.rethinkdns.com/dns-query"),
     DohServer("JoinDNS4EU", "https://unfiltered.joindns4.eu/dns-query"),
+    // --- Ad-blocking / filtering variants ---
+    DohServer(
+        "AdGuard DNS", "https://dns.adguard.com/dns-query",
+        listOf("94.140.14.14", "94.140.15.15")
+    ),
+    DohServer(
+        "AdGuard Unfiltered", "https://unfiltered.adguard-dns.com/dns-query",
+        listOf("94.140.14.140", "94.140.14.141")
+    ),
+    DohServer(
+        "Cloudflare Security", "https://security.cloudflare-dns.com/dns-query",
+        listOf("1.1.1.2", "1.0.0.2")
+    ),
+    DohServer(
+        "Cloudflare Family", "https://family.cloudflare-dns.com/dns-query",
+        listOf("1.1.1.3", "1.0.0.3")
+    ),
+    DohServer(
+        "CleanBrowsing Family", "https://doh.cleanbrowsing.org/doh/family-filter/",
+        listOf("185.228.168.168", "185.228.169.168")
+    ),
+    DohServer(
+        "DNS4EU Protective", "https://protective.joindns4.eu/dns-query",
+        listOf("86.54.11.1", "86.54.11.201")
+    ),
+    // --- Additional global providers ---
+    DohServer(
+        "Cisco Umbrella", "https://doh.umbrella.com/dns-query",
+        listOf("208.67.222.222", "208.67.220.220")
+    ),
+    DohServer(
+        "Mozilla DNS", "https://mozilla.cloudflare-dns.com/dns-query",
+        listOf("104.16.248.249", "104.16.249.249")
+    ),
+    DohServer(
+        "Mullvad DoH", "https://doh.mullvad.net/dns-query",
+        listOf("194.242.2.2", "194.242.2.3")
+    ),
+    DohServer(
+        "AliDNS", "https://dns.alidns.com/dns-query",
+        listOf("223.5.5.5", "223.6.6.6")
+    ),
+    DohServer(
+        "Control D", "https://freedns.controld.com/p0",
+        listOf("76.76.2.0", "76.76.10.0")
+    ),
+    DohServer(
+        "UncensoredDNS", "https://unicast.uncensoreddns.org/dns-query",
+        listOf("91.239.100.100", "89.233.43.71")
+    ),
+    DohServer(
+        "ComSS", "https://dns.comss.one/dns-query",
+        listOf("95.217.205.213")
+    ),
 )
 
 /**
