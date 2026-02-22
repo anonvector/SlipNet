@@ -124,7 +124,6 @@ data class EditProfileUiState(
     val naivePort: String = "443",
     val naiveUsername: String = "",
     val naivePassword: String = "",
-    val naiveSni: String = "",
     val naivePortError: String? = null,
     val naiveUsernameError: String? = null,
     val naivePasswordError: String? = null,
@@ -226,7 +225,6 @@ class EditProfileViewModel @Inject constructor(
                     naivePort = profile.naivePort.toString(),
                     naiveUsername = profile.naiveUsername,
                     naivePassword = profile.naivePassword,
-                    naiveSni = profile.naiveSni,
                     sortOrder = profile.sortOrder,
                     isLoading = false
                 )
@@ -343,10 +341,6 @@ class EditProfileViewModel @Inject constructor(
 
     fun updateNaivePassword(password: String) {
         _uiState.value = _uiState.value.copy(naivePassword = password, naivePasswordError = null)
-    }
-
-    fun updateNaiveSni(sni: String) {
-        _uiState.value = _uiState.value.copy(naiveSni = sni)
     }
 
     fun updateDohUrl(url: String) {
@@ -1031,7 +1025,6 @@ class EditProfileViewModel @Inject constructor(
                     naivePort = if (state.isNaiveSsh) (state.naivePort.toIntOrNull() ?: 443) else 443,
                     naiveUsername = if (state.isNaiveSsh) state.naiveUsername.trim() else "",
                     naivePassword = if (state.isNaiveSsh) state.naivePassword else "",
-                    naiveSni = if (state.isNaiveSsh) state.naiveSni.trim() else "",
                     sortOrder = state.sortOrder,
                 )
 

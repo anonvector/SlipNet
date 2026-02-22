@@ -14,7 +14,7 @@ import javax.inject.Singleton
  * Multiple profiles: one URI per line
  *
  * Encoded profile format v14 (pipe-delimited):
- * v14|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|naiveSni
+ * v14|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -92,8 +92,7 @@ class ConfigExporter @Inject constructor() {
             if (profile.dnsttAuthoritative) "1" else "0",
             profile.naivePort.toString(),
             profile.naiveUsername,
-            Base64.encodeToString(profile.naivePassword.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
-            profile.naiveSni
+            Base64.encodeToString(profile.naivePassword.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         ).joinToString(FIELD_DELIMITER)
 
         val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)

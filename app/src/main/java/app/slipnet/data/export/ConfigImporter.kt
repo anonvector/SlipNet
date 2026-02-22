@@ -69,7 +69,7 @@ sealed class ImportResult {
  * v13|..same as v12..|dnsttAuthoritative
  *
  * Decoded profile format v14 (extends v13 with NaiveProxy fields):
- * v14|..same as v13..|naivePort|naiveUsername|naivePassword(b64)|naiveSni
+ * v14|..same as v13..|naivePort|naiveUsername|naivePassword(b64)
  *
  */
 @Singleton
@@ -101,7 +101,7 @@ class ConfigImporter @Inject constructor() {
         private const val V11_FIELD_COUNT = 26
         private const val V12_FIELD_COUNT = 27
         private const val V13_FIELD_COUNT = 28
-        private const val V14_FIELD_COUNT = 32
+        private const val V14_FIELD_COUNT = 31
         private const val CURRENT_MAX_VERSION = 14
     }
 
@@ -1491,7 +1491,7 @@ class ConfigImporter @Inject constructor() {
         val naivePassword = try {
             String(Base64.decode(fields[30], Base64.NO_WRAP), Charsets.UTF_8)
         } catch (_: Exception) { "" }
-        val naiveSni = fields[31]
+        // fields[31] was naiveSni (removed) — ignored if present
 
         if (name.isBlank()) {
             return ProfileParseResult.Error("Line $lineNum: Profile name is required")
@@ -1581,8 +1581,7 @@ class ConfigImporter @Inject constructor() {
             dnsttAuthoritative = dnsttAuthoritative,
             naivePort = naivePort,
             naiveUsername = naiveUsername,
-            naivePassword = naivePassword,
-            naiveSni = naiveSni
+            naivePassword = naivePassword
         )
 
         return ProfileParseResult.Success(profile)

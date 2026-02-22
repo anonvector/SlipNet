@@ -48,8 +48,7 @@ data class ServerProfile(
     // NaiveProxy fields (NAIVE_SSH tunnel type)
     val naivePort: Int = 443,
     val naiveUsername: String = "",
-    val naivePassword: String = "",
-    val naiveSni: String = ""
+    val naivePassword: String = ""
 )
 
 data class DnsResolver(

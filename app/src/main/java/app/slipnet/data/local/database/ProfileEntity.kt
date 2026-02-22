@@ -112,8 +112,5 @@ data class ProfileEntity(
     val naiveUsername: String = "",
 
     @ColumnInfo(name = "naive_password", defaultValue = "")
-    val naivePassword: String = "",
-
-    @ColumnInfo(name = "naive_sni", defaultValue = "")
-    val naiveSni: String = ""
+    val naivePassword: String = ""
 )

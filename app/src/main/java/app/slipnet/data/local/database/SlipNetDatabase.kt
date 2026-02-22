@@ -229,8 +229,7 @@ abstract class SlipNetDatabase : RoomDatabase() {
                             dnstt_authoritative INTEGER NOT NULL DEFAULT 0,
                             naive_port INTEGER NOT NULL DEFAULT 443,
                             naive_username TEXT NOT NULL DEFAULT '',
-                            naive_password TEXT NOT NULL DEFAULT '',
-                            naive_sni TEXT NOT NULL DEFAULT ''
+                            naive_password TEXT NOT NULL DEFAULT ''
                         )
                     """.trimIndent())
                     db.execSQL("""
@@ -262,7 +261,6 @@ abstract class SlipNetDatabase : RoomDatabase() {
                     db.execSQL("ALTER TABLE server_profiles ADD COLUMN naive_port INTEGER NOT NULL DEFAULT 443")
                     db.execSQL("ALTER TABLE server_profiles ADD COLUMN naive_username TEXT NOT NULL DEFAULT ''")
                     db.execSQL("ALTER TABLE server_profiles ADD COLUMN naive_password TEXT NOT NULL DEFAULT ''")
-                    db.execSQL("ALTER TABLE server_profiles ADD COLUMN naive_sni TEXT NOT NULL DEFAULT ''")
                 }
             }
         }
