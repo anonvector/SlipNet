@@ -421,8 +421,8 @@ fun MainScreen(
                             )
                             AddMenuOption(
                                 icon = Icons.Default.Shield,
-                                title = "NaiveProxy + SSH",
-                                description = "Stealth HTTPS tunnel",
+                                title = "SlipGate",
+                                description = "NaiveProxy + SSH",
                                 onClick = {
                                     showAddMenu = false
                                     onNavigateToAddProfile("naive_ssh")
