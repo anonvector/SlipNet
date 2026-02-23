@@ -196,7 +196,8 @@ fun ProfileListItem(
                             ?: profile.dohUrl
                         TunnelType.SSH -> "${profile.domain}:${profile.sshPort}"
                         TunnelType.DNSTT_SSH -> "${profile.domain} via SSH"
-                        TunnelType.NAIVE_SSH -> "${profile.domain} via SlipGate"
+                        TunnelType.NAIVE_SSH -> "${profile.domain} via NaiveProxy + SSH"
+                        TunnelType.NAIVE -> "${profile.domain}:${profile.naivePort}"
                         TunnelType.SNOWFLAKE -> "Tor Network"
                         else -> profile.domain
                     },

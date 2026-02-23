@@ -505,6 +505,7 @@ class MainViewModel @Inject constructor(
         return when (profile.tunnelType) {
             TunnelType.SSH -> PingTarget.Tcp(profile.domain, profile.sshPort)
             TunnelType.NAIVE_SSH -> PingTarget.Tcp(profile.domain, profile.naivePort)
+            TunnelType.NAIVE -> PingTarget.Tcp(profile.domain, profile.naivePort)
             TunnelType.DNSTT, TunnelType.DNSTT_SSH,
             TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH -> {
                 // DNS-tunneled: ping the first resolver

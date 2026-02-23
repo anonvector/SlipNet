@@ -32,6 +32,7 @@ class ConfigExporter @Inject constructor() {
         const val MODE_DOH = "doh"
         const val MODE_SNOWFLAKE = "snowflake"
         const val MODE_NAIVE_SSH = "naive_ssh"
+        const val MODE_NAIVE = "naive"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -59,6 +60,7 @@ class ConfigExporter @Inject constructor() {
             TunnelType.DOH -> MODE_DOH
             TunnelType.SNOWFLAKE -> MODE_SNOWFLAKE
             TunnelType.NAIVE_SSH -> MODE_NAIVE_SSH
+            TunnelType.NAIVE -> MODE_NAIVE
         }
 
         val data = listOf(

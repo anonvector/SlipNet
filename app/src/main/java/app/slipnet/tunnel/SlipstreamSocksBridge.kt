@@ -45,8 +45,8 @@ object SlipstreamSocksBridge {
     private const val BIND_RETRY_DELAY_MS = 200L
     private const val BUFFER_SIZE = 65536  // 64KB for better throughput (was 32KB)
     private const val TCP_CONNECT_TIMEOUT_MS = 10000
-    private const val DNS_POOL_SIZE = 10
-    private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
+    private const val DNS_POOL_SIZE = 5
+    private const val DNS_KEEPALIVE_INTERVAL_MS = 40_000L
     private const val DNS_WORKER_TIMEOUT_MS = 15_000
     // Clean DNS resolved at the REMOTE server (through Dante SOCKS5 CONNECT).
     // Unlike SSH (direct-tcpip bypasses Dante), Slipstream goes through Dante which

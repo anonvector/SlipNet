@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
@@ -186,7 +187,7 @@ fun EditProfileScreen(
                             Text(
                                 when {
                                     uiState.isSshOnly -> "SSH Server"
-                                    uiState.isNaiveSsh -> "Server"
+                                    uiState.isNaiveBased -> "Server"
                                     else -> "Domain"
                                 }
                             )
@@ -196,7 +197,7 @@ fun EditProfileScreen(
                                 when {
                                     uiState.isDnsttBased -> "t.example.com"
                                     uiState.isSshOnly -> "ssh.example.com"
-                                    uiState.isNaiveSsh -> "proxy.example.com"
+                                    uiState.isNaiveBased -> "proxy.example.com"
                                     else -> "vpn.example.com"
                                 }
                             )
@@ -207,7 +208,7 @@ fun EditProfileScreen(
                                 uiState.domainError ?: when {
                                     uiState.isDnsttBased -> "DNSTT tunnel domain"
                                     uiState.isSlipstreamBased -> "Slipstream tunnel domain"
-                                    uiState.isNaiveSsh -> "Caddy server hostname"
+                                    uiState.isNaiveBased -> "Caddy server hostname"
                                     else -> "SSH server hostname or IP"
                                 }
                             )
@@ -262,8 +263,8 @@ fun EditProfileScreen(
                     }
                 }
 
-                // NaiveProxy fields (shown only for NAIVE_SSH)
-                if (uiState.isNaiveSsh) {
+                // NaiveProxy fields (shown for NAIVE and NAIVE_SSH)
+                if (uiState.isNaiveBased) {
                     OutlinedTextField(
                         value = uiState.naivePort,
                         onValueChange = { viewModel.updateNaivePort(it) },
@@ -442,7 +443,7 @@ fun EditProfileScreen(
                 }
 
                 // Resolvers (not shown for SSH-only, DOH, or DNSTT with DoH transport)
-                val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake && !uiState.isNaiveSsh &&
+                val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake && !uiState.isNaiveBased &&
                         !(uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOH)
                 if (showResolvers) {
                     val isDoT = uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOT
@@ -815,38 +816,41 @@ fun EditProfileScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        val directLabel = if (uiState.isNaiveBased) "Direct" else "SOCKS"
+                        val sshLabel = if (uiState.isNaiveBased) "+ SSH" else "SSH"
+
                         if (uiState.useSsh) {
                             OutlinedButton(
                                 onClick = { viewModel.setUseSsh(false) },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("SOCKS")
+                                Text(directLabel)
                             }
                             Button(
                                 onClick = { },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("SSH")
+                                Text(sshLabel)
                             }
                         } else {
                             Button(
                                 onClick = { },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("SOCKS")
+                                Text(directLabel)
                             }
                             OutlinedButton(
                                 onClick = { viewModel.setUseSsh(true) },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("SSH")
+                                Text(sshLabel)
                             }
                         }
                     }
                 }
 
                 // SOCKS5 Credentials (optional, when SOCKS selected for DNSTT/Slipstream)
-                if (uiState.showConnectionMethod && !uiState.useSsh) {
+                if (uiState.showConnectionMethod && !uiState.useSsh && !uiState.isNaiveBased) {
                     Text(
                         text = "SOCKS5 Credentials (Optional)",
                         style = MaterialTheme.typography.titleMedium,
@@ -893,7 +897,7 @@ fun EditProfileScreen(
                     )
 
                     // SSH Port (only for DNSTT+SSH / Slipstream+SSH / NAIVE_SSH, not SSH-only which has it near domain)
-                    if (uiState.showConnectionMethod || uiState.isNaiveSsh) {
+                    if (uiState.showConnectionMethod) {
                         OutlinedTextField(
                             value = uiState.sshPort,
                             onValueChange = { viewModel.updateSshPort(it) },
@@ -1192,14 +1196,54 @@ private fun DohServerSelector(
         modifier = Modifier.fillMaxWidth()
     )
 
-    // Test Servers button
-    OutlinedButton(
-        onClick = onTestServers,
-        modifier = Modifier.fillMaxWidth()
+    // Import + Test buttons
+    val context = LocalContext.current
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            try {
+                context.contentResolver.openInputStream(it)?.use { stream ->
+                    val content = stream.bufferedReader().readText()
+                    // Extract lines that look like DoH URLs
+                    val urls = content.lines()
+                        .map { line -> line.trim() }
+                        .filter { line -> line.startsWith("https://", ignoreCase = true) }
+                    if (urls.isNotEmpty()) {
+                        val existing = customDohUrls.trim()
+                        val merged = if (existing.isNotEmpty()) {
+                            existing + "\n" + urls.joinToString("\n")
+                        } else {
+                            urls.joinToString("\n")
+                        }
+                        onCustomDohUrlsChange(merged)
+                    }
+                }
+            } catch (_: Exception) { }
+        }
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("Test All Servers")
+        OutlinedButton(
+            onClick = { importLauncher.launch("text/*") },
+            modifier = Modifier.weight(1f)
+        ) {
+            Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Import List")
+        }
+
+        OutlinedButton(
+            onClick = onTestServers,
+            modifier = Modifier.weight(1f)
+        ) {
+            Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Test All")
+        }
     }
 }
 

@@ -47,13 +47,35 @@ object SshTunnelBridge {
     private const val CHANNEL_ACQUIRE_TIMEOUT_MS = 30000L
     private const val CHANNEL_RETRY_COUNT = 2
     private const val CHANNEL_RETRY_DELAY_MS = 100L  // fast retry
-    private const val DNS_POOL_SIZE = 10
-    private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
+    private const val DNS_POOL_SIZE = 5
+    private const val DNS_KEEPALIVE_INTERVAL_MS = 40_000L
     // Fallback DNS when server has no local resolver (works on any server)
     private const val FALLBACK_DNS_HOST = "1.1.1.1"
     // Auto cipher: prefer hardware-accelerated ciphers first
     private const val AUTO_CIPHER_ORDER =
         "aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes256-ctr"
+    // Key exchange: include curve25519 (required by modern OpenSSH servers)
+    private const val KEX_ORDER =
+        "curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,diffie-hellman-group14-sha256"
+
+    init {
+        // Register BouncyCastle as a JCE provider for X25519/curve25519 support.
+        // Android's built-in JCE often lacks XDH, causing JSch's DH25519 to fail
+        // with NoClassDefFoundError for BouncyCastle's X25519PrivateKeyParameters.
+        try {
+            val bcProvider = org.bouncycastle.jce.provider.BouncyCastleProvider()
+            if (java.security.Security.getProvider(bcProvider.name) == null) {
+                java.security.Security.addProvider(bcProvider)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register BouncyCastle provider", e)
+        }
+
+        // Disable JSch's runtime kex check (it may still fail on some devices
+        // even with BC registered, e.g. if the provider order is wrong).
+        JSch.setConfig("CheckKexes", "")
+        JSch.setConfig("kex", KEX_ORDER)
+    }
 
     private var channelSemaphore = Semaphore(DEFAULT_MAX_CHANNELS)
     // Configurable settings (set before start, read during session setup)

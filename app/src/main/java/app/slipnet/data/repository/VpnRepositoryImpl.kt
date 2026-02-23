@@ -18,6 +18,7 @@ import app.slipnet.tunnel.SlipstreamBridge
 import app.slipnet.tunnel.DnsttSocksBridge
 import app.slipnet.tunnel.SlipstreamSocksBridge
 import app.slipnet.tunnel.NaiveBridge
+import app.slipnet.tunnel.NaiveSocksBridge
 import app.slipnet.tunnel.SnowflakeBridge
 import app.slipnet.tunnel.SshTunnelBridge
 import app.slipnet.tunnel.TorSocksBridge
@@ -264,6 +265,34 @@ class VpnRepositoryImpl @Inject constructor(
     }
 
     /**
+     * Start NaiveSocksBridge — a middleman SOCKS5 proxy for standalone NaiveProxy.
+     * Chains CONNECT to NaiveProxy's SOCKS5 (NO_AUTH) and handles FWD_UDP (DNS) via worker pool.
+     */
+    suspend fun startNaiveSocksBridge(
+        naivePort: Int,
+        naiveHost: String,
+        bridgePort: Int,
+        bridgeHost: String,
+        dnsServer: String? = null,
+        dnsFallback: String? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val result = NaiveSocksBridge.start(
+            naivePort = naivePort,
+            naiveHost = naiveHost,
+            listenPort = bridgePort,
+            listenHost = bridgeHost,
+            dnsServer = dnsServer,
+            dnsFallback = dnsFallback
+        )
+        if (result.isSuccess) {
+            Log.i(TAG, "NaiveSocksBridge started on $bridgeHost:$bridgePort -> $naiveHost:$naivePort")
+        } else {
+            Log.e(TAG, "Failed to start NaiveSocksBridge: ${result.exceptionOrNull()?.message}")
+        }
+        result
+    }
+
+    /**
      * Start the Snowflake proxy stack: Snowflake PT + Tor + TorSocksBridge.
      * Call this AFTER establishing the VPN interface.
      *
@@ -421,6 +450,11 @@ class VpnRepositoryImpl @Inject constructor(
                 SshTunnelBridge.stop()
                 NaiveBridge.stop()
             }
+            TunnelType.NAIVE -> {
+                Log.d(TAG, "Stopping standalone NaiveProxy: bridge first, then NaiveProxy")
+                NaiveSocksBridge.stop()
+                NaiveBridge.stop()
+            }
             null -> {
                 // Try to stop all just in case
                 Log.d(TAG, "No tunnel type set, stopping all proxies")
@@ -431,6 +465,7 @@ class VpnRepositoryImpl @Inject constructor(
                 DnsDoHProxy.stop()
                 TorSocksBridge.stop()
                 SnowflakeBridge.stopClient()
+                NaiveSocksBridge.stop()
                 NaiveBridge.stop()
             }
         }
@@ -576,7 +611,7 @@ class VpnRepositoryImpl @Inject constructor(
     }
 
     override fun getConnectedProfile(): ServerProfile? {
-        return connectedProfile
+        return if (_connectionState.value is ConnectionState.Connected) connectedProfile else null
     }
 
     fun setProxyConnected(profile: ServerProfile) {

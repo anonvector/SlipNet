@@ -41,8 +41,11 @@ object DnsttSocksBridge {
     private const val BIND_RETRY_DELAY_MS = 200L
     private const val BUFFER_SIZE = 65536  // 64KB for better throughput
     private const val TCP_CONNECT_TIMEOUT_MS = 10000
-    private const val DNS_POOL_SIZE = 10
-    private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
+    private const val DNS_POOL_SIZE_DEFAULT = 5
+    private const val DNS_POOL_SIZE_AUTHORITATIVE = 10
+    private const val DNS_KEEPALIVE_INTERVAL_MS = 40_000L
+    @Volatile var authoritativeMode = false
+    private val dnsPoolSize: Int get() = if (authoritativeMode) DNS_POOL_SIZE_AUTHORITATIVE else DNS_POOL_SIZE_DEFAULT
     private const val DNS_WORKER_TIMEOUT_MS = 15_000
     // Clean DNS resolved at the REMOTE server (through Dante SOCKS5 CONNECT).
     // Dante may block CONNECT to localhost (127.0.0.53). Use public DNS instead.
@@ -74,11 +77,11 @@ object DnsttSocksBridge {
         val isAlive: Boolean get() = !socket.isClosed && socket.isConnected
     }
 
-    private val dnsWorkers = arrayOfNulls<DnsWorker>(DNS_POOL_SIZE)
+    private var dnsWorkers = arrayOfNulls<DnsWorker>(DNS_POOL_SIZE_DEFAULT)
     private val dnsRoundRobin = AtomicInteger(0)
     private var dnsTargetHost: String = PRIMARY_DNS_HOST
     private var dnsFallbackHost: String = FALLBACK_DNS_HOST
-    private val workerCreationLocks = Array(DNS_POOL_SIZE) { ReentrantLock() }
+    private var workerCreationLocks = Array(DNS_POOL_SIZE_DEFAULT) { ReentrantLock() }
     private var dnsKeepaliveThread: Thread? = null
 
     fun start(
@@ -105,6 +108,10 @@ object DnsttSocksBridge {
         this.socksPassword = socksPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
         this.dnsFallbackHost = dnsFallback ?: FALLBACK_DNS_HOST
+        // Resize worker pool based on authoritative mode
+        val poolSize = dnsPoolSize
+        dnsWorkers = arrayOfNulls(poolSize)
+        workerCreationLocks = Array(poolSize) { ReentrantLock() }
 
         return try {
             val ss = bindServerSocket(listenHost, listenPort)
@@ -155,7 +162,7 @@ object DnsttSocksBridge {
         dnsKeepaliveThread = null
 
         // Close all DNS workers (connections to DNSTT port)
-        for (i in 0 until DNS_POOL_SIZE) {
+        for (i in 0 until dnsPoolSize) {
             val worker = dnsWorkers[i]
             dnsWorkers[i] = null
             if (worker != null) {
@@ -191,15 +198,15 @@ object DnsttSocksBridge {
      * through DNSTT→Dante. Each worker is a ready-to-use DNS-over-TCP channel.
      */
     private fun prewarmDnsWorkers() {
-        Log.i(TAG, "DNS workers target: $dnsTargetHost:53 (fallback: $dnsFallbackHost, pool=$DNS_POOL_SIZE)")
+        Log.i(TAG, "DNS workers target: $dnsTargetHost:53 (fallback: $dnsFallbackHost, pool=$dnsPoolSize)")
         val thread = Thread({
-            for (i in 0 until DNS_POOL_SIZE) {
+            for (i in 0 until dnsPoolSize) {
                 if (!running.get() || Thread.currentThread().isInterrupted) break
                 try {
                     val worker = createDnsWorker()
                     if (worker != null) {
                         dnsWorkers[i] = worker
-                        logd("DNS worker ${i + 1}/$DNS_POOL_SIZE ready → $dnsTargetHost:53")
+                        logd("DNS worker ${i + 1}/$dnsPoolSize ready → $dnsTargetHost:53")
                     } else {
                         logd("DNS worker ${i + 1} creation returned null")
                         break
@@ -213,7 +220,7 @@ object DnsttSocksBridge {
                             val fallbackWorker = createDnsWorker()
                             if (fallbackWorker != null) {
                                 dnsWorkers[i] = fallbackWorker
-                                logd("DNS worker 1/$DNS_POOL_SIZE ready → $dnsTargetHost:53 (fallback)")
+                                logd("DNS worker 1/$dnsPoolSize ready → $dnsTargetHost:53 (fallback)")
                                 continue
                             }
                         } catch (e2: Exception) {
@@ -226,7 +233,7 @@ object DnsttSocksBridge {
                 }
             }
             val count = dnsWorkers.count { it != null }
-            Log.i(TAG, "DNS worker pool: $count/$DNS_POOL_SIZE ready → $dnsTargetHost:53")
+            Log.i(TAG, "DNS worker pool: $count/$dnsPoolSize ready → $dnsTargetHost:53")
         }, "dnstt-dns-prewarm")
         thread.isDaemon = true
         thread.start()
@@ -314,7 +321,7 @@ object DnsttSocksBridge {
 
             while (running.get() && !Thread.currentThread().isInterrupted) {
                 var deadCount = 0
-                for (i in 0 until DNS_POOL_SIZE) {
+                for (i in 0 until dnsPoolSize) {
                     val worker = dnsWorkers[i]
                     if (worker == null || !worker.isAlive) {
                         deadCount++
@@ -379,11 +386,11 @@ object DnsttSocksBridge {
      * Phase 4: DoH fallback if all TCP methods fail.
      */
     private fun forwardDnsPooled(payload: ByteArray): ByteArray? {
-        val startIdx = (dnsRoundRobin.getAndIncrement() and 0x7FFFFFFF) % DNS_POOL_SIZE
+        val startIdx = (dnsRoundRobin.getAndIncrement() and 0x7FFFFFFF) % dnsPoolSize
 
         // Phase 1: Try all existing live workers (non-blocking lock to skip busy ones)
-        for (i in 0 until DNS_POOL_SIZE) {
-            val idx = (startIdx + i) % DNS_POOL_SIZE
+        for (i in 0 until dnsPoolSize) {
+            val idx = (startIdx + i) % dnsPoolSize
             val worker = dnsWorkers[idx] ?: continue
             if (!worker.isAlive) {
                 dnsWorkers[idx] = null
@@ -406,8 +413,8 @@ object DnsttSocksBridge {
         }
 
         // Phase 2: All workers dead/busy — recreate one inline
-        for (i in 0 until DNS_POOL_SIZE) {
-            val idx = (startIdx + i) % DNS_POOL_SIZE
+        for (i in 0 until dnsPoolSize) {
+            val idx = (startIdx + i) % dnsPoolSize
             val newWorker = recreateDnsWorkerSync(idx) ?: continue
             if (!newWorker.lock.tryLock(5, TimeUnit.SECONDS)) continue
             try {

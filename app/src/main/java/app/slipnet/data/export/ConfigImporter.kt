@@ -85,6 +85,7 @@ class ConfigImporter @Inject constructor() {
         private const val MODE_DOH = "doh"
         private const val MODE_SNOWFLAKE = "snowflake"
         private const val MODE_NAIVE_SSH = "naive_ssh"
+        private const val MODE_NAIVE = "naive"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -271,6 +272,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -350,6 +352,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -434,6 +437,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -521,6 +525,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -620,6 +625,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -719,6 +725,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -814,6 +821,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -920,6 +928,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1047,6 +1056,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1176,6 +1186,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1312,6 +1323,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1449,6 +1461,7 @@ class ConfigImporter @Inject constructor() {
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
+            MODE_NAIVE -> TunnelType.NAIVE
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1504,6 +1517,7 @@ class ConfigImporter @Inject constructor() {
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.NAIVE_SSH ||
+                tunnelType == TunnelType.NAIVE ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1543,7 +1557,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         // NaiveProxy validation
-        if (tunnelType == TunnelType.NAIVE_SSH) {
+        if (tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NAIVE) {
             if (naiveUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: NaiveProxy profiles require proxy username")
             }

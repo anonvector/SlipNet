@@ -14,8 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
-val appVersionName = "1.9.0"
-val appVersionCode = 28
+val appVersionName = "1.9.1"
+val appVersionCode = 29
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -424,6 +424,8 @@ dependencies {
 
     // SSH tunneling library (mwiede fork — supports modern ciphers: AES-GCM, ChaCha20)
     implementation("com.github.mwiede:jsch:2.27.7")
+    // BouncyCastle for curve25519 key exchange (Android JCE lacks XDH/X25519 on many devices)
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80")
 
     // OkHttp for DoH (HTTP/2, connection pooling, custom DNS resolver)
     implementation("com.squareup.okhttp3:okhttp:5.3.2")

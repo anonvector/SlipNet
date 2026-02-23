@@ -76,7 +76,8 @@ enum class TunnelType(val value: String, val displayName: String) {
     SSH("ssh", "SSH"),
     DOH("doh", "DOH (DNS over HTTPS)"),
     SNOWFLAKE("snowflake", "Tor"),
-    NAIVE_SSH("naive_ssh", "SlipGate");
+    NAIVE_SSH("naive_ssh", "NaiveProxy + SSH"),
+    NAIVE("naive", "NaiveProxy");
 
     companion object {
         fun fromValue(value: String): TunnelType {
