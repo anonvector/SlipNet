@@ -29,6 +29,8 @@ SlipNet supports multiple tunnel types with optional SSH chaining:
 | **Slipstream** | QUIC | High-performance QUIC tunneling |
 | **Slipstream + SSH** | QUIC + SSH | Slipstream with SSH chaining |
 | **SSH** | SSH | Standalone SSH tunnel (no DNS tunneling) |
+| **NaiveProxy** | HTTPS (Chromium) | HTTPS tunnel with authentic Chrome TLS fingerprinting |
+| **NaiveProxy + SSH** | HTTPS + SSH | NaiveProxy with SSH chaining for extra encryption |
 | **DOH** | DNS over HTTPS | DNS-only encryption via HTTPS (RFC 8484) |
 | **Tor** | Tor Network | Connect via Tor with Snowflake, obfs4, Meek, or custom bridges |
 
@@ -37,8 +39,9 @@ SlipNet supports multiple tunnel types with optional SSH chaining:
 ## Features
 
 - **Modern UI**: Built entirely with Jetpack Compose and Material 3 design
-- **Multiple Tunnel Types**: DNSTT, Slipstream, SSH, DOH, and Tor with optional SSH chaining
-- **SSH Tunneling**: Chain SSH through DNSTT or Slipstream, or use standalone SSH
+- **Multiple Tunnel Types**: DNSTT, Slipstream, SSH, NaiveProxy, DOH, and Tor with optional SSH chaining
+- **SSH Tunneling**: Chain SSH through DNSTT, Slipstream, or NaiveProxy, or use standalone SSH
+- **NaiveProxy**: Chromium-based HTTPS tunnel with authentic TLS fingerprinting to evade DPI
 - **DNS over HTTPS**: Encrypt DNS queries via HTTPS without tunneling other traffic
 - **DNS Transport Selection**: Choose UDP, DoT, or DoH for DNSTT DNS resolution
 - **SSH Cipher Selection**: Choose between AES-128-GCM, ChaCha20, and AES-128-CTR
@@ -58,8 +61,11 @@ To use this client, you must have a compatible server. Please configure your ser
 **DNSTT**:
 [**dnstt-deploy**](https://github.com/bugfloyd/dnstt-deploy)
 
-**SlipStream:**
+**Slipstream:**
 [**slipstream-rust-deploy**](https://github.com/AliRezaBeigy/slipstream-rust-deploy)
+
+**NaiveProxy:**
+[**slipgate**](https://github.com/anonvector/slipgate)
 
 ## Screenshots
 
@@ -188,7 +194,7 @@ SlipNet follows Clean Architecture principles with three main layers:
 Each server profile contains:
 
 - **Name**: Display name for the profile
-- **Tunnel Type**: DNSTT, Slipstream, SSH, DOH, or their SSH variants
+- **Tunnel Type**: DNSTT, Slipstream, SSH, NaiveProxy, DOH, Tor, or their SSH variants
 - **Domain**: Server domain for DNS tunneling
 - **Resolvers**: DNS resolver configurations
 
@@ -202,7 +208,12 @@ Each server profile contains:
 - **Authoritative Mode**: Use authoritative DNS resolution
 - **GSO**: Generic Segmentation Offload for better performance
 
-#### SSH settings (SSH, DNSTT+SSH, Slipstream+SSH):
+#### NaiveProxy settings (NaiveProxy, NaiveProxy+SSH):
+- **Server Port**: Caddy server port (default 443)
+- **Proxy Username**: HTTP proxy authentication username
+- **Proxy Password**: HTTP proxy authentication password
+
+#### SSH settings (SSH, DNSTT+SSH, Slipstream+SSH, NaiveProxy+SSH):
 - **SSH Host**: SSH server address
 - **SSH Port**: SSH server port (default 22)
 - **SSH Username/Password**: Authentication credentials
