@@ -56,7 +56,7 @@ SlipNet supports multiple tunnel types with optional SSH chaining:
 
 ## Server Setup
 
-To use this client, you must have a compatible server. Please configure your server in SOCKS or SSH mode using one of the following deployment scripts:
+To use this client, you must have a compatible server. Please configure your server using one of the following deployment scripts:
 
 **DNSTT + Slipstream (combined):**
 [**dnstm**](https://github.com/net2share/dnstm) — DNS Tunnel Manager supporting both Slipstream and DNSTT with SOCKS5, SSH, and Shadowsocks backends
