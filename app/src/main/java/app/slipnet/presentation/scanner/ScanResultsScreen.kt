@@ -205,6 +205,7 @@ fun ScanResultsScreen(
             if (canApply) {
                 ResultsSelectionControls(
                     selectedCount = uiState.selectedResolvers.size,
+                    maxCount = DnsScannerUiState.MAX_SELECTED_RESOLVERS,
                     onClearSelection = { viewModel.clearSelection() }
                 )
             }
@@ -290,6 +291,7 @@ fun ScanResultsScreen(
                             ResultsResolverItem(
                                 result = result,
                                 isSelected = isSelected,
+                                isLimitReached = uiState.isSelectionLimitReached,
                                 showSelection = canApply,
                                 onToggleSelection = if (canApply) {
                                     { viewModel.toggleResolverSelection(result.host) }
@@ -519,6 +521,7 @@ private fun ResultsStatChip(
 @Composable
 private fun ResultsSelectionControls(
     selectedCount: Int,
+    maxCount: Int,
     onClearSelection: () -> Unit
 ) {
     AnimatedVisibility(
@@ -526,6 +529,8 @@ private fun ResultsSelectionControls(
         enter = expandVertically() + fadeIn(),
         exit = shrinkVertically() + fadeOut()
     ) {
+        val isLimitReached = selectedCount >= maxCount
+
         Surface(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 1.dp,
@@ -542,14 +547,26 @@ private fun ResultsSelectionControls(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer)
+                            .background(
+                                if (isLimitReached) CensoredOrange.copy(alpha = 0.15f)
+                                else MaterialTheme.colorScheme.primaryContainer
+                            )
                             .padding(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = "$selectedCount selected",
+                            text = "$selectedCount / $maxCount selected",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary
+                            color = if (isLimitReached) CensoredOrange
+                                    else MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    if (isLimitReached) {
+                        Text(
+                            text = "Limit reached",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CensoredOrange
                         )
                     }
 
@@ -611,10 +628,12 @@ private fun ResultsEmptyState() {
 private fun ResultsResolverItem(
     result: ResolverScanResult,
     isSelected: Boolean,
+    isLimitReached: Boolean = false,
     showSelection: Boolean = true,
     onToggleSelection: (() -> Unit)? = null
 ) {
-    val canInteract = showSelection && result.status == ResolverStatus.WORKING && onToggleSelection != null
+    val isDisabled = isLimitReached && !isSelected
+    val canInteract = showSelection && result.status == ResolverStatus.WORKING && onToggleSelection != null && !isDisabled
 
     val backgroundColor by animateColorAsState(
         targetValue = when {
@@ -706,7 +725,8 @@ private fun ResultsResolverItem(
             if (showSelection && result.status == ResolverStatus.WORKING && onToggleSelection != null) {
                 Checkbox(
                     checked = isSelected,
-                    onCheckedChange = { onToggleSelection() }
+                    onCheckedChange = { if (!isDisabled) onToggleSelection() },
+                    enabled = !isDisabled
                 )
             }
         }

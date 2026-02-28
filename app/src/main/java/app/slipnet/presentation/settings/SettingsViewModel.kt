@@ -26,6 +26,7 @@ data class SettingsUiState(
     val proxyListenPort: Int = 1080,
     val proxyOnlyMode: Boolean = false,
     val killSwitch: Boolean = false,
+    val autoReconnect: Boolean = false,
     val sleepTimerMinutes: Int = 0,
     // HTTP Proxy Settings
     val httpProxyEnabled: Boolean = false,
@@ -98,12 +99,14 @@ class SettingsViewModel @Inject constructor(
                 Triple(enabled, mode, apps)
             }
 
+            data class ProxyOnlySettings(val proxyOnly: Boolean, val killSwitch: Boolean, val sleepTimer: Int, val autoReconnect: Boolean)
             val proxyOnlyFlow = combine(
                 preferencesDataStore.proxyOnlyMode,
                 preferencesDataStore.killSwitch,
-                preferencesDataStore.sleepTimerMinutes
-            ) { proxyOnly, killSwitch, sleepTimer ->
-                Triple(proxyOnly, killSwitch, sleepTimer)
+                preferencesDataStore.sleepTimerMinutes,
+                preferencesDataStore.autoReconnect
+            ) { proxyOnly, killSwitch, sleepTimer, autoReconnect ->
+                ProxyOnlySettings(proxyOnly, killSwitch, sleepTimer, autoReconnect)
             }
 
             val httpProxyFlow = combine(
@@ -137,7 +140,7 @@ class SettingsViewModel @Inject constructor(
                 Triple(mode, customDns, customFallback)
             }
 
-            val baseFlow = combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow, httpProxyFlow) { main, ssh, split, proxyOnlyTriple, httpProxy ->
+            val baseFlow = combine(mainFlow, sshFlow, splitFlow, proxyOnlyFlow, httpProxyFlow) { main, ssh, split, proxyOnlySettings, httpProxy ->
                 SettingsUiState(
                     autoConnectOnBoot = main[0] as Boolean,
                     darkMode = main[1] as DarkMode,
@@ -145,9 +148,10 @@ class SettingsViewModel @Inject constructor(
                     isLoading = false,
                     proxyListenAddress = main[3] as String,
                     proxyListenPort = main[4] as Int,
-                    proxyOnlyMode = proxyOnlyTriple.first,
-                    killSwitch = proxyOnlyTriple.second,
-                    sleepTimerMinutes = proxyOnlyTriple.third,
+                    proxyOnlyMode = proxyOnlySettings.proxyOnly,
+                    killSwitch = proxyOnlySettings.killSwitch,
+                    autoReconnect = proxyOnlySettings.autoReconnect,
+                    sleepTimerMinutes = proxyOnlySettings.sleepTimer,
                     httpProxyEnabled = httpProxy.first,
                     httpProxyPort = httpProxy.second,
                     appendHttpProxyToVpn = httpProxy.third,
@@ -218,6 +222,13 @@ class SettingsViewModel @Inject constructor(
     fun setKillSwitch(enabled: Boolean) {
         viewModelScope.launch {
             preferencesDataStore.setKillSwitch(enabled)
+        }
+    }
+
+    // Auto-Reconnect
+    fun setAutoReconnect(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setAutoReconnect(enabled)
         }
     }
 

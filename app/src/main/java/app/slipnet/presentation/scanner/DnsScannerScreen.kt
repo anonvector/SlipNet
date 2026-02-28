@@ -248,6 +248,8 @@ fun DnsScannerScreen(
                 RecentDnsSection(
                     recentResolvers = uiState.recentDnsResolvers,
                     selectedResolvers = uiState.selectedResolvers,
+                    isLimitReached = uiState.isSelectionLimitReached,
+                    maxCount = DnsScannerUiState.MAX_SELECTED_RESOLVERS,
                     canSelect = canSelect,
                     onToggleSelection = { viewModel.toggleResolverSelection(it) },
                     onApply = {
@@ -909,6 +911,8 @@ private fun ResolverListSection(
 private fun RecentDnsSection(
     recentResolvers: List<String>,
     selectedResolvers: Set<String>,
+    isLimitReached: Boolean,
+    maxCount: Int,
     canSelect: Boolean,
     onToggleSelection: (String) -> Unit,
     onApply: () -> Unit
@@ -925,13 +929,29 @@ private fun RecentDnsSection(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            SectionHeader(
-                icon = Icons.Default.History,
-                title = "Recent DNS"
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SectionHeader(
+                    icon = Icons.Default.History,
+                    title = "Recent DNS"
+                )
+                if (canSelect && selectedResolvers.isNotEmpty()) {
+                    Text(
+                        text = "${selectedResolvers.size} / $maxCount",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isLimitReached) Color(0xFFFF9800)
+                                else MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
 
             recentResolvers.forEach { ip ->
                 val isSelected = canSelect && selectedResolvers.contains(ip)
+                val isDisabled = isLimitReached && !isSelected
                 val backgroundColor by animateColorAsState(
                     targetValue = if (isSelected) MaterialTheme.colorScheme.primaryContainer
                     else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -942,7 +962,7 @@ private fun RecentDnsSection(
                     modifier = Modifier
                         .fillMaxWidth()
                         .then(
-                            if (canSelect) Modifier.clickable { onToggleSelection(ip) }
+                            if (canSelect && !isDisabled) Modifier.clickable { onToggleSelection(ip) }
                             else Modifier
                         ),
                     colors = CardDefaults.cardColors(containerColor = backgroundColor),
@@ -986,7 +1006,8 @@ private fun RecentDnsSection(
                         if (canSelect) {
                             Checkbox(
                                 checked = isSelected,
-                                onCheckedChange = { onToggleSelection(ip) }
+                                onCheckedChange = { if (!isDisabled) onToggleSelection(ip) },
+                                enabled = !isDisabled
                             )
                         }
                     }

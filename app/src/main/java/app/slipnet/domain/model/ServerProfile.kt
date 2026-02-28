@@ -99,6 +99,7 @@ enum class SshAuthType(val value: String) {
 
 enum class DnsTransport(val value: String, val displayName: String) {
     UDP("udp", "UDP"),
+    TCP("tcp", "TCP"),
     DOT("dot", "DoT"),
     DOH("doh", "DoH");
 

@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material.icons.filled.SettingsEthernet
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -196,6 +197,16 @@ fun SettingsScreen(
                     description = "Block all traffic if VPN connection drops",
                     checked = uiState.killSwitch,
                     onCheckedChange = { viewModel.setKillSwitch(it) }
+                )
+
+                SettingsDivider()
+
+                SwitchSettingItem(
+                    icon = Icons.Default.Sync,
+                    title = "Auto-reconnect",
+                    description = "Automatically reconnect if VPN drops unexpectedly",
+                    checked = uiState.autoReconnect,
+                    onCheckedChange = { viewModel.setAutoReconnect(it) }
                 )
 
                 SettingsDivider()

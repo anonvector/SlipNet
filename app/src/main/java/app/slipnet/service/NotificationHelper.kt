@@ -25,6 +25,8 @@ class NotificationHelper @Inject constructor(
         private const val REQUEST_CODE_DISCONNECT = 101
         private const val REQUEST_CODE_RECONNECT = 102
         private const val REQUEST_CODE_RECONNECT_DISCONNECT = 103
+        private const val REQUEST_CODE_AUTO_RECONNECT_CANCEL = 104
+        const val AUTO_RECONNECT_NOTIFICATION_ID = 4
     }
 
     fun createVpnNotification(
@@ -128,6 +130,44 @@ class NotificationHelper @Inject constructor(
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .addAction(R.drawable.ic_vpn_key, "Disconnect", disconnectPendingIntent)
+            .build()
+    }
+
+    fun createAutoReconnectNotification(
+        profileName: String,
+        attempt: Int,
+        maxAttempts: Int
+    ): Notification {
+        val mainIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val mainPendingIntent = PendingIntent.getActivity(
+            context,
+            REQUEST_CODE_MAIN,
+            mainIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val disconnectIntent = Intent(context, SlipNetVpnService::class.java).apply {
+            action = SlipNetVpnService.ACTION_DISCONNECT
+        }
+        val disconnectPendingIntent = PendingIntent.getService(
+            context,
+            REQUEST_CODE_AUTO_RECONNECT_CANCEL,
+            disconnectIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_VPN_STATUS)
+            .setSmallIcon(R.drawable.ic_vpn_key)
+            .setContentTitle("Reconnecting to $profileName\u2026")
+            .setContentText("Attempt $attempt of $maxAttempts")
+            .setContentIntent(mainPendingIntent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .addAction(R.drawable.ic_vpn_key, "Cancel", disconnectPendingIntent)
             .build()
     }
 

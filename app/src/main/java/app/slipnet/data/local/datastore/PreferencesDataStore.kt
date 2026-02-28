@@ -63,6 +63,8 @@ class PreferencesDataStore @Inject constructor(
         val PROXY_ONLY_MODE = booleanPreferencesKey("proxy_only_mode")
         // Kill Switch
         val KILL_SWITCH = booleanPreferencesKey("kill_switch")
+        // Auto-Reconnect
+        val AUTO_RECONNECT = booleanPreferencesKey("auto_reconnect")
         // Sleep Timer
         val SLEEP_TIMER_MINUTES = intPreferencesKey("sleep_timer_minutes")
         // Recent DNS Resolvers
@@ -405,6 +407,17 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setKillSwitch(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[Keys.KILL_SWITCH] = enabled
+        }
+    }
+
+    // Auto-Reconnect
+    val autoReconnect: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.AUTO_RECONNECT] ?: false
+    }
+
+    suspend fun setAutoReconnect(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.AUTO_RECONNECT] = enabled
         }
     }
 

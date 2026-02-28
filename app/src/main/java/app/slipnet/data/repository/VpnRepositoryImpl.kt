@@ -141,6 +141,11 @@ class VpnRepositoryImpl @Inject constructor(
                 // DoH stays single URL — no multi-resolver
                 profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
             }
+            DnsTransport.TCP -> {
+                // Pass all resolvers comma-separated with tcp:// prefix for multi-resolver
+                profile.resolvers.joinToString(",") { "tcp://${it.host}:${it.port}" }
+                    .ifBlank { "tcp://8.8.8.8:53" }
+            }
             DnsTransport.DOT -> {
                 // Pass all resolvers comma-separated with tls:// prefix for multi-resolver
                 profile.resolvers.joinToString(",") { "tls://${it.host}:${it.port}" }

@@ -13,7 +13,6 @@ import android.net.ProxyInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.os.PowerManager
 import app.slipnet.util.AppLog as Log
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.local.datastore.SplitTunnelingMode
@@ -71,8 +70,9 @@ class SlipNetVpnService : VpnService() {
         private const val PREF_LAST_PROFILE_ID = "last_profile_id"
         private const val PREF_WAS_CONNECTED = "was_connected"
 
-        // WakeLock tag
-        private const val WAKELOCK_TAG = "SlipNet:VpnWakeLock"
+        // Auto-reconnect settings
+        private const val AUTO_RECONNECT_MAX_RETRIES = 5
+        private val AUTO_RECONNECT_DELAYS_MS = longArrayOf(2000, 4000, 8000, 16000, 30000)
     }
 
     @Inject
@@ -107,37 +107,30 @@ class SlipNetVpnService : VpnService() {
     private var isUserInitiatedDisconnect = false
     private var currentProfileName = ""
 
+    // Auto-reconnect state
+    @Volatile
+    private var isAutoReconnecting = false
+    private var autoReconnectJob: Job? = null
+    private var autoReconnectAttempt = 0
+    private var connectionWasSuccessful = false
+
     // Traffic monitoring for stale connection detection
     private var lastTrafficRxBytes = 0L
     private var lastTrafficTxBytes = 0L
     private var staleTrafficChecks = 0
     private var quicDownChecks = 0
 
-    // Persistence and WakeLock for service resilience
+    // Persistence for service resilience
     private lateinit var prefs: SharedPreferences
-    private var wakeLock: PowerManager.WakeLock? = null
 
 
     override fun onCreate() {
         super.onCreate()
         connectivityManager = getSystemService(ConnectivityManager::class.java)
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        // Acquire a partial WakeLock to keep the CPU running
-        // This helps prevent Android from killing the service when screen is off
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            WAKELOCK_TAG
-        ).apply {
-            setReferenceCounted(false)
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Acquire WakeLock when service starts
-        acquireWakeLock()
-
         when (intent?.action) {
             ACTION_CONNECT -> {
                 val profileId = intent.getLongExtra(EXTRA_PROFILE_ID, -1)
@@ -173,42 +166,7 @@ class SlipNetVpnService : VpnService() {
             connect(lastProfileId)
         } else {
             Log.d(TAG, "No previous connection to restore, stopping service")
-            releaseWakeLock()
             stopSelf()
-        }
-    }
-
-    /**
-     * Acquire the WakeLock to keep the CPU running.
-     */
-    private fun acquireWakeLock() {
-        try {
-            wakeLock?.let { lock ->
-                if (!lock.isHeld) {
-                    // Acquire with a timeout to prevent battery drain if something goes wrong
-                    // 10 minutes should be enough; we'll re-acquire in health check
-                    lock.acquire(10 * 60 * 1000L)
-                    Log.d(TAG, "WakeLock acquired")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to acquire WakeLock", e)
-        }
-    }
-
-    /**
-     * Release the WakeLock.
-     */
-    private fun releaseWakeLock() {
-        try {
-            wakeLock?.let { lock ->
-                if (lock.isHeld) {
-                    lock.release()
-                    Log.d(TAG, "WakeLock released")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to release WakeLock", e)
         }
     }
 
@@ -332,10 +290,17 @@ class SlipNetVpnService : VpnService() {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Exception during connection", e)
-                connectionManager.onVpnError(e.message ?: "Unknown error")
-                cleanupConnection()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                // If this was an auto-reconnect attempt and we can still retry, re-enter the retry loop
+                val autoReconnectEnabled = try { preferencesDataStore.autoReconnect.first() } catch (_: Exception) { false }
+                if (autoReconnectEnabled && connectionWasSuccessful && !isUserInitiatedDisconnect
+                    && autoReconnectAttempt < AUTO_RECONNECT_MAX_RETRIES) {
+                    handleTunnelFailure("reconnect failed: ${e.message}")
+                } else {
+                    connectionManager.onVpnError(e.message ?: "Unknown error")
+                    cleanupConnection()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             }
         }
     }
@@ -1761,6 +1726,10 @@ class SlipNetVpnService : VpnService() {
      * Finish connection setup - common to all tunnel types.
      */
     private fun finishConnection() {
+        // Mark connection as successful for auto-reconnect eligibility
+        connectionWasSuccessful = true
+        autoReconnectAttempt = 0
+
         // Notify connection manager for bookkeeping (profile preferences, etc.)
         connectionManager.onVpnEstablished()
 
@@ -1969,9 +1938,6 @@ class SlipNetVpnService : VpnService() {
 
             while (isActive) {
                 delay(HEALTH_CHECK_INTERVAL_MS)
-
-                // Re-acquire WakeLock periodically to keep it active
-                acquireWakeLock()
 
                 // Check if both native clients are still running and healthy
                 val proxyHealthy = isCurrentProxyHealthy()
@@ -2870,6 +2836,13 @@ class SlipNetVpnService : VpnService() {
         // Clear kill switch so teardown proceeds normally
         isKillSwitchActive = false
 
+        // Cancel auto-reconnect
+        autoReconnectJob?.cancel()
+        autoReconnectJob = null
+        isAutoReconnecting = false
+        autoReconnectAttempt = 0
+        connectionWasSuccessful = false
+
         // Cancel any in-progress connection attempt
         connectJob?.cancel()
         connectJob = null
@@ -2892,7 +2865,6 @@ class SlipNetVpnService : VpnService() {
             clearConnectionState()
             cleanupConnection()
             connectionManager.onVpnDisconnected()
-            releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
@@ -2908,10 +2880,16 @@ class SlipNetVpnService : VpnService() {
         if (killSwitchEnabled && !isProxyOnly && vpnInterface != null) {
             enterKillSwitchMode(reason)
         } else {
-            connectionManager.onVpnError("VPN connection lost - $reason")
-            cleanupConnection()
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            val autoReconnectEnabled = preferencesDataStore.autoReconnect.first()
+            if (autoReconnectEnabled && connectionWasSuccessful && !isUserInitiatedDisconnect
+                && autoReconnectAttempt < AUTO_RECONNECT_MAX_RETRIES) {
+                enterAutoReconnectMode(reason)
+            } else {
+                connectionManager.onVpnError("VPN connection lost - $reason")
+                cleanupConnection()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
     }
 
@@ -2948,6 +2926,45 @@ class SlipNetVpnService : VpnService() {
             if (isKillSwitchActive) {
                 handleNetworkChange("kill switch reconnect")
             }
+        }
+    }
+
+    /**
+     * Enter auto-reconnect mode: tear down VPN (traffic flows directly during retry),
+     * show reconnecting notification, and attempt reconnection with exponential backoff.
+     */
+    private suspend fun enterAutoReconnectMode(reason: String) {
+        autoReconnectAttempt++
+        isAutoReconnecting = true
+        Log.i(TAG, "Auto-reconnect attempt $autoReconnectAttempt/$AUTO_RECONNECT_MAX_RETRIES: $reason")
+
+        // Capture profile info BEFORE cleanup resets currentProfileId
+        val profileId = currentProfileId
+        val profileName = currentProfileName
+
+        // Tear down the connection (VPN goes down, traffic flows directly)
+        cleanupConnection()
+
+        // Show auto-reconnect foreground notification to keep service alive
+        val notification = notificationHelper.createAutoReconnectNotification(
+            profileName, autoReconnectAttempt, AUTO_RECONNECT_MAX_RETRIES
+        )
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(NotificationHelper.VPN_NOTIFICATION_ID, notification)
+
+        // Schedule reconnect with exponential backoff
+        val delayMs = AUTO_RECONNECT_DELAYS_MS[
+            (autoReconnectAttempt - 1).coerceAtMost(AUTO_RECONNECT_DELAYS_MS.size - 1)
+        ]
+        autoReconnectJob = serviceScope.launch {
+            Log.d(TAG, "Auto-reconnect: waiting ${delayMs}ms before attempt $autoReconnectAttempt")
+            delay(delayMs)
+            if (isUserInitiatedDisconnect) {
+                Log.i(TAG, "Auto-reconnect cancelled: user-initiated disconnect")
+                return@launch
+            }
+            isAutoReconnecting = false
+            connect(profileId)
         }
     }
 
@@ -3010,6 +3027,12 @@ class SlipNetVpnService : VpnService() {
         // so onDestroy() should show the disconnect notification.
         // We still need to clean up, but skip setting isUserInitiatedDisconnect.
         isKillSwitchActive = false
+        // Cancel auto-reconnect — another VPN took over, don't fight it
+        autoReconnectJob?.cancel()
+        autoReconnectJob = null
+        isAutoReconnecting = false
+        autoReconnectAttempt = 0
+        connectionWasSuccessful = false
         connectJob?.cancel()
         connectJob = null
         reconnectDebounceJob?.cancel()
@@ -3022,7 +3045,6 @@ class SlipNetVpnService : VpnService() {
             clearConnectionState()
             cleanupConnection()
             connectionManager.onVpnDisconnected()
-            releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
@@ -3051,15 +3073,12 @@ class SlipNetVpnService : VpnService() {
         // Show disconnect notification if the connection was active and not user-initiated.
         // Skip if kill switch is active (it has its own notification) or if reconnecting
         // (the reconnect/kill-switch flow handles notifications).
-        if (wasActive && !isUserInitiatedDisconnect && !isKillSwitchActive && !isReconnecting) {
+        if (wasActive && !isUserInitiatedDisconnect && !isKillSwitchActive && !isReconnecting && !isAutoReconnecting) {
             Log.i(TAG, "Unexpected disconnect detected, showing notification")
             val notification = notificationHelper.createDisconnectedNotification(profileName, profileId)
             val notificationManager = getSystemService(NotificationManager::class.java)
             notificationManager.notify(NotificationHelper.DISCONNECT_NOTIFICATION_ID, notification)
         }
-
-        // Release WakeLock
-        releaseWakeLock()
 
         serviceScope.cancel()
         super.onDestroy()
@@ -3075,6 +3094,11 @@ class SlipNetVpnService : VpnService() {
         // Stop health monitoring
         healthCheckJob?.cancel()
         healthCheckJob = null
+
+        // Cancel auto-reconnect
+        autoReconnectJob?.cancel()
+        autoReconnectJob = null
+        isAutoReconnecting = false
 
         // Cancel any pending reconnect
         reconnectDebounceJob?.cancel()
