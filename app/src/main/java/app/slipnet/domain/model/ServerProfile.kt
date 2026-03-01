@@ -48,7 +48,10 @@ data class ServerProfile(
     // NaiveProxy fields (NAIVE_SSH tunnel type)
     val naivePort: Int = 443,
     val naiveUsername: String = "",
-    val naivePassword: String = ""
+    val naivePassword: String = "",
+    // Locked profile (UI-level only — full data stays in DB for VPN service)
+    val isLocked: Boolean = false,
+    val lockPasswordHash: String = ""
 )
 
 data class DnsResolver(

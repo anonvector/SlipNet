@@ -15,6 +15,7 @@ import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.usecase.GetProfileByIdUseCase
 import app.slipnet.domain.usecase.SaveProfileUseCase
 import app.slipnet.domain.usecase.SetActiveProfileUseCase
+import app.slipnet.util.LockPasswordUtil
 import app.slipnet.service.VpnConnectionManager
 import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.tunnel.DohBridge
@@ -129,6 +130,9 @@ data class EditProfileUiState(
     val naivePasswordError: String? = null,
     // Preserved sort order for updates (not editable)
     val sortOrder: Int = 0,
+    // Locked profile state
+    val isLocked: Boolean = false,
+    val lockPasswordHash: String = "",
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH
@@ -232,6 +236,8 @@ class EditProfileViewModel @Inject constructor(
                     naiveUsername = profile.naiveUsername,
                     naivePassword = profile.naivePassword,
                     sortOrder = profile.sortOrder,
+                    isLocked = profile.isLocked,
+                    lockPasswordHash = profile.lockPasswordHash,
                     isLoading = false
                 )
             } else {
@@ -1034,6 +1040,8 @@ class EditProfileViewModel @Inject constructor(
                     naiveUsername = if (state.isNaiveBased) state.naiveUsername.trim() else "",
                     naivePassword = if (state.isNaiveBased) state.naivePassword else "",
                     sortOrder = state.sortOrder,
+                    isLocked = state.isLocked,
+                    lockPasswordHash = state.lockPasswordHash,
                 )
 
                 val savedId = saveProfileUseCase(profile)
@@ -1361,5 +1369,22 @@ class EditProfileViewModel @Inject constructor(
 
     fun clearError() {
         _uiState.value = _uiState.value.copy(error = null)
+    }
+
+    fun unlockProfile(password: String, onResult: (Boolean) -> Unit) {
+        val state = _uiState.value
+        if (!LockPasswordUtil.verifyPassword(password, state.lockPasswordHash)) {
+            onResult(false)
+            return
+        }
+        // Correct password — unlock permanently
+        viewModelScope.launch {
+            val profileId = state.profileId ?: return@launch
+            val profile = getProfileByIdUseCase(profileId) ?: return@launch
+            val unlocked = profile.copy(isLocked = false, lockPasswordHash = "")
+            saveProfileUseCase(unlocked)
+            _uiState.value = _uiState.value.copy(isLocked = false, lockPasswordHash = "")
+            onResult(true)
+        }
     }
 }

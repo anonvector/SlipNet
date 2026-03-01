@@ -57,7 +57,9 @@ class ProfileMapper @Inject constructor(
             dnsttAuthoritative = entity.dnsttAuthoritative,
             naivePort = entity.naivePort,
             naiveUsername = entity.naiveUsername,
-            naivePassword = entity.naivePassword
+            naivePassword = entity.naivePassword,
+            isLocked = entity.isLocked,
+            lockPasswordHash = entity.lockPasswordHash
         )
     }
 
@@ -99,7 +101,9 @@ class ProfileMapper @Inject constructor(
             dnsttAuthoritative = profile.dnsttAuthoritative,
             naivePort = profile.naivePort,
             naiveUsername = profile.naiveUsername,
-            naivePassword = profile.naivePassword
+            naivePassword = profile.naivePassword,
+            isLocked = profile.isLocked,
+            lockPasswordHash = profile.lockPasswordHash
         )
     }
 

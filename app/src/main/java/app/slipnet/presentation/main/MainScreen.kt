@@ -75,6 +75,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -99,6 +100,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -171,6 +173,11 @@ fun MainScreen(
     var showAddMenu by remember { mutableStateOf(false) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
     var profileToDelete by remember { mutableStateOf<ServerProfile?>(null) }
+    // Export lock dialog state
+    var exportLockProfile by remember { mutableStateOf<ServerProfile?>(null) }
+    var exportLockEnabled by remember { mutableStateOf(false) }
+    var exportLockPassword by remember { mutableStateOf("") }
+    var exportLockMode by remember { mutableStateOf("export") } // "export" or "qr"
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -547,8 +554,18 @@ fun MainScreen(
                                             profileToDelete = profile
                                         }
                                     },
-                                    onExportClick = { viewModel.exportProfile(profile) },
-                                    onShareQrClick = { viewModel.showQrCode(profile) },
+                                    onExportClick = {
+                                        exportLockProfile = profile
+                                        exportLockEnabled = false
+                                        exportLockPassword = ""
+                                        exportLockMode = "export"
+                                    },
+                                    onShareQrClick = {
+                                        exportLockProfile = profile
+                                        exportLockEnabled = false
+                                        exportLockPassword = ""
+                                        exportLockMode = "qr"
+                                    },
                                     modifier = Modifier
                                         .longPressDraggableHandle()
                                         .shadow(elevation, RoundedCornerShape(12.dp))
@@ -687,7 +704,7 @@ fun MainScreen(
                     )
                     preview.profiles.forEach { profile ->
                         Text(
-                            text = "\u2022 ${profile.name}",
+                            text = if (profile.isLocked) "\u2022 ${profile.name} (Locked)" else "\u2022 ${profile.name}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -724,6 +741,70 @@ fun MainScreen(
             profileName = qrData.profileName,
             configUri = qrData.configUri,
             onDismiss = { viewModel.clearQrCode() }
+        )
+    }
+
+    // Export lock dialog
+    exportLockProfile?.let { profile ->
+        AlertDialog(
+            onDismissRequest = { exportLockProfile = null },
+            title = { Text(if (exportLockMode == "qr") "Share QR Code" else "Export Profile") },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Lock for distribution",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Switch(
+                            checked = exportLockEnabled,
+                            onCheckedChange = { exportLockEnabled = it }
+                        )
+                    }
+                    if (exportLockEnabled) {
+                        OutlinedTextField(
+                            value = exportLockPassword,
+                            onValueChange = { exportLockPassword = it },
+                            label = { Text("Lock Password") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val p = exportLockProfile ?: return@TextButton
+                        if (exportLockEnabled) {
+                            if (exportLockMode == "qr") {
+                                viewModel.showQrCodeLocked(p, exportLockPassword)
+                            } else {
+                                viewModel.exportProfileLocked(p, exportLockPassword)
+                            }
+                        } else {
+                            if (exportLockMode == "qr") {
+                                viewModel.showQrCode(p)
+                            } else {
+                                viewModel.exportProfile(p)
+                            }
+                        }
+                        exportLockProfile = null
+                    },
+                    enabled = !exportLockEnabled || exportLockPassword.isNotBlank()
+                ) { Text(if (exportLockMode == "qr") "Share" else "Export") }
+            },
+            dismissButton = {
+                TextButton(onClick = { exportLockProfile = null }) { Text("Cancel") }
+            }
         )
     }
 

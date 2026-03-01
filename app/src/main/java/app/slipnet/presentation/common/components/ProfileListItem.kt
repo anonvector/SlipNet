@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Card
@@ -114,6 +115,15 @@ fun ProfileListItem(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    if (profile.isLocked) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Locked",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     if (isConnected) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
@@ -189,17 +199,21 @@ fun ProfileListItem(
                     }
                 }
 
-                // Subtitle: server/domain info
+                // Subtitle: server/domain info (hidden when locked)
                 Text(
-                    text = when (profile.tunnelType) {
-                        TunnelType.DOH -> DOH_SERVERS.firstOrNull { it.url == profile.dohUrl }?.name
-                            ?: profile.dohUrl
-                        TunnelType.SSH -> "${profile.domain}:${profile.sshPort}"
-                        TunnelType.DNSTT_SSH -> "${profile.domain} via SSH"
-                        TunnelType.NAIVE_SSH -> "${profile.domain}:${profile.naivePort} via SSH"
-                        TunnelType.NAIVE -> "${profile.domain}:${profile.naivePort}"
-                        TunnelType.SNOWFLAKE -> "Tor Network"
-                        else -> profile.domain
+                    text = if (profile.isLocked) {
+                        profile.tunnelType.displayName
+                    } else {
+                        when (profile.tunnelType) {
+                            TunnelType.DOH -> DOH_SERVERS.firstOrNull { it.url == profile.dohUrl }?.name
+                                ?: profile.dohUrl
+                            TunnelType.SSH -> "${profile.domain}:${profile.sshPort}"
+                            TunnelType.DNSTT_SSH -> "${profile.domain} via SSH"
+                            TunnelType.NAIVE_SSH -> "${profile.domain}:${profile.naivePort} via SSH"
+                            TunnelType.NAIVE -> "${profile.domain}:${profile.naivePort}"
+                            TunnelType.SNOWFLAKE -> "Tor Network"
+                            else -> profile.domain
+                        }
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -207,17 +221,19 @@ fun ProfileListItem(
                     overflow = TextOverflow.Ellipsis
                 )
 
-                // Detail line: tunnel type
-                Text(
-                    text = when (profile.tunnelType) {
-                        TunnelType.SNOWFLAKE -> EditProfileViewModel.detectBridgeType(profile.torBridgeLines).displayName
-                        else -> profile.tunnelType.displayName
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                // Detail line: tunnel type (hidden when locked — subtitle already shows it)
+                if (!profile.isLocked) {
+                    Text(
+                        text = when (profile.tunnelType) {
+                            TunnelType.SNOWFLAKE -> EditProfileViewModel.detectBridgeType(profile.torBridgeLines).displayName
+                            else -> profile.tunnelType.displayName
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             // Action buttons (compact)
@@ -229,51 +245,53 @@ fun ProfileListItem(
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = "Edit",
+                        imageVector = if (profile.isLocked) Icons.Default.Lock else Icons.Default.Edit,
+                        contentDescription = if (profile.isLocked) "Locked" else "Edit",
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
-                // Export with submenu (Export file + Share QR Code)
-                Box {
-                    IconButton(
-                        onClick = { showExportMenu = true },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = "Export",
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                // Export with submenu (hidden for locked profiles)
+                if (!profile.isLocked) {
+                    Box {
+                        IconButton(
+                            onClick = { showExportMenu = true },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = "Export",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
 
-                    DropdownMenu(
-                        expanded = showExportMenu,
-                        onDismissRequest = { showExportMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Export") },
-                            onClick = {
-                                showExportMenu = false
-                                onExportClick()
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Default.Share, contentDescription = null)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Share QR Code") },
-                            onClick = {
-                                showExportMenu = false
-                                onShareQrClick()
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Default.QrCode2, contentDescription = null)
-                            }
-                        )
+                        DropdownMenu(
+                            expanded = showExportMenu,
+                            onDismissRequest = { showExportMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Export") },
+                                onClick = {
+                                    showExportMenu = false
+                                    onExportClick()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Share, contentDescription = null)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Share QR Code") },
+                                onClick = {
+                                    showExportMenu = false
+                                    onShareQrClick()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.QrCode2, contentDescription = null)
+                                }
+                            )
+                        }
                     }
                 }
 

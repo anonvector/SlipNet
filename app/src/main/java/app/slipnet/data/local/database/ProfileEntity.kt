@@ -112,5 +112,11 @@ data class ProfileEntity(
     val naiveUsername: String = "",
 
     @ColumnInfo(name = "naive_password", defaultValue = "")
-    val naivePassword: String = ""
+    val naivePassword: String = "",
+
+    @ColumnInfo(name = "is_locked", defaultValue = "0")
+    val isLocked: Boolean = false,
+
+    @ColumnInfo(name = "lock_password_hash", defaultValue = "")
+    val lockPasswordHash: String = ""
 )

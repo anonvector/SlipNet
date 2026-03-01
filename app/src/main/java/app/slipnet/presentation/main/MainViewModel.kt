@@ -357,14 +357,23 @@ class MainViewModel @Inject constructor(
     // ── Import / Export ─────────────────────────────────────────────────
 
     fun exportProfile(profile: ServerProfile) {
+        if (profile.isLocked) {
+            _uiState.value = _uiState.value.copy(error = "Cannot export a locked profile")
+            return
+        }
         val json = configExporter.exportSingleProfile(profile)
         _uiState.value = _uiState.value.copy(exportedJson = json)
     }
 
+    fun exportProfileLocked(profile: ServerProfile, password: String) {
+        val json = configExporter.exportSingleProfileLocked(profile, password)
+        _uiState.value = _uiState.value.copy(exportedJson = json)
+    }
+
     fun exportAllProfiles() {
-        val profiles = _uiState.value.profiles
+        val profiles = _uiState.value.profiles.filter { !it.isLocked }
         if (profiles.isEmpty()) {
-            _uiState.value = _uiState.value.copy(error = "No profiles to export")
+            _uiState.value = _uiState.value.copy(error = "No exportable profiles")
             return
         }
         val json = configExporter.exportAllProfiles(profiles)
@@ -413,6 +422,10 @@ class MainViewModel @Inject constructor(
     }
 
     fun showQrCode(profile: ServerProfile) {
+        if (profile.isLocked) {
+            _uiState.value = _uiState.value.copy(error = "Cannot export a locked profile")
+            return
+        }
         val configUri = configExporter.exportSingleProfile(profile)
         _uiState.value = _uiState.value.copy(
             qrCodeData = QrCodeData(profile.name, configUri)
@@ -421,6 +434,13 @@ class MainViewModel @Inject constructor(
 
     fun clearQrCode() {
         _uiState.value = _uiState.value.copy(qrCodeData = null)
+    }
+
+    fun showQrCodeLocked(profile: ServerProfile, password: String) {
+        val configUri = configExporter.exportSingleProfileLocked(profile, password)
+        _uiState.value = _uiState.value.copy(
+            qrCodeData = QrCodeData(profile.name, configUri)
+        )
     }
 
     // ── Test Server Reachability ────────────────────────────────────────

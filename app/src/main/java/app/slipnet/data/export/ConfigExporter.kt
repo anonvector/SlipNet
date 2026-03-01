@@ -4,6 +4,7 @@ import android.util.Base64
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
+import app.slipnet.util.LockPasswordUtil
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -13,8 +14,8 @@ import javax.inject.Singleton
  * Single profile format: slipnet://[base64-encoded-profile]
  * Multiple profiles: one URI per line
  *
- * Encoded profile format v14 (pipe-delimited):
- * v14|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)
+ * Encoded profile format v15 (pipe-delimited):
+ * v15|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -23,7 +24,7 @@ class ConfigExporter @Inject constructor() {
 
     companion object {
         const val SCHEME = "slipnet://"
-        const val VERSION = "14"
+        const val VERSION = "15"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -39,11 +40,19 @@ class ConfigExporter @Inject constructor() {
     }
 
     fun exportSingleProfile(profile: ServerProfile): String {
+        if (profile.isLocked) throw IllegalStateException("Cannot export a locked profile")
         return encodeProfile(profile)
     }
 
+    fun exportSingleProfileLocked(profile: ServerProfile, password: String): String {
+        val hash = LockPasswordUtil.hashPassword(password)
+        val lockedProfile = profile.copy(isLocked = true, lockPasswordHash = hash)
+        return encodeProfile(lockedProfile)
+    }
+
     fun exportAllProfiles(profiles: List<ServerProfile>): String {
-        return profiles.joinToString("\n") { encodeProfile(it) }
+        val exportable = profiles.filter { !it.isLocked }
+        return exportable.joinToString("\n") { encodeProfile(it) }
     }
 
     private fun encodeProfile(profile: ServerProfile): String {
@@ -84,7 +93,7 @@ class ConfigExporter @Inject constructor() {
             profile.sshPort.toString(),
             "0",
             profile.sshHost,
-            "0", // position 20: was useServerDns (removed). Reusable in a future version bump (v14+).
+            "0", // position 20: was useServerDns (removed)
             profile.dohUrl,
             profile.dnsTransport.value,
             profile.sshAuthType.value,
@@ -94,7 +103,9 @@ class ConfigExporter @Inject constructor() {
             if (profile.dnsttAuthoritative) "1" else "0",
             profile.naivePort.toString(),
             profile.naiveUsername,
-            Base64.encodeToString(profile.naivePassword.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            Base64.encodeToString(profile.naivePassword.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
+            if (profile.isLocked) "1" else "0",
+            profile.lockPasswordHash
         ).joinToString(FIELD_DELIMITER)
 
         val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)

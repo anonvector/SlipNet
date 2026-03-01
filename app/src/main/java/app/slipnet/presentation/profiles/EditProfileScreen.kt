@@ -28,6 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
@@ -90,6 +91,9 @@ fun EditProfileScreen(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollState = rememberScrollState()
+    var showUnlockDialog by remember { mutableStateOf(false) }
+    var unlockPassword by remember { mutableStateOf("") }
+    var unlockError by remember { mutableStateOf(false) }
 
     // Apply selected resolvers from scanner
     LaunchedEffect(selectedResolvers) {
@@ -124,7 +128,11 @@ fun EditProfileScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(if (profileId != null) "Edit Profile" else "Add Profile")
+                    Text(
+                        if (uiState.isLocked) "Locked Profile"
+                        else if (profileId != null) "Edit Profile"
+                        else "Add Profile"
+                    )
                 },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
@@ -132,14 +140,16 @@ fun EditProfileScreen(
                     }
                 },
                 actions = {
-                    if (uiState.isSaving) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.padding(16.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        IconButton(onClick = { viewModel.save() }) {
-                            Icon(Icons.Default.Check, contentDescription = "Save")
+                    if (!uiState.isLocked) {
+                        if (uiState.isSaving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.padding(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            IconButton(onClick = { viewModel.save() }) {
+                                Icon(Icons.Default.Check, contentDescription = "Save")
+                            }
                         }
                     }
                 }
@@ -155,6 +165,108 @@ fun EditProfileScreen(
                 contentAlignment = Alignment.Center
             ) {
                 CircularProgressIndicator()
+            }
+        } else if (uiState.isLocked) {
+            // Locked profile view — minimal info + unlock button
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .align(Alignment.CenterHorizontally),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Text(
+                    text = uiState.name,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Text(
+                    text = uiState.tunnelType.displayName,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "This profile is locked. Server details are hidden to prevent unauthorized access. Enter the admin password to unlock.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = {
+                        unlockPassword = ""
+                        unlockError = false
+                        showUnlockDialog = true
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Unlock Profile")
+                }
+            }
+
+            // Unlock dialog
+            if (showUnlockDialog) {
+                AlertDialog(
+                    onDismissRequest = { showUnlockDialog = false },
+                    title = { Text("Unlock Profile") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Enter the admin password to permanently unlock this profile.")
+                            OutlinedTextField(
+                                value = unlockPassword,
+                                onValueChange = {
+                                    unlockPassword = it
+                                    unlockError = false
+                                },
+                                label = { Text("Password") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                isError = unlockError,
+                                supportingText = if (unlockError) {
+                                    { Text("Incorrect password") }
+                                } else null,
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                viewModel.unlockProfile(unlockPassword) { success ->
+                                    if (success) {
+                                        showUnlockDialog = false
+                                    } else {
+                                        unlockError = true
+                                    }
+                                }
+                            },
+                            enabled = unlockPassword.isNotBlank()
+                        ) { Text("Unlock") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showUnlockDialog = false }) { Text("Cancel") }
+                    }
+                )
             }
         } else {
             Column(

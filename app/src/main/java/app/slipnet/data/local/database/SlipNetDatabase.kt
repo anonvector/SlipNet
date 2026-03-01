@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class],
-    version = 17,
+    version = 18,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -262,6 +262,13 @@ abstract class SlipNetDatabase : RoomDatabase() {
                     db.execSQL("ALTER TABLE server_profiles ADD COLUMN naive_username TEXT NOT NULL DEFAULT ''")
                     db.execSQL("ALTER TABLE server_profiles ADD COLUMN naive_password TEXT NOT NULL DEFAULT ''")
                 }
+            }
+        }
+
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN is_locked INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN lock_password_hash TEXT NOT NULL DEFAULT ''")
             }
         }
 
