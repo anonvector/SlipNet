@@ -114,6 +114,13 @@ jobs:
           keyPassword=$KEY_PASSWORD
           EOF
 
+      - name: Set up local.properties
+        env:
+          CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "CONFIG_ENCRYPTION_KEY=$CONFIG_ENCRYPTION_KEY" >> local.properties
+
       - name: Build Release APK
         run: ./gradlew assembleRelease --no-daemon
 

@@ -1,12 +1,23 @@
 package app.slipnet.data.repository
 
 import android.content.Context
+import android.util.Log
 import app.slipnet.R
+import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.DnsTunnelTestResult
+import app.slipnet.domain.model.E2eTestPhase
+import app.slipnet.domain.model.E2eTestResult
 import app.slipnet.domain.model.ResolverScanResult
 import app.slipnet.domain.model.ResolverStatus
-import app.slipnet.domain.model.ScanMode
+import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.repository.ResolverScannerRepository
+import app.slipnet.domain.model.SshAuthType
+import app.slipnet.tunnel.DnsttBridge
+import app.slipnet.tunnel.DnsttSocksBridge
+import app.slipnet.tunnel.ResolverConfig
+import app.slipnet.tunnel.SlipstreamBridge
+import com.jcraft.jsch.JSch
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -17,10 +28,14 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import app.slipnet.tunnel.DomainRouter
 import java.io.BufferedReader
+import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.Socket
+import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
@@ -86,16 +101,12 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         host: String,
         port: Int,
         testDomain: String,
-        timeoutMs: Long,
-        scanMode: ScanMode
+        timeoutMs: Long
     ): ResolverScanResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
 
         try {
-            when (scanMode) {
-                ScanMode.SIMPLE -> scanResolverSimple(host, port, testDomain, timeoutMs, startTime)
-                ScanMode.DNS_TUNNEL -> scanResolverDnsTunnel(host, port, testDomain, timeoutMs, startTime)
-            }
+            scanResolverDnsTunnel(host, port, testDomain, timeoutMs, startTime)
         } catch (e: Exception) {
             val responseTime = System.currentTimeMillis() - startTime
             ResolverScanResult(
@@ -104,156 +115,6 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 status = ResolverStatus.ERROR,
                 responseTimeMs = responseTime,
                 errorMessage = e.message ?: "Unknown error"
-            )
-        }
-    }
-
-    /**
-     * Simple ping scan - check if resolver responds to A record query.
-     * Uses a single reused socket with pre-resolved address and nanoTime for precision.
-     * Runs 1 warm-up query (discarded) + 4 measured queries, reports the median.
-     */
-    private suspend fun scanResolverSimple(
-        host: String,
-        port: Int,
-        testDomain: String,
-        timeoutMs: Long,
-        startTime: Long
-    ): ResolverScanResult = withContext(Dispatchers.IO) {
-        var socket: DatagramSocket? = null
-        try {
-            // Pre-resolve address and create socket OUTSIDE the measurement window
-            val serverAddress = InetAddress.getByName(host)
-            socket = DatagramSocket()
-            socket.soTimeout = timeoutMs.coerceAtMost(3000).toInt()
-
-            val responseBuffer = ByteArray(512)
-
-            // Warm-up query — pays for any OS/network path setup, result discarded
-            val warmupResult = try {
-                performDnsQueryOnSocket(socket, serverAddress, port, testDomain, DNS_TYPE_A, responseBuffer)
-            } catch (_: Exception) { null }
-
-            if (warmupResult == null) {
-                val responseTime = System.currentTimeMillis() - startTime
-                return@withContext ResolverScanResult(
-                    host = host, port = port,
-                    status = ResolverStatus.TIMEOUT,
-                    responseTimeMs = responseTime
-                )
-            }
-            if (warmupResult.isCensored) {
-                val responseTime = System.currentTimeMillis() - startTime
-                return@withContext ResolverScanResult(
-                    host = host, port = port,
-                    status = ResolverStatus.CENSORED,
-                    responseTimeMs = responseTime,
-                    errorMessage = "Hijacked to ${warmupResult.resolvedIp}"
-                )
-            }
-            if (!warmupResult.success) {
-                val responseTime = System.currentTimeMillis() - startTime
-                return@withContext ResolverScanResult(
-                    host = host, port = port,
-                    status = ResolverStatus.ERROR,
-                    responseTimeMs = responseTime,
-                    errorMessage = warmupResult.error
-                )
-            }
-
-            // 4 measured queries — only time send+receive (pure network RTT)
-            val samples = mutableListOf<Long>()
-            for (i in 0 until 4) {
-                val elapsed = System.currentTimeMillis() - startTime
-                if (elapsed >= timeoutMs) break
-                try {
-                    val t0 = System.nanoTime()
-                    val result = performDnsQueryOnSocket(socket, serverAddress, port, testDomain, DNS_TYPE_A, responseBuffer)
-                    val rttNs = System.nanoTime() - t0
-                    if (result.success) {
-                        samples.add(rttNs / 1_000_000) // ns → ms
-                    }
-                } catch (_: Exception) { /* skip failed sample */ }
-            }
-
-            if (samples.isEmpty()) {
-                val responseTime = System.currentTimeMillis() - startTime
-                return@withContext ResolverScanResult(
-                    host = host, port = port,
-                    status = ResolverStatus.TIMEOUT,
-                    responseTimeMs = responseTime
-                )
-            }
-
-            val medianTime = samples.sorted()[samples.size / 2]
-
-            ResolverScanResult(
-                host = host,
-                port = port,
-                status = ResolverStatus.WORKING,
-                responseTimeMs = medianTime
-            )
-        } catch (e: Exception) {
-            val responseTime = System.currentTimeMillis() - startTime
-            ResolverScanResult(
-                host = host, port = port,
-                status = ResolverStatus.ERROR,
-                responseTimeMs = responseTime,
-                errorMessage = e.message ?: "Unknown error"
-            )
-        } finally {
-            socket?.close()
-        }
-    }
-
-    /**
-     * Send a DNS query on an existing socket (no socket/address creation overhead).
-     * Caller owns the socket lifecycle.
-     */
-    private fun performDnsQueryOnSocket(
-        socket: DatagramSocket,
-        serverAddress: InetAddress,
-        port: Int,
-        domain: String,
-        recordType: Int,
-        responseBuffer: ByteArray
-    ): DnsQueryResult {
-        val dnsQuery = buildDnsQuery(domain, recordType)
-        val requestPacket = DatagramPacket(dnsQuery, dnsQuery.size, serverAddress, port)
-
-        socket.send(requestPacket)
-
-        val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
-        socket.receive(responsePacket)
-
-        val responseCode = if (responsePacket.length >= 4) {
-            responseBuffer[3].toInt() and 0x0F
-        } else 0
-
-        if (recordType == DNS_TYPE_A) {
-            val resolvedIp = parseDnsResponse(responseBuffer, responsePacket.length)
-            if (resolvedIp != null) {
-                val isCensored = resolvedIp.startsWith("10.") ||
-                        resolvedIp == "0.0.0.0" ||
-                        resolvedIp.startsWith("127.")
-                return DnsQueryResult(
-                    success = true,
-                    resolvedIp = resolvedIp,
-                    isCensored = isCensored,
-                    responseCode = responseCode
-                )
-            } else {
-                return DnsQueryResult(
-                    success = responseCode == 0 || responseCode == 3,
-                    error = if (responseCode != 0 && responseCode != 3) "Response code: $responseCode" else null,
-                    responseCode = responseCode
-                )
-            }
-        } else {
-            return DnsQueryResult(
-                success = responseCode == 0 || responseCode == 3,
-                responseCode = responseCode,
-                error = if (responseCode != 0 && responseCode != 3) "Response code: $responseCode" else null
             )
         }
     }
@@ -268,10 +129,16 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         timeoutMs: Long,
         startTime: Long
     ): ResolverScanResult = withContext(Dispatchers.IO) {
-        // First, do a basic connectivity check
+        // For tunnel subdomains like "t.example.com", queries hit the DNSTT server
+        // which can't answer generic DNS queries. Use the parent zone for basic/NS/TXT
+        // tests and the actual tunnel domain for random subdomain tests (which prove
+        // the delegation chain works).
+        val parentDomain = getParentDomain(testDomain)
+
+        // First, do a basic connectivity check (against the parent zone)
         val basicCheck = withTimeoutOrNull(timeoutMs) {
             val randSub = generateRandomSubdomain()
-            performDnsQuery(host, port, "$randSub.$testDomain", DNS_TYPE_A)
+            performDnsQuery(host, port, "$randSub.$parentDomain", DNS_TYPE_A)
         }
 
         if (basicCheck == null) {
@@ -284,11 +151,11 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             )
         }
 
-        // Test NS record support
-        val nsSupport = testRecordType(host, port, testDomain, DNS_TYPE_NS, timeoutMs)
+        // Test NS delegation + glue record (queries NS for parent zone)
+        val nsSupport = testNsDelegation(host, port, testDomain, timeoutMs)
 
-        // Test TXT record support
-        val txtSupport = testRecordType(host, port, testDomain, DNS_TYPE_TXT, timeoutMs)
+        // Test TXT record support (against the parent zone)
+        val txtSupport = testRecordType(host, port, parentDomain, DNS_TYPE_TXT, timeoutMs)
 
         // Test random subdomain 1 (nested random subdomains)
         val randomSubdomain1 = testRandomSubdomain(host, port, testDomain, timeoutMs)
@@ -342,12 +209,9 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             }
             // Success if we got a response OR if we got NXDOMAIN/NOERROR
             // (NXDOMAIN is acceptable - means server queried properly)
-            result != null || true // If timeout, return false; otherwise the query was processed
+            result != null
         } catch (e: Exception) {
-            // NXDOMAIN or similar errors are acceptable - server responded
-            val errorCode = e.message ?: ""
-            errorCode.contains("NXDOMAIN") || errorCode.contains("NOERROR") ||
-                    errorCode.contains("NOTIMP").not() // Not implemented is bad
+            false
         }
     }
 
@@ -456,13 +320,35 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         return "${(ip shr 24) and 0xFF}.${(ip shr 16) and 0xFF}.${(ip shr 8) and 0xFF}.${ip and 0xFF}"
     }
 
+    override suspend fun detectTransparentProxy(
+        testDomain: String,
+        timeoutMs: Long
+    ): Boolean = withContext(Dispatchers.IO) {
+        // RFC 5737 TEST-NET addresses — documentation-only, should never host DNS servers
+        val testNetIps = listOf("192.0.2.1", "198.51.100.1", "203.0.113.1")
+
+        for (ip in testNetIps) {
+            try {
+                val result = withTimeoutOrNull(timeoutMs) {
+                    performDnsQuery(ip, 53, testDomain, DNS_TYPE_A)
+                }
+                if (result != null) {
+                    // A TEST-NET IP responded — ISP is intercepting DNS traffic
+                    return@withContext true
+                }
+            } catch (_: Exception) {
+                // Expected: no response from documentation-only addresses
+            }
+        }
+        false
+    }
+
     override fun scanResolvers(
         hosts: List<String>,
         port: Int,
         testDomain: String,
         timeoutMs: Long,
-        concurrency: Int,
-        scanMode: ScanMode
+        concurrency: Int
     ): Flow<ResolverScanResult> = channelFlow {
         val semaphore = Semaphore(concurrency)
 
@@ -470,7 +356,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             launch {
                 semaphore.acquire()
                 try {
-                    val result = scanResolver(host, port, testDomain, timeoutMs, scanMode)
+                    val result = scanResolver(host, port, testDomain, timeoutMs)
                     send(result)
                 } finally {
                     semaphore.release()
@@ -479,7 +365,589 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         }
     }
 
+    // ---- E2E tunnel testing ----
+
+    override suspend fun testResolverE2e(
+        resolverHost: String,
+        resolverPort: Int,
+        profile: ServerProfile,
+        testUrl: String,
+        timeoutMs: Long,
+        onPhaseUpdate: (String) -> Unit
+    ): E2eTestResult = withContext(Dispatchers.IO) {
+        when (profile.tunnelType) {
+            TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH ->
+                testResolverSlipstream(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate)
+            TunnelType.DNSTT, TunnelType.DNSTT_SSH ->
+                testResolverDnstt(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate)
+            else ->
+                E2eTestResult(errorMessage = "Unsupported tunnel type: ${profile.tunnelType.displayName}")
+        }
+    }
+
+    override fun testResolversE2e(
+        resolvers: List<Pair<String, Int>>,
+        profile: ServerProfile,
+        testUrl: String,
+        timeoutMs: Long,
+        onPhaseUpdate: (String, String) -> Unit
+    ): Flow<Pair<String, E2eTestResult>> = channelFlow {
+        for ((host, port) in resolvers) {
+            val result = testResolverE2e(host, port, profile, testUrl, timeoutMs) { phase ->
+                onPhaseUpdate(host, phase)
+            }
+            send(host to result)
+        }
+    }
+
+    private suspend fun testResolverSlipstream(
+        resolverHost: String,
+        resolverPort: Int,
+        profile: ServerProfile,
+        testUrl: String,
+        timeoutMs: Long,
+        onPhaseUpdate: (String) -> Unit
+    ): E2eTestResult = withContext(Dispatchers.IO) {
+        val totalStart = System.currentTimeMillis()
+        val tunnelPort = E2E_TUNNEL_PORT
+        try {
+            // Phase 1: Start tunnel
+            onPhaseUpdate("Starting tunnel...")
+            SlipstreamBridge.proxyOnlyMode = true
+
+            val resolver = ResolverConfig(
+                host = resolverHost,
+                port = resolverPort,
+                authoritative = profile.authoritativeMode
+            )
+
+            val startResult = SlipstreamBridge.startClient(
+                domain = profile.domain,
+                resolvers = listOf(resolver),
+                congestionControl = profile.congestionControl.value,
+                keepAliveInterval = profile.keepAliveInterval,
+                tcpListenPort = tunnelPort,
+                tcpListenHost = "127.0.0.1"
+            )
+
+            if (startResult.isFailure) {
+                return@withContext E2eTestResult(
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "Bridge start failed: ${startResult.exceptionOrNull()?.message}",
+                    phase = E2eTestPhase.TUNNEL_SETUP
+                )
+            }
+
+            // Phase 2: Wait for QUIC handshake
+            onPhaseUpdate("QUIC handshake...")
+            val quicTimeout = minOf(timeoutMs / 2, 10000L)
+            val quicStart = System.currentTimeMillis()
+            var quicReady = false
+            while (System.currentTimeMillis() - quicStart < quicTimeout) {
+                if (SlipstreamBridge.isQuicReady()) {
+                    quicReady = true
+                    break
+                }
+                Thread.sleep(100)
+            }
+
+            if (!quicReady) {
+                return@withContext E2eTestResult(
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "QUIC handshake timeout",
+                    phase = E2eTestPhase.QUIC_HANDSHAKE
+                )
+            }
+
+            val tunnelSetupMs = System.currentTimeMillis() - totalStart
+            val actualPort = SlipstreamBridge.getClientPort()
+
+            // Phase 3: Verify connectivity through tunnel
+            val isSshVariant = profile.tunnelType == TunnelType.SLIPSTREAM_SSH
+            if (isSshVariant) {
+                // SSH variant: server's --target-address forwards to SSH, not Dante.
+                // Do a real JSch SSH handshake — same as VPN service does.
+                onPhaseUpdate("SSH connect...")
+                val remaining = timeoutMs - tunnelSetupMs
+                val bannerResult = verifySshConnection(actualPort, profile, remaining)
+                E2eTestResult(
+                    tunnelSetupMs = tunnelSetupMs,
+                    httpLatencyMs = bannerResult.latencyMs,
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    httpStatusCode = if (bannerResult.success) 200 else 0,
+                    success = bannerResult.success,
+                    errorMessage = bannerResult.errorMessage,
+                    phase = E2eTestPhase.COMPLETED
+                )
+            } else {
+                // Non-SSH: remote side is Dante SOCKS5 — do full HTTP test
+                onPhaseUpdate("HTTP request...")
+                val httpResult = performHttpThroughSocks(
+                    actualPort, profile, testUrl,
+                    timeoutMs - tunnelSetupMs
+                )
+                E2eTestResult(
+                    tunnelSetupMs = tunnelSetupMs,
+                    httpLatencyMs = httpResult.latencyMs,
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    httpStatusCode = httpResult.statusCode,
+                    success = httpResult.success,
+                    errorMessage = httpResult.errorMessage,
+                    phase = E2eTestPhase.COMPLETED
+                )
+            }
+        } catch (e: Exception) {
+            E2eTestResult(
+                totalMs = System.currentTimeMillis() - totalStart,
+                errorMessage = e.message ?: "Unknown error",
+                phase = E2eTestPhase.TUNNEL_SETUP
+            )
+        } finally {
+            try {
+                SlipstreamBridge.stopClient()
+            } catch (_: Exception) {}
+            SlipstreamBridge.proxyOnlyMode = false
+        }
+    }
+
+    private suspend fun testResolverDnstt(
+        resolverHost: String,
+        resolverPort: Int,
+        profile: ServerProfile,
+        testUrl: String,
+        timeoutMs: Long,
+        onPhaseUpdate: (String) -> Unit
+    ): E2eTestResult = withContext(Dispatchers.IO) {
+        val totalStart = System.currentTimeMillis()
+        // Same two-layer stack as VPN: DnsttBridge on port+1, DnsttSocksBridge on port
+        val bridgePort = E2E_TUNNEL_PORT
+        val dnsttPort = E2E_TUNNEL_PORT + 1
+        try {
+            // Phase 1: Start DNSTT raw tunnel
+            onPhaseUpdate("Starting DNSTT...")
+
+            // Format resolver per DNS transport
+            val dnsServer = when (profile.dnsTransport) {
+                DnsTransport.UDP -> "$resolverHost:$resolverPort"
+                DnsTransport.TCP -> "tcp://$resolverHost:$resolverPort"
+                DnsTransport.DOT -> "tls://$resolverHost:853"
+                DnsTransport.DOH -> return@withContext E2eTestResult(
+                    errorMessage = "DoH transport uses URL, not per-resolver IP",
+                    phase = E2eTestPhase.TUNNEL_SETUP
+                )
+            }
+
+            val startResult = DnsttBridge.startClient(
+                dnsServer = dnsServer,
+                tunnelDomain = profile.domain,
+                publicKey = profile.dnsttPublicKey,
+                listenPort = dnsttPort,
+                listenHost = "127.0.0.1",
+                authoritativeMode = profile.dnsttAuthoritative
+            )
+
+            if (startResult.isFailure) {
+                return@withContext E2eTestResult(
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "DNSTT start failed: ${startResult.exceptionOrNull()?.message}",
+                    phase = E2eTestPhase.TUNNEL_SETUP
+                )
+            }
+
+            // Phase 2: Wait for DNSTT running
+            onPhaseUpdate("Waiting for DNSTT...")
+            var remaining = timeoutMs - (System.currentTimeMillis() - totalStart)
+            val readyTimeout = minOf(remaining, 10000L)
+            val readyStart = System.currentTimeMillis()
+            var running = false
+            while (System.currentTimeMillis() - readyStart < readyTimeout) {
+                if (DnsttBridge.isRunning()) {
+                    running = true
+                    break
+                }
+                Thread.sleep(100)
+            }
+
+            if (!running) {
+                return@withContext E2eTestResult(
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "DNSTT startup timeout",
+                    phase = E2eTestPhase.TUNNEL_SETUP
+                )
+            }
+
+            // Phase 2b: Warm up the DNS tunnel.
+            // DnsttBridge.isRunning() returns true before the Go code finishes
+            // KCP/Noise/smux setup — it only means the goroutine started.
+            // The Go Accept() loop doesn't run until Noise handshake completes
+            // (3-15s of DNS round-trips). A warm-up connection forces this setup
+            // and blocks until the tunnel is actually functional.
+            onPhaseUpdate("Tunnel handshake...")
+            remaining = timeoutMs - (System.currentTimeMillis() - totalStart)
+            if (remaining <= 0) {
+                return@withContext E2eTestResult(
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "Timeout before tunnel handshake",
+                    phase = E2eTestPhase.TUNNEL_SETUP
+                )
+            }
+            val warmupOk = warmupDnsttTunnel(dnsttPort, remaining)
+            if (!warmupOk) {
+                return@withContext E2eTestResult(
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "DNSTT tunnel handshake timeout (resolver may not work)",
+                    phase = E2eTestPhase.TUNNEL_SETUP
+                )
+            }
+
+            val isSshVariant = profile.tunnelType == TunnelType.DNSTT_SSH
+
+            if (!isSshVariant) {
+                // Non-SSH: start DnsttSocksBridge (same as VPN flow) to handle
+                // SOCKS5 auth with Dante and DNS worker pool.
+                onPhaseUpdate("Starting bridge...")
+                DnsttSocksBridge.authoritativeMode = profile.dnsttAuthoritative
+                val bridgeResult = DnsttSocksBridge.start(
+                    dnsttPort = dnsttPort,
+                    dnsttHost = "127.0.0.1",
+                    listenPort = bridgePort,
+                    listenHost = "127.0.0.1",
+                    socksUsername = profile.socksUsername,
+                    socksPassword = profile.socksPassword
+                )
+
+                if (bridgeResult.isFailure) {
+                    return@withContext E2eTestResult(
+                        totalMs = System.currentTimeMillis() - totalStart,
+                        errorMessage = "Bridge start failed: ${bridgeResult.exceptionOrNull()?.message}",
+                        phase = E2eTestPhase.TUNNEL_SETUP
+                    )
+                }
+            }
+
+            val tunnelSetupMs = System.currentTimeMillis() - totalStart
+
+            // Phase 3: Verify connectivity through tunnel
+            remaining = timeoutMs - (System.currentTimeMillis() - totalStart)
+            if (remaining <= 0) {
+                return@withContext E2eTestResult(
+                    tunnelSetupMs = tunnelSetupMs,
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "Timeout after tunnel setup",
+                    phase = E2eTestPhase.HTTP_REQUEST
+                )
+            }
+
+            if (isSshVariant) {
+                // SSH variant: remote side is SSH server, not Dante.
+                // Connect directly to DNSTT (no DnsttSocksBridge needed).
+                onPhaseUpdate("SSH connect...")
+                val bannerResult = verifySshConnection(dnsttPort, profile, remaining)
+                E2eTestResult(
+                    tunnelSetupMs = tunnelSetupMs,
+                    httpLatencyMs = bannerResult.latencyMs,
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    httpStatusCode = if (bannerResult.success) 200 else 0,
+                    success = bannerResult.success,
+                    errorMessage = bannerResult.errorMessage,
+                    phase = E2eTestPhase.COMPLETED
+                )
+            } else {
+                // Non-SSH: connect through DnsttSocksBridge (same as VPN).
+                // DnsttSocksBridge handles Dante auth and SOCKS5 CONNECT chaining.
+                onPhaseUpdate("HTTP request...")
+                val httpResult = performHttpThroughSocks(
+                    bridgePort, profile, testUrl,
+                    remaining
+                )
+                E2eTestResult(
+                    tunnelSetupMs = tunnelSetupMs,
+                    httpLatencyMs = httpResult.latencyMs,
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    httpStatusCode = httpResult.statusCode,
+                    success = httpResult.success,
+                    errorMessage = httpResult.errorMessage,
+                    phase = E2eTestPhase.COMPLETED
+                )
+            }
+        } catch (e: Exception) {
+            E2eTestResult(
+                totalMs = System.currentTimeMillis() - totalStart,
+                errorMessage = e.message ?: "Unknown error",
+                phase = E2eTestPhase.TUNNEL_SETUP
+            )
+        } finally {
+            try {
+                DnsttSocksBridge.stop()
+            } catch (_: Exception) {}
+            try {
+                DnsttBridge.stopClient()
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Warm up the DNSTT tunnel by making a connection that triggers the Go code's
+     * KCP/Noise/smux handshake. The Go listener starts before the handshake, so
+     * isRunning() returns true prematurely. This connection blocks in the kernel's
+     * TCP accept queue until the Go Accept() loop starts (after Noise completes),
+     * ensuring the tunnel is fully functional before we run the actual test.
+     *
+     * For non-SSH (Dante): sends SOCKS5 greeting and waits for Dante's response.
+     * For SSH: reads the SSH banner from the remote server.
+     */
+    private fun warmupDnsttTunnel(dnsttPort: Int, timeoutMs: Long): Boolean {
+        var sock: Socket? = null
+        return try {
+            val warmupTimeout = timeoutMs.toInt().coerceAtLeast(1)
+            sock = Socket()
+            sock.connect(java.net.InetSocketAddress("127.0.0.1", dnsttPort), warmupTimeout)
+            sock.soTimeout = warmupTimeout
+
+            val input = sock.getInputStream()
+            val output = sock.getOutputStream()
+
+            // Send a minimal SOCKS5 greeting (no-auth). If the remote is Dante,
+            // it responds with method selection. If SSH, it sends a banner.
+            // Either way, getting ANY byte back means the tunnel is established.
+            output.write(byteArrayOf(0x05, 0x01, 0x00))
+            output.flush()
+
+            // Wait for at least 1 byte back — this blocks until the Go code
+            // finishes Noise/smux, Accept()s our connection, forwards our bytes
+            // through the DNS tunnel, and the remote end responds.
+            val b = input.read()
+            b != -1  // got a response — tunnel is functional
+        } catch (e: Exception) {
+            false
+        } finally {
+            try { sock?.close() } catch (_: Exception) {}
+        }
+    }
+
+    private data class SshBannerResult(
+        val success: Boolean = false,
+        val latencyMs: Long = 0,
+        val errorMessage: String? = null
+    )
+
+    /**
+     * Wait for the local tunnel port to accept TCP connections.
+     * Same check as VPN service's waitForProxyReady — connect-and-close.
+     */
+    private fun waitForPortListening(port: Int, maxAttempts: Int = 20, delayMs: Long = 150): Boolean {
+        repeat(maxAttempts) {
+            try {
+                Socket().use { socket ->
+                    socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 300)
+                    return true
+                }
+            } catch (_: Exception) {
+                Thread.sleep(delayMs)
+            }
+        }
+        return false
+    }
+
+    /**
+     * Verify SSH tunnel connectivity by performing a real JSch SSH handshake —
+     * exactly replicating what VPN service's SshTunnelBridge.startOverProxy() does.
+     * JSch connects directly to the local tunnel port (raw TCP), the tunnel
+     * forwards to the remote SSH server, and JSch does the full SSH negotiation.
+     */
+    private fun verifySshConnection(
+        localPort: Int,
+        profile: ServerProfile,
+        timeoutMs: Long
+    ): SshBannerResult {
+        // Step 1: Wait for TCP listener (same as VPN service's waitForProxyReady)
+        if (!waitForPortListening(localPort)) {
+            return SshBannerResult(errorMessage = "Port $localPort not listening")
+        }
+
+        // Step 2: Real SSH handshake — same as SshTunnelBridge.startOverProxy()
+        var session: com.jcraft.jsch.Session? = null
+        return try {
+            val start = System.currentTimeMillis()
+            val jsch = JSch()
+            if (profile.sshAuthType == SshAuthType.KEY && profile.sshPrivateKey.isNotBlank()) {
+                jsch.addIdentity(
+                    "e2e-test-key",
+                    profile.sshPrivateKey.toByteArray(Charsets.UTF_8),
+                    null,
+                    if (profile.sshKeyPassphrase.isNotBlank())
+                        profile.sshKeyPassphrase.toByteArray(Charsets.UTF_8) else null
+                )
+            }
+            // Connect directly to the tunnel's local port — same as VPN service
+            val newSession = jsch.getSession(profile.sshUsername, "127.0.0.1", localPort)
+            if (profile.sshAuthType == SshAuthType.KEY) {
+                newSession.setConfig("PreferredAuthentications", "publickey")
+            } else {
+                newSession.setPassword(profile.sshPassword)
+            }
+            newSession.setConfig("StrictHostKeyChecking", "no")
+            newSession.connect(timeoutMs.toInt().coerceAtLeast(1))
+            session = newSession
+
+            val latencyMs = System.currentTimeMillis() - start
+            if (newSession.isConnected) {
+                SshBannerResult(success = true, latencyMs = latencyMs)
+            } else {
+                SshBannerResult(latencyMs = latencyMs, errorMessage = "SSH session not connected")
+            }
+        } catch (e: Exception) {
+            SshBannerResult(errorMessage = "SSH connect: ${e.message}")
+        } finally {
+            try { session?.disconnect() } catch (_: Exception) {}
+        }
+    }
+
+    private data class HttpThroughSocksResult(
+        val success: Boolean = false,
+        val statusCode: Int = 0,
+        val latencyMs: Long = 0,
+        val errorMessage: String? = null
+    )
+
+    private fun performHttpThroughSocks(
+        localPort: Int,
+        profile: ServerProfile,
+        testUrl: String,
+        remainingTimeoutMs: Long
+    ): HttpThroughSocksResult {
+        val socketTimeout = remainingTimeoutMs.toInt()
+        if (socketTimeout <= 0) {
+            return HttpThroughSocksResult(errorMessage = "No time remaining for HTTP")
+        }
+
+        var socket: Socket? = null
+        return try {
+            val url = URL(testUrl)
+            val host = url.host
+            val port = if (url.port != -1) url.port else if (url.protocol == "https") 443 else 80
+            val path = if (url.path.isNullOrBlank()) "/" else url.path
+
+            socket = Socket()
+            socket.connect(java.net.InetSocketAddress("127.0.0.1", localPort), socketTimeout)
+            socket.soTimeout = socketTimeout
+
+            val input = socket.getInputStream()
+            val output = socket.getOutputStream()
+
+            // SOCKS5 auth with remote Dante server (through tunnel)
+            if (!performSocksAuth(input, output, profile.socksUsername, profile.socksPassword)) {
+                return HttpThroughSocksResult(errorMessage = "SOCKS5 auth failed")
+            }
+
+            // SOCKS5 CONNECT
+            val domainBytes = host.toByteArray()
+            val connectReq = ByteArray(7 + domainBytes.size)
+            connectReq[0] = 0x05 // version
+            connectReq[1] = 0x01 // CONNECT
+            connectReq[2] = 0x00 // reserved
+            connectReq[3] = 0x03 // domain
+            connectReq[4] = domainBytes.size.toByte()
+            System.arraycopy(domainBytes, 0, connectReq, 5, domainBytes.size)
+            connectReq[5 + domainBytes.size] = (port shr 8).toByte()
+            connectReq[6 + domainBytes.size] = (port and 0xFF).toByte()
+            output.write(connectReq)
+            output.flush()
+
+            if (!readSocksConnectResponse(input)) {
+                return HttpThroughSocksResult(errorMessage = "SOCKS5 CONNECT failed")
+            }
+
+            // HTTP HEAD request
+            val httpStart = System.currentTimeMillis()
+            val httpReq = "HEAD $path HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n"
+            output.write(httpReq.toByteArray())
+            output.flush()
+
+            // Read status line
+            val responseBuilder = StringBuilder()
+            var b: Int
+            while (input.read().also { b = it } != -1) {
+                responseBuilder.append(b.toChar())
+                if (responseBuilder.endsWith("\r\n")) break
+            }
+            val latencyMs = System.currentTimeMillis() - httpStart
+
+            val statusLine = responseBuilder.toString().trim()
+            val statusCode = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: 0
+
+            HttpThroughSocksResult(
+                success = statusCode in 200..499,
+                statusCode = statusCode,
+                latencyMs = latencyMs
+            )
+        } catch (e: Exception) {
+            HttpThroughSocksResult(errorMessage = "HTTP failed: ${e.message}")
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun performSocksAuth(
+        input: InputStream,
+        output: OutputStream,
+        username: String?,
+        password: String?
+    ): Boolean {
+        val hasAuth = !username.isNullOrBlank() && !password.isNullOrBlank()
+        if (hasAuth) {
+            output.write(byteArrayOf(0x05, 0x01, 0x02))
+        } else {
+            output.write(byteArrayOf(0x05, 0x01, 0x00))
+        }
+        output.flush()
+
+        val greetResp = ByteArray(2)
+        input.readFully(greetResp)
+        if (greetResp[0] != 0x05.toByte() || (greetResp[1].toInt() and 0xFF) == 0xFF) return false
+
+        if ((greetResp[1].toInt() and 0xFF) == 0x02) {
+            val user = username!!.toByteArray()
+            val pass = password!!.toByteArray()
+            val authReq = ByteArray(3 + user.size + pass.size)
+            authReq[0] = 0x01
+            authReq[1] = user.size.toByte()
+            System.arraycopy(user, 0, authReq, 2, user.size)
+            authReq[2 + user.size] = pass.size.toByte()
+            System.arraycopy(pass, 0, authReq, 3 + user.size, pass.size)
+            output.write(authReq)
+            output.flush()
+
+            val authResp = ByteArray(2)
+            input.readFully(authResp)
+            if (authResp[1] != 0x00.toByte()) return false
+        }
+        return true
+    }
+
+    private fun readSocksConnectResponse(input: InputStream): Boolean {
+        val connResp = ByteArray(4)
+        input.readFully(connResp)
+        if (connResp[1] != 0x00.toByte()) return false
+        when (connResp[3].toInt() and 0xFF) {
+            0x01 -> { val r = ByteArray(6); input.readFully(r) }
+            0x03 -> { val l = input.read(); val r = ByteArray(l + 2); input.readFully(r) }
+            0x04 -> { val r = ByteArray(18); input.readFully(r) }
+        }
+        return true
+    }
+
+    private fun InputStream.readFully(buffer: ByteArray) {
+        var offset = 0
+        while (offset < buffer.size) {
+            val bytesRead = this.read(buffer, offset, buffer.size - offset)
+            if (bytesRead == -1) throw java.io.IOException("Unexpected end of stream")
+            offset += bytesRead
+        }
+    }
+
     companion object {
+        private const val E2E_TUNNEL_PORT = 10800
         private const val DNS_TYPE_A = 1      // A record (IPv4 address)
         private const val DNS_TYPE_NS = 2     // NS record (Name server)
         private const val DNS_TYPE_TXT = 16   // TXT record (Text)
@@ -490,7 +958,9 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         val resolvedIp: String? = null,
         val isCensored: Boolean = false,
         val error: String? = null,
-        val responseCode: Int = 0
+        val responseCode: Int = 0,
+        val rawResponse: ByteArray? = null,
+        val rawLength: Int = 0
     )
 
     private suspend fun performDnsQuery(
@@ -549,7 +1019,9 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 DnsQueryResult(
                     success = responseCode == 0 || responseCode == 3,
                     responseCode = responseCode,
-                    error = if (responseCode != 0 && responseCode != 3) "Response code: $responseCode" else null
+                    error = if (responseCode != 0 && responseCode != 3) "Response code: $responseCode" else null,
+                    rawResponse = responseBuffer.copyOf(responsePacket.length),
+                    rawLength = responsePacket.length
                 )
             }
         } catch (e: Exception) {
@@ -687,5 +1159,181 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         }
 
         return null
+    }
+
+    /**
+     * Read a DNS wire-format domain name starting at [startOffset], handling compression pointers.
+     * Returns (domainName, offsetAfterName).
+     */
+    private fun readDnsName(response: ByteArray, length: Int, startOffset: Int): Pair<String, Int> {
+        val parts = mutableListOf<String>()
+        var offset = startOffset
+        var jumped = false
+        var returnOffset = -1
+        var safety = 0
+
+        while (offset < length && safety++ < 128) {
+            val labelLen = response[offset].toInt() and 0xFF
+            if (labelLen == 0) {
+                offset++
+                break
+            }
+            if ((labelLen and 0xC0) == 0xC0) {
+                // Compression pointer
+                if (offset + 1 >= length) break
+                if (!jumped) returnOffset = offset + 2
+                offset = ((labelLen and 0x3F) shl 8) or (response[offset + 1].toInt() and 0xFF)
+                jumped = true
+                continue
+            }
+            offset++
+            if (offset + labelLen > length) break
+            parts.add(String(response, offset, labelLen))
+            offset += labelLen
+        }
+
+        val afterName = if (jumped) returnOffset else offset
+        return Pair(parts.joinToString("."), afterName)
+    }
+
+    /**
+     * Skip the DNS header (12 bytes) and question section, returning offset to the answer section.
+     */
+    private fun skipQuestionSection(response: ByteArray, length: Int): Int {
+        if (length < 12) return length
+
+        val qdCount = ((response[4].toInt() and 0xFF) shl 8) or (response[5].toInt() and 0xFF)
+        var offset = 12
+
+        for (i in 0 until qdCount) {
+            if (offset >= length) break
+            // Skip QNAME
+            while (offset < length) {
+                val labelLen = response[offset].toInt() and 0xFF
+                if (labelLen == 0) { offset++; break }
+                if ((labelLen and 0xC0) == 0xC0) { offset += 2; break }
+                offset += labelLen + 1
+            }
+            offset += 4 // Skip QTYPE + QCLASS
+        }
+        return offset
+    }
+
+    /**
+     * Parse resource records in a section, extracting NS hostnames.
+     */
+    private fun parseNsFromSection(
+        response: ByteArray,
+        length: Int,
+        startOffset: Int,
+        count: Int,
+        results: MutableList<String>
+    ): Int {
+        var offset = startOffset
+        for (i in 0 until count) {
+            if (offset >= length) break
+
+            // Skip RR name
+            val (_, afterName) = readDnsName(response, length, offset)
+            offset = afterName
+
+            if (offset + 10 > length) break
+
+            val rrType = ((response[offset].toInt() and 0xFF) shl 8) or
+                    (response[offset + 1].toInt() and 0xFF)
+            offset += 2 // type
+            offset += 2 // class
+            offset += 4 // TTL
+
+            val rdLength = ((response[offset].toInt() and 0xFF) shl 8) or
+                    (response[offset + 1].toInt() and 0xFF)
+            offset += 2
+
+            if (rrType == DNS_TYPE_NS && offset + rdLength <= length) {
+                val (nsName, _) = readDnsName(response, length, offset)
+                if (nsName.isNotEmpty()) {
+                    results.add(nsName)
+                }
+            }
+
+            offset += rdLength
+        }
+        return offset
+    }
+
+    /**
+     * Parse a raw DNS response to extract NS hostnames.
+     * Checks answer section first, falls back to authority section.
+     */
+    private fun parseDnsNsResponse(response: ByteArray, length: Int): List<String> {
+        if (length < 12) return emptyList()
+
+        val anCount = ((response[6].toInt() and 0xFF) shl 8) or (response[7].toInt() and 0xFF)
+        val nsCount = ((response[8].toInt() and 0xFF) shl 8) or (response[9].toInt() and 0xFF)
+
+        val offset = skipQuestionSection(response, length)
+
+        val results = mutableListOf<String>()
+
+        // Parse answer section for NS records
+        val afterAnswers = parseNsFromSection(response, length, offset, anCount, results)
+
+        // If no NS in answers, check authority section
+        if (results.isEmpty() && nsCount > 0) {
+            parseNsFromSection(response, length, afterAnswers, nsCount, results)
+        }
+
+        return results
+    }
+
+    /**
+     * Derive the parent domain for NS queries. For tunnel subdomains like
+     * "t.example.com", the NS delegation records live in the parent zone
+     * "example.com" — querying the tunnel subdomain itself would hit the
+     * DNSTT server which can't answer NS queries. For 2-label domains like
+     * "google.com", return as-is.
+     */
+    private fun getParentDomain(domain: String): String {
+        val labels = domain.split(".")
+        return if (labels.size > 2) labels.drop(1).joinToString(".") else domain
+    }
+
+    /**
+     * Two-step NS delegation + glue record check:
+     * 1. Query NS for the parent zone (where delegation records live)
+     * 2. Resolve first NS hostname via A record → validates delegation chain
+     */
+    private suspend fun testNsDelegation(
+        host: String,
+        port: Int,
+        testDomain: String,
+        timeoutMs: Long
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            // Query NS for the parent zone — that's where the NS delegation for
+            // the tunnel subdomain is defined (e.g. NS for "example.com" holds
+            // the delegation "t.example.com NS ns.example.com").
+            val nsDomain = getParentDomain(testDomain)
+            val nsResult = withTimeoutOrNull(timeoutMs) {
+                performDnsQuery(host, port, nsDomain, DNS_TYPE_NS)
+            } ?: return@withContext false
+
+            if (!nsResult.success || nsResult.rawResponse == null) return@withContext false
+
+            // Parse NS hostnames from the response
+            val nsHosts = parseDnsNsResponse(nsResult.rawResponse, nsResult.rawLength)
+            if (nsHosts.isEmpty()) return@withContext false
+
+            // Resolve the first NS hostname (glue record) via A query
+            val nsHostname = nsHosts[0].trimEnd('.')
+            val glueResult = withTimeoutOrNull(timeoutMs) {
+                performDnsQuery(host, port, nsHostname, DNS_TYPE_A)
+            } ?: return@withContext false
+
+            // Pass only if the A query succeeded and returned an IP
+            glueResult.success && glueResult.resolvedIp != null
+        } catch (e: Exception) {
+            false
+        }
     }
 }

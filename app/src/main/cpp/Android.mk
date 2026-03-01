@@ -16,5 +16,6 @@ LOCAL_SHARED_LIBRARIES := hev-socks5-tunnel
 LOCAL_LDLIBS := -llog
 LOCAL_LDFLAGS += -Wl,-z,max-page-size=16384
 LOCAL_LDFLAGS += -Wl,-z,common-page-size=16384
+LOCAL_LDFLAGS += -Wl,--gc-sections -s
 
 include $(BUILD_SHARED_LIBRARY)

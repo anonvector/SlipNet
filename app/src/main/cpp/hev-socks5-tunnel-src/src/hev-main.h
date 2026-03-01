@@ -82,6 +82,19 @@ void hev_socks5_tunnel_quit (void);
 void hev_socks5_tunnel_set_reject_quic (int enabled);
 
 /**
+ * hev_socks5_tunnel_set_reject_non_dns_udp:
+ * @enabled: 1 to reject all non-DNS UDP with ICMP, 0 to allow
+ *
+ * Control whether non-DNS UDP packets are rejected with ICMP Port Unreachable.
+ * When enabled, all UDP except DNS (port 53) is rejected, forcing apps like
+ * WhatsApp to fall back to TCP immediately instead of waiting for timeouts.
+ * Default is disabled (0). Resets to 0 on hev_socks5_tunnel_fini.
+ *
+ * Since: 2.6.9
+ */
+void hev_socks5_tunnel_set_reject_non_dns_udp (int enabled);
+
+/**
  * hev_socks5_tunnel_stats:
  * @tx_packets (out): transmitted packets
  * @tx_bytes (out): transmitted bytes

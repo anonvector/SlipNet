@@ -140,7 +140,9 @@ fun EditProfileScreen(
                     }
                 },
                 actions = {
-                    if (!uiState.isLocked) {
+                    val lockedCanEditDns = uiState.isLocked &&
+                            (uiState.isDnsttBased || uiState.isSlipstreamBased)
+                    if (!uiState.isLocked || lockedCanEditDns) {
                         if (uiState.isSaving) {
                             CircularProgressIndicator(
                                 modifier = Modifier.padding(16.dp),
@@ -172,6 +174,7 @@ fun EditProfileScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
+                    .verticalScroll(rememberScrollState())
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
@@ -199,10 +202,108 @@ fun EditProfileScreen(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "This profile is locked. Server details are hidden to prevent unauthorized access. Enter the admin password to unlock.",
+                    text = if (uiState.isDnsttBased || uiState.isSlipstreamBased)
+                        "This profile is locked. You can change DNS resolver settings below. Enter the admin password to unlock all settings."
+                    else
+                        "This profile is locked. Server details are hidden to prevent unauthorized access. Enter the admin password to unlock.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                // DNS settings for DNSTT/Slipstream locked profiles
+                if (uiState.isDnsttBased || uiState.isSlipstreamBased) {
+                    // DNS Transport selector (DNSTT-based profiles only)
+                    if (uiState.isDnsttBased) {
+                        Text(
+                            text = "DNS Transport",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            DnsTransport.entries.forEach { transport ->
+                                if (uiState.dnsTransport == transport) {
+                                    Button(
+                                        onClick = { },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(transport.displayName)
+                                    }
+                                } else {
+                                    OutlinedButton(
+                                        onClick = { viewModel.updateDnsTransport(transport) },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(transport.displayName)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // DoH URL for DNSTT with DoH transport
+                    if (uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOH) {
+                        DohServerSelector(
+                            dohUrl = uiState.dohUrl,
+                            dohUrlError = uiState.dohUrlError,
+                            onUrlChange = { viewModel.updateDohUrl(it) },
+                            onPresetSelected = { viewModel.selectDohPreset(it) },
+                            onTestServers = { viewModel.testDohServers() },
+                            customDohUrls = uiState.customDohUrls,
+                            onCustomDohUrlsChange = { viewModel.updateCustomDohUrls(it) }
+                        )
+                    }
+
+                    // Resolver field (not shown when DNSTT with DoH transport)
+                    if (!(uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOH)) {
+                        val isDoT = uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOT
+                        OutlinedTextField(
+                            value = uiState.resolvers,
+                            onValueChange = { viewModel.updateResolvers(it) },
+                            label = { Text("DNS Resolver") },
+                            placeholder = { Text(if (isDoT) "e.g. 8.8.8.8:853" else "e.g. 8.8.8.8:53") },
+                            isError = uiState.resolversError != null,
+                            supportingText = {
+                                Text(uiState.resolversError ?: if (isDoT) "DNS-over-TLS server (IP:853)" else "DNS server address (IP:port)")
+                            },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { viewModel.autoDetectResolver() },
+                                    enabled = !uiState.isAutoDetecting
+                                ) {
+                                    if (uiState.isAutoDetecting) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "Local",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        if (onNavigateToScanner != null) {
+                            OutlinedButton(
+                                onClick = onNavigateToScanner,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Search, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Scan for Working Resolvers")
+                            }
+                        }
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(16.dp))
 

@@ -384,6 +384,12 @@ class VpnRepositoryImpl @Inject constructor(
         Log.i(TAG, "  UDP tunneling: $enableUdpTunneling")
         Log.i(TAG, "========================================")
 
+        // Reject non-DNS UDP at TUN level with ICMP Port Unreachable so apps
+        // (e.g. WhatsApp) fall back to TCP instantly instead of waiting for
+        // silent-drop timeouts. DOH is excluded because DohBridge forwards
+        // non-DNS UDP directly via DatagramSocket.
+        val rejectNonDnsUdp = profile.tunnelType != TunnelType.DOH
+
         val hevResult = HevSocks5Tunnel.start(
             tunFd = pfd,
             socksAddress = "127.0.0.1",
@@ -393,7 +399,8 @@ class VpnRepositoryImpl @Inject constructor(
             enableUdpTunneling = enableUdpTunneling,
             mtu = 1500,
             ipv4Address = "10.255.255.1",
-            disableQuic = disableQuic
+            disableQuic = disableQuic,
+            rejectNonDnsUdp = rejectNonDnsUdp
         )
 
         return if (hevResult.isSuccess) {

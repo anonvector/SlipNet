@@ -245,8 +245,8 @@ fun ProfileListItem(
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
-                        imageVector = if (profile.isLocked) Icons.Default.Lock else Icons.Default.Edit,
-                        contentDescription = if (profile.isLocked) "Locked" else "Edit",
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Edit",
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )

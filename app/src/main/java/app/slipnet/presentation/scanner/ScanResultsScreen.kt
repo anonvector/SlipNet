@@ -39,8 +39,10 @@ import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.CloudOff
@@ -63,6 +65,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -96,6 +99,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavBackStackEntry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import app.slipnet.domain.model.E2eScannerState
+import app.slipnet.domain.model.E2eTestResult
 import app.slipnet.domain.model.ResolverScanResult
 import app.slipnet.domain.model.ResolverStatus
 
@@ -119,6 +124,7 @@ fun ScanResultsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
     var sortOption by remember { mutableStateOf(SortOption.NONE) }
+    var proxyWarningDismissed by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -197,8 +203,109 @@ fun ScanResultsScreen(
                     scannedCount = uiState.scannerState.scannedCount,
                     workingCount = uiState.scannerState.workingCount,
                     onStopScan = { viewModel.stopScan() },
-                    onResumeScan = { viewModel.resumeScan() }
+                    onResumeScan = { viewModel.resumeScan() },
+                    canRunE2e = uiState.canRunE2e,
+                    canResumeE2e = uiState.canResumeE2e,
+                    e2eComplete = uiState.e2eComplete,
+                    isE2eRunning = uiState.e2eScannerState.isRunning,
+                    onStartE2eFresh = { viewModel.startE2eTest(fresh = true) },
+                    onResumeE2e = { viewModel.startE2eTest(fresh = false) },
+                    onStopE2e = { viewModel.stopE2eTest() }
                 )
+            }
+
+            // E2E progress
+            AnimatedVisibility(
+                visible = uiState.e2eScannerState.isRunning || uiState.e2eScannerState.testedCount > 0,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                E2eProgressSection(e2eScannerState = uiState.e2eScannerState)
+            }
+
+            // VPN active warning for E2E
+            AnimatedVisibility(
+                visible = uiState.isVpnActive && uiState.profileId != null &&
+                        !uiState.scannerState.isScanning && uiState.scannerState.workingCount > 0,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = CensoredOrange.copy(alpha = 0.12f)
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = CensoredOrange,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Disconnect VPN to run tunnel test",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+
+            // Transparent proxy warning
+            AnimatedVisibility(
+                visible = uiState.transparentProxyDetected && !proxyWarningDismissed,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Icon(
+                            Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Transparent DNS interception detected \u2014 your ISP may be redirecting all DNS traffic. Results may be unreliable.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = { proxyWarningDismissed = true },
+                            modifier = Modifier.size(20.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Dismiss",
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
             }
 
             // Selection Controls
@@ -221,6 +328,9 @@ fun ScanResultsScreen(
                     it.host.split(".").map { part -> part.toIntOrNull() ?: 0 }
                         .fold(0L) { acc, i -> acc * 256 + i }
                 })
+                SortOption.E2E_SPEED -> filteredResults.sortedBy {
+                    it.e2eTestResult?.totalMs ?: Long.MAX_VALUE
+                }
                 SortOption.NONE -> filteredResults
             }
 
@@ -314,7 +424,7 @@ fun ScanResultsScreen(
 }
 
 private enum class SortOption {
-    NONE, SPEED, IP
+    NONE, SPEED, IP, E2E_SPEED
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -380,6 +490,26 @@ private fun SortControlBar(
                     selectedLeadingIconColor = MaterialTheme.colorScheme.primary
                 )
             )
+
+            FilterChip(
+                selected = sortOption == SortOption.E2E_SPEED,
+                onClick = {
+                    onSortOptionChange(if (sortOption == SortOption.E2E_SPEED) SortOption.NONE else SortOption.E2E_SPEED)
+                },
+                label = { Text("E2E") },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Speed,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.tertiary,
+                    selectedLeadingIconColor = MaterialTheme.colorScheme.tertiary
+                )
+            )
         }
     }
 }
@@ -392,7 +522,14 @@ private fun ResultsProgressSection(
     scannedCount: Int,
     workingCount: Int,
     onStopScan: () -> Unit,
-    onResumeScan: () -> Unit
+    onResumeScan: () -> Unit,
+    canRunE2e: Boolean = false,
+    canResumeE2e: Boolean = false,
+    e2eComplete: Boolean = false,
+    isE2eRunning: Boolean = false,
+    onStartE2eFresh: () -> Unit = {},
+    onResumeE2e: () -> Unit = {},
+    onStopE2e: () -> Unit = {}
 ) {
     val animatedProgress by animateFloatAsState(
         targetValue = progress,
@@ -481,6 +618,80 @@ private fun ResultsProgressSection(
                     .clip(RoundedCornerShape(3.dp)),
                 strokeCap = StrokeCap.Round
             )
+
+            // E2E Test Tunnel buttons
+            if (!isScanning) {
+                if (isE2eRunning) {
+                    Button(
+                        onClick = onStopE2e,
+                        colors = ButtonDefaults.buttonColors(containerColor = ErrorRed),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Stop Tunnel Test", style = MaterialTheme.typography.labelMedium)
+                    }
+                } else if (canResumeE2e) {
+                    // Paused mid-test: show Continue + Restart side by side
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = onResumeE2e,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.tertiary
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Continue", style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
+                            onClick = onStartE2eFresh,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Restart", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                } else if (e2eComplete) {
+                    // All tested: offer re-test
+                    OutlinedButton(
+                        onClick = onStartE2eFresh,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Re-test Tunnel", style = MaterialTheme.typography.labelMedium)
+                    }
+                } else if (canRunE2e) {
+                    // Fresh start
+                    Button(
+                        onClick = onStartE2eFresh,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiary
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Test Tunnel", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
         }
     }
 }
@@ -513,6 +724,76 @@ private fun ResultsStatChip(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun E2eProgressSection(e2eScannerState: E2eScannerState) {
+    val progress = if (e2eScannerState.totalCount > 0) {
+        e2eScannerState.testedCount.toFloat() / e2eScannerState.totalCount
+    } else 0f
+    val animatedProgress by animateFloatAsState(targetValue = progress, label = "e2eProgress")
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (e2eScannerState.isRunning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                    Text(
+                        text = "Tunnel Test: ${e2eScannerState.testedCount}/${e2eScannerState.totalCount}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                    if (e2eScannerState.passedCount > 0) {
+                        Text(
+                            text = "${e2eScannerState.passedCount} passed",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WorkingGreen
+                        )
+                    }
+                }
+            }
+
+            if (e2eScannerState.isRunning && e2eScannerState.currentResolver != null) {
+                Text(
+                    text = "${e2eScannerState.currentResolver} - ${e2eScannerState.currentPhase}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            LinearProgressIndicator(
+                progress = { animatedProgress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                strokeCap = StrokeCap.Round,
+                color = MaterialTheme.colorScheme.tertiary
             )
         }
     }
@@ -720,6 +1001,11 @@ private fun ResultsResolverItem(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+
+                // E2E tunnel test result
+                result.e2eTestResult?.let { e2e ->
+                    E2eResultRow(e2e)
+                }
             }
 
             if (showSelection && result.status == ResolverStatus.WORKING && onToggleSelection != null) {
@@ -729,6 +1015,42 @@ private fun ResultsResolverItem(
                     enabled = !isDisabled
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun E2eResultRow(e2e: E2eTestResult) {
+    if (e2e.success) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "E2E ${e2e.totalMs}ms",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = WorkingGreen
+            )
+        }
+    } else {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "E2E",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = ErrorRed
+            )
+            Text(
+                text = e2e.errorMessage ?: "Failed",
+                style = MaterialTheme.typography.labelSmall,
+                color = ErrorRed,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

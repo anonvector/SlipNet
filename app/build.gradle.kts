@@ -36,10 +36,18 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(keystorePropertiesFile.inputStream())
 }
 
+// Config encryption key from local.properties
+val localPropertiesFile = rootProject.file("local.properties")
+val localProperties = Properties()
+if (localPropertiesFile.exists()) {
+    localProperties.load(localPropertiesFile.inputStream())
+}
+val configEncryptionKey = localProperties.getProperty("CONFIG_ENCRYPTION_KEY", "")
+
 // OpenSSL configuration
 val opensslVersion = "3.0.15"
 val opensslBaseDir = file("${System.getenv("HOME")}/android-openssl/android-ssl")
-val supportedAbis = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+val supportedAbis = listOf("arm64-v8a", "armeabi-v7a")
 
 // Check if OpenSSL is available for all ABIs
 fun isOpenSslAvailable(): Boolean {
@@ -80,6 +88,8 @@ android {
         versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "CONFIG_ENCRYPTION_KEY", "\"$configEncryptionKey\"")
     }
 
     buildTypes {
@@ -284,7 +294,7 @@ cargo {
     rustcCommand = "$cargoBin/rustc"
     module = "src/main/rust/slipstream-rust"
     libname = "slipstream"
-    targets = listOf("arm", "arm64", "x86", "x86_64")
+    targets = listOf("arm", "arm64")
     profile = cargoProfile
     rustupChannel = "stable"
     extraCargoBuildArguments = listOf(
@@ -348,7 +358,7 @@ cargo {
 // Make cargo build tasks depend on OpenSSL verification
 tasks.whenTaskAdded {
     when (name) {
-        "cargoBuildArm", "cargoBuildArm64", "cargoBuildX86", "cargoBuildX86_64" -> {
+        "cargoBuildArm", "cargoBuildArm64" -> {
             dependsOn("verifyOpenSsl")
         }
         "mergeDebugJniLibFolders", "mergeReleaseJniLibFolders" -> {
@@ -374,7 +384,7 @@ dependencies {
     implementation(files("libs/golibs.aar"))
 
     // Tor binary for Snowflake tunnel — libtor.so extracted from
-    // info.guardianproject:tor-android:0.4.8.22 into jniLibs/
+    // info.guardianproject:tor-android:0.4.9.5 into jniLibs/
     // (AAR excluded as Gradle dep because its Kotlin metadata 2.3.0
     //  is incompatible with Room 2.6.1 kapt processor)
 

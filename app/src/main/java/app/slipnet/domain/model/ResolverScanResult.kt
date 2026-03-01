@@ -13,14 +13,6 @@ enum class ResolverStatus {
 }
 
 /**
- * DNS scanning mode
- */
-enum class ScanMode {
-    SIMPLE,       // Basic ping - just check if resolver responds to A record query
-    DNS_TUNNEL    // Advanced - test NS, TXT records and random subdomain support for DNS tunneling
-}
-
-/**
  * Detailed results from DNS tunnel compatibility testing
  */
 data class DnsTunnelTestResult(
@@ -39,7 +31,7 @@ data class DnsTunnelTestResult(
 
     val details: String
         get() = buildString {
-            append(if (nsSupport) "NS✓" else "NS✗")
+            append(if (nsSupport) "NS→A✓" else "NS→A✗")
             append(" ")
             append(if (txtSupport) "TXT✓" else "TXT✗")
             append(" ")
@@ -50,6 +42,36 @@ data class DnsTunnelTestResult(
 }
 
 /**
+ * Phase of the end-to-end tunnel test
+ */
+enum class E2eTestPhase { TUNNEL_SETUP, QUIC_HANDSHAKE, HTTP_REQUEST, COMPLETED }
+
+/**
+ * Result of an end-to-end tunnel test through a single resolver
+ */
+data class E2eTestResult(
+    val tunnelSetupMs: Long = 0,
+    val httpLatencyMs: Long = 0,
+    val totalMs: Long = 0,
+    val httpStatusCode: Int = 0,
+    val success: Boolean = false,
+    val errorMessage: String? = null,
+    val phase: E2eTestPhase = E2eTestPhase.COMPLETED
+)
+
+/**
+ * Overall state of the E2E tunnel scanner
+ */
+data class E2eScannerState(
+    val isRunning: Boolean = false,
+    val totalCount: Int = 0,
+    val testedCount: Int = 0,
+    val passedCount: Int = 0,
+    val currentResolver: String? = null,
+    val currentPhase: String = ""
+)
+
+/**
  * Result of scanning a single DNS resolver
  */
 data class ResolverScanResult(
@@ -58,7 +80,8 @@ data class ResolverScanResult(
     val status: ResolverStatus = ResolverStatus.PENDING,
     val responseTimeMs: Long? = null,
     val errorMessage: String? = null,
-    val tunnelTestResult: DnsTunnelTestResult? = null
+    val tunnelTestResult: DnsTunnelTestResult? = null,
+    val e2eTestResult: E2eTestResult? = null
 )
 
 /**

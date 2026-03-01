@@ -1097,8 +1097,8 @@ object SshTunnelBridge {
     /**
      * Forward a UDP packet. DNS queries (port 53) are either sent directly via
      * DatagramSocket (DNSTT+SSH mode) or through the SSH tunnel as DNS-over-TCP
-     * (SSH-only mode). QUIC (UDP 443) gets a Version Negotiation response to
-     * force immediate TCP fallback. Other non-DNS UDP is dropped.
+     * (SSH-only mode). Non-DNS UDP is rejected at the C level with ICMP Port
+     * Unreachable for instant TCP fallback; the drop here is a safety net.
      */
     private fun forwardUdpPacket(host: String, port: Int, payload: ByteArray): ByteArray? {
         if (port == 53) {
@@ -1124,10 +1124,9 @@ object SshTunnelBridge {
             return forwardDnsDirect(host, payload)
         }
 
-        // Non-DNS UDP: drop (SSH tunnel only supports TCP).
-        // QUIC (UDP 443) is rejected at the C level with ICMP Port Unreachable
-        // before it reaches here, so browsers fall back to TCP instantly.
-        logd("FWD_UDP: dropping UDP to $host:$port")
+        // Non-DNS UDP: safety-net drop. Normally rejected at C level with ICMP
+        // Port Unreachable before reaching here (instant app TCP fallback).
+        logd("FWD_UDP: dropping non-DNS UDP to $host:$port")
         return null
     }
 

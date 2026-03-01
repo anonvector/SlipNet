@@ -24,6 +24,7 @@ class ConfigExporter @Inject constructor() {
 
     companion object {
         const val SCHEME = "slipnet://"
+        const val ENCRYPTED_SCHEME = "slipnet-enc://"
         const val VERSION = "15"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
@@ -47,7 +48,10 @@ class ConfigExporter @Inject constructor() {
     fun exportSingleProfileLocked(profile: ServerProfile, password: String): String {
         val hash = LockPasswordUtil.hashPassword(password)
         val lockedProfile = profile.copy(isLocked = true, lockPasswordHash = hash)
-        return encodeProfile(lockedProfile)
+        val data = buildProfileData(lockedProfile)
+        val encrypted = LockPasswordUtil.encryptConfig(data)
+        val encoded = Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        return "$ENCRYPTED_SCHEME$encoded"
     }
 
     fun exportAllProfiles(profiles: List<ServerProfile>): String {
@@ -55,7 +59,7 @@ class ConfigExporter @Inject constructor() {
         return exportable.joinToString("\n") { encodeProfile(it) }
     }
 
-    private fun encodeProfile(profile: ServerProfile): String {
+    private fun buildProfileData(profile: ServerProfile): String {
         val resolversStr = profile.resolvers.joinToString(RESOLVER_DELIMITER) { resolver ->
             "${resolver.host}${RESOLVER_PART_DELIMITER}${resolver.port}${RESOLVER_PART_DELIMITER}${if (resolver.authoritative) "1" else "0"}"
         }
@@ -72,7 +76,7 @@ class ConfigExporter @Inject constructor() {
             TunnelType.NAIVE -> MODE_NAIVE
         }
 
-        val data = listOf(
+        return listOf(
             VERSION,
             tunnelTypeStr,
             profile.name,
@@ -107,7 +111,10 @@ class ConfigExporter @Inject constructor() {
             if (profile.isLocked) "1" else "0",
             profile.lockPasswordHash
         ).joinToString(FIELD_DELIMITER)
+    }
 
+    private fun encodeProfile(profile: ServerProfile): String {
+        val data = buildProfileData(profile)
         val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         return "$SCHEME$encoded"
     }

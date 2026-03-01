@@ -47,7 +47,8 @@ object HevSocks5Tunnel {
         enableUdpTunneling: Boolean = false,
         mtu: Int = 1500,
         ipv4Address: String = "10.255.255.1",
-        disableQuic: Boolean = true
+        disableQuic: Boolean = true,
+        rejectNonDnsUdp: Boolean = false
     ): Result<Unit> {
         if (!isLibraryLoaded) {
             return Result.failure(IllegalStateException("Native library not loaded"))
@@ -79,6 +80,7 @@ object HevSocks5Tunnel {
 
         return try {
             nativeSetRejectQuic(disableQuic)
+            nativeSetRejectNonDnsUdp(rejectNonDnsUdp)
             val fd = tunFd.fd
             val result = nativeStart(config, fd)
             if (result == 0) {
@@ -218,6 +220,7 @@ object HevSocks5Tunnel {
     private external fun nativeStart(config: String, tunFd: Int): Int
     private external fun nativeStop()
     private external fun nativeSetRejectQuic(enabled: Boolean)
+    private external fun nativeSetRejectNonDnsUdp(enabled: Boolean)
     private external fun nativeIsRunning(): Boolean
     private external fun nativeGetStats(): LongArray?
 }

@@ -41,6 +41,7 @@
 
 static int run;
 static int reject_quic = 1;
+static int reject_non_dns_udp = 0;
 static int tun_fd = -1;
 static int tun_fd_local;
 static int session_count;
@@ -296,11 +297,11 @@ event_task_entry (void *data)
 }
 
 /*
- * Check if an IPv4 packet is UDP destined for port 443 (QUIC).
- * Returns the IP header length in bytes if QUIC, 0 otherwise.
+ * Parse a UDP packet and return the IP header length and destination port.
+ * Returns 0 if the packet is not IPv4 UDP.
  */
 static uint16_t
-is_quic_packet (const uint8_t *data, uint16_t len)
+parse_udp_packet (const uint8_t *data, uint16_t len, uint16_t *dst_port_out)
 {
     uint16_t iphdr_len, dst_port;
 
@@ -323,7 +324,10 @@ is_quic_packet (const uint8_t *data, uint16_t len)
     /* Destination port (big-endian at iphdr_len+2..3) */
     dst_port = ((uint16_t)data[iphdr_len + 2] << 8) | data[iphdr_len + 3];
 
-    return (dst_port == 443) ? iphdr_len : 0;
+    if (dst_port_out)
+        *dst_port_out = dst_port;
+
+    return iphdr_len;
 }
 
 /*
@@ -427,15 +431,22 @@ lwip_io_task_entry (void *data)
         stat_tx_packets++;
         stat_tx_bytes += buf->tot_len;
 
-        /* Reject QUIC (UDP 443) with ICMP Port Unreachable.
-         * Forces immediate TCP fallback instead of 5-10s timeout. */
-        iphdr_len = is_quic_packet ((const uint8_t *)buf->payload,
-                                     buf->len);
-        if (reject_quic && iphdr_len) {
-            send_icmp_port_unreachable ((const uint8_t *)buf->payload,
-                                         buf->len, iphdr_len);
-            pbuf_free (buf);
-            continue;
+        /* Reject UDP with ICMP Port Unreachable to force immediate TCP
+         * fallback instead of waiting 5-10s for a silent-drop timeout.
+         * - reject_non_dns_udp: all UDP except DNS (port 53)
+         * - reject_quic: only QUIC (UDP 443) */
+        {
+            uint16_t dst_port = 0;
+            iphdr_len = parse_udp_packet ((const uint8_t *)buf->payload,
+                                           buf->len, &dst_port);
+            if (iphdr_len &&
+                ((reject_non_dns_udp && dst_port != 53) ||
+                 (reject_quic && dst_port == 443))) {
+                send_icmp_port_unreachable ((const uint8_t *)buf->payload,
+                                             buf->len, iphdr_len);
+                pbuf_free (buf);
+                continue;
+            }
         }
 
         hev_task_mutex_lock (&mutex);
@@ -791,6 +802,7 @@ hev_socks5_tunnel_fini (void)
     stat_tx_bytes = 0;
     stat_rx_bytes = 0;
     reject_quic = 1;
+    reject_non_dns_udp = 0;
 }
 
 int
@@ -837,6 +849,12 @@ void
 hev_socks5_tunnel_set_reject_quic (int enabled)
 {
     reject_quic = enabled;
+}
+
+void
+hev_socks5_tunnel_set_reject_non_dns_udp (int enabled)
+{
+    reject_non_dns_udp = enabled;
 }
 
 void

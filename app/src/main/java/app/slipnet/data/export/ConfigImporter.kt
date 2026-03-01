@@ -7,6 +7,7 @@ import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
+import app.slipnet.util.LockPasswordUtil
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -80,6 +81,7 @@ class ConfigImporter @Inject constructor() {
 
     companion object {
         private const val SCHEME = "slipnet://"
+        private const val ENCRYPTED_SCHEME = "slipnet-enc://"
         private const val MODE_SLIPSTREAM = "ss"
         private const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         private const val MODE_DNSTT = "dnstt"
@@ -122,6 +124,38 @@ class ConfigImporter @Inject constructor() {
 
         for ((index, line) in lines.withIndex()) {
             val trimmedLine = line.trim()
+
+            if (trimmedLine.startsWith(ENCRYPTED_SCHEME, ignoreCase = true)) {
+                val encoded = trimmedLine.substring(ENCRYPTED_SCHEME.length)
+                val encryptedBytes = try {
+                    Base64.decode(encoded, Base64.NO_WRAP)
+                } catch (e: Exception) {
+                    warnings.add("Line ${index + 1}: Failed to decode, skipping")
+                    continue
+                }
+
+                val decoded = try {
+                    LockPasswordUtil.decryptConfig(encryptedBytes)
+                } catch (e: Exception) {
+                    warnings.add("Line ${index + 1}: Failed to decrypt, skipping")
+                    continue
+                }
+
+                val parseResult = parseProfile(decoded, index + 1)
+                when (parseResult) {
+                    is ProfileParseResult.Success -> {
+                        profiles.add(parseResult.profile)
+                        val version = decoded.split(FIELD_DELIMITER).firstOrNull()?.toIntOrNull()
+                        if (version != null && version > CURRENT_MAX_VERSION) {
+                            warnings.add("Line ${index + 1}: Exported from a newer app version — some settings may be missing")
+                        }
+                    }
+                    is ProfileParseResult.Warning -> warnings.add(parseResult.message)
+                    is ProfileParseResult.Error -> warnings.add(parseResult.message)
+                }
+                continue
+            }
+
             if (!trimmedLine.startsWith(SCHEME, ignoreCase = true)) {
                 warnings.add("Line ${index + 1}: Invalid format, skipping")
                 continue
@@ -139,7 +173,6 @@ class ConfigImporter @Inject constructor() {
             when (parseResult) {
                 is ProfileParseResult.Success -> {
                     profiles.add(parseResult.profile)
-                    // Warn if this profile was from a newer format version
                     val version = decoded.split(FIELD_DELIMITER).firstOrNull()?.toIntOrNull()
                     if (version != null && version > CURRENT_MAX_VERSION) {
                         warnings.add("Line ${index + 1}: Exported from a newer app version — some settings may be missing")

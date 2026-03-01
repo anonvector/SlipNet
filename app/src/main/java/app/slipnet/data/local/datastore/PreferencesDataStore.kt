@@ -82,6 +82,11 @@ class PreferencesDataStore @Inject constructor(
         val REMOTE_DNS_MODE = stringPreferencesKey("remote_dns_mode")
         val CUSTOM_REMOTE_DNS = stringPreferencesKey("custom_remote_dns")
         val CUSTOM_REMOTE_DNS_FALLBACK = stringPreferencesKey("custom_remote_dns_fallback")
+        // DNS Scanner Settings Keys
+        val SCANNER_TIMEOUT_MS = stringPreferencesKey("scanner_timeout_ms")
+        val SCANNER_CONCURRENCY = stringPreferencesKey("scanner_concurrency")
+        val SCANNER_E2E_TIMEOUT_MS = stringPreferencesKey("scanner_e2e_timeout_ms")
+        val SCANNER_TEST_URL = stringPreferencesKey("scanner_test_url")
     }
 
     // Auto-connect on boot
@@ -563,6 +568,37 @@ class PreferencesDataStore @Inject constructor(
             custom.ifBlank { DEFAULT_REMOTE_DNS_FALLBACK }
         } else {
             DEFAULT_REMOTE_DNS_FALLBACK
+        }
+    }
+
+    // DNS Scanner Settings (persisted across profiles)
+    val scannerTimeoutMs: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_TIMEOUT_MS] ?: "3000"
+    }
+
+    val scannerConcurrency: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_CONCURRENCY] ?: "50"
+    }
+
+    val scannerE2eTimeoutMs: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_E2E_TIMEOUT_MS] ?: "5000"
+    }
+
+    val scannerTestUrl: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_TEST_URL] ?: "http://www.google.com/generate_204"
+    }
+
+    suspend fun saveScannerSettings(
+        timeoutMs: String,
+        concurrency: String,
+        e2eTimeoutMs: String,
+        testUrl: String
+    ) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SCANNER_TIMEOUT_MS] = timeoutMs
+            prefs[Keys.SCANNER_CONCURRENCY] = concurrency
+            prefs[Keys.SCANNER_E2E_TIMEOUT_MS] = e2eTimeoutMs
+            prefs[Keys.SCANNER_TEST_URL] = testUrl
         }
     }
 

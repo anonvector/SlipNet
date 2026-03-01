@@ -211,7 +211,7 @@ fun MainScreen(
     ) { result ->
         val contents = result.contents
         if (contents != null) {
-            if (contents.startsWith("slipnet://")) {
+            if (contents.startsWith("slipnet://") || contents.startsWith("slipnet-enc://")) {
                 viewModel.parseImportConfig(contents)
             } else {
                 scope.launch {

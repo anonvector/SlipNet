@@ -94,7 +94,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.FlowRow
 import androidx.hilt.navigation.compose.hiltViewModel
-import app.slipnet.domain.model.ScanMode
 import app.slipnet.tunnel.GeoBypassCountry
 
 private val WorkingGreen = Color(0xFF4CAF50)
@@ -218,11 +217,14 @@ fun DnsScannerScreen(
                 testDomain = uiState.testDomain,
                 timeoutMs = uiState.timeoutMs,
                 concurrency = uiState.concurrency,
-                scanMode = uiState.scanMode,
+                testUrl = uiState.testUrl,
+                e2eTimeoutMs = uiState.e2eTimeoutMs,
+                showTestUrl = uiState.profileId != null,
                 onTestDomainChange = { viewModel.updateTestDomain(it) },
                 onTimeoutChange = { viewModel.updateTimeout(it) },
                 onConcurrencyChange = { viewModel.updateConcurrency(it) },
-                onScanModeChange = { viewModel.updateScanMode(it) }
+                onTestUrlChange = { viewModel.updateTestUrl(it) },
+                onE2eTimeoutChange = { viewModel.updateE2eTimeout(it) }
             )
 
             // Resolver List
@@ -374,11 +376,14 @@ private fun ConfigurationSection(
     testDomain: String,
     timeoutMs: String,
     concurrency: String,
-    scanMode: ScanMode,
+    testUrl: String = "",
+    e2eTimeoutMs: String = "5000",
+    showTestUrl: Boolean = false,
     onTestDomainChange: (String) -> Unit,
     onTimeoutChange: (String) -> Unit,
     onConcurrencyChange: (String) -> Unit,
-    onScanModeChange: (ScanMode) -> Unit
+    onTestUrlChange: (String) -> Unit = {},
+    onE2eTimeoutChange: (String) -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -396,34 +401,6 @@ private fun ConfigurationSection(
                 icon = Icons.Default.Settings,
                 title = "Configuration"
             )
-
-            // Scan Mode
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Scan Mode",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    ScanModeChip(
-                        selected = scanMode == ScanMode.SIMPLE,
-                        onClick = { onScanModeChange(ScanMode.SIMPLE) },
-                        label = "Simple",
-                        description = "Basic ping test",
-                        modifier = Modifier.weight(1f)
-                    )
-                    ScanModeChip(
-                        selected = scanMode == ScanMode.DNS_TUNNEL,
-                        onClick = { onScanModeChange(ScanMode.DNS_TUNNEL) },
-                        label = "DNS Tunnel",
-                        description = "Advanced compatibility",
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
 
             OutlinedTextField(
                 value = testDomain,
@@ -482,84 +459,43 @@ private fun ConfigurationSection(
                     shape = RoundedCornerShape(12.dp)
                 )
             }
-        }
-    }
-}
 
-@Composable
-private fun ScanModeChip(
-    selected: Boolean,
-    onClick: () -> Unit,
-    label: String,
-    description: String,
-    modifier: Modifier = Modifier
-) {
-    val backgroundColor by animateColorAsState(
-        targetValue = if (selected) {
-            MaterialTheme.colorScheme.primaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        },
-        label = "chipBackground"
-    )
-
-    val borderColor by animateColorAsState(
-        targetValue = if (selected) {
-            MaterialTheme.colorScheme.primary
-        } else {
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-        },
-        label = "chipBorder"
-    )
-
-    Card(
-        modifier = modifier
-            .clickable(onClick = onClick)
-            .border(
-                width = if (selected) 1.5.dp else 1.dp,
-                color = borderColor,
-                shape = RoundedCornerShape(12.dp)
-            ),
-        colors = CardDefaults.cardColors(containerColor = backgroundColor),
-        shape = RoundedCornerShape(12.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (selected) {
-                    Icon(
-                        Icons.Default.Check,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (selected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    }
+            if (showTestUrl) {
+                OutlinedTextField(
+                    value = testUrl,
+                    onValueChange = onTestUrlChange,
+                    label = { Text("Test URL (E2E)") },
+                    placeholder = { Text("http://www.google.com/generate_204") },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.NetworkCheck,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    supportingText = { Text("URL for tunnel connectivity test") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                OutlinedTextField(
+                    value = e2eTimeoutMs,
+                    onValueChange = { onE2eTimeoutChange(it.filter { c -> c.isDigit() }) },
+                    label = { Text("E2E Timeout (ms)") },
+                    placeholder = { Text("5000") },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Schedule,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    supportingText = { Text("Timeout per resolver for tunnel test") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
                 )
             }
-            Text(
-                text = description,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
         }
     }
 }
