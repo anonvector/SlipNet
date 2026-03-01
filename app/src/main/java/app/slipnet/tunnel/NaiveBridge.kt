@@ -5,6 +5,8 @@ import app.slipnet.util.AppLog as Log
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.ServerSocket
 
@@ -75,8 +77,19 @@ object NaiveBridge {
             // Pre-resolve server IP to avoid ISP DNS poisoning.
             // NaiveProxy (Chromium) would otherwise use its own DNS resolver,
             // which goes through ISP DNS since the app is excluded from VPN.
+            // Prefer IPv4: getByName() may return an IPv6 address (AAAA record)
+            // even on IPv4-only networks, causing Chromium to fail with
+            // "Not a numeric address" when parsing the unbracketed IPv6 literal.
             val resolvedIp = try {
-                InetAddress.getByName(serverHost).hostAddress
+                val allAddrs = InetAddress.getAllByName(serverHost)
+                val ipv4 = allAddrs.firstOrNull { it is Inet4Address }
+                val chosen = ipv4 ?: allAddrs.firstOrNull()
+                    ?: throw RuntimeException("No addresses found for '$serverHost'")
+                val ip = chosen.hostAddress!!
+                // Chromium host-resolver-rules requires brackets around IPv6
+                if (chosen is Inet6Address) "[$ip]" else ip
+            } catch (e: RuntimeException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to resolve $serverHost: ${e.message}")
                 return Result.failure(RuntimeException("Cannot resolve server hostname '$serverHost'"))
