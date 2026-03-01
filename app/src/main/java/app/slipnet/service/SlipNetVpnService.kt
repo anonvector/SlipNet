@@ -64,6 +64,7 @@ class SlipNetVpnService : VpnService() {
         private const val HEALTH_CHECK_INTERVAL_MS = 5000L
         private const val STALE_TRAFFIC_THRESHOLD = 3 // Reconnect after 3 checks with no traffic
         private const val QUIC_DOWN_THRESHOLD = 6 // Reconnect after 6 checks (30s) with QUIC down
+        private const val SSH_PROBE_INTERVAL = 6 // Probe SSH session every 6 health checks (~30s)
 
         // Persistence keys for auto-restart
         private const val PREFS_NAME = "vpn_service_state"
@@ -72,7 +73,7 @@ class SlipNetVpnService : VpnService() {
 
         // Auto-reconnect settings
         private const val AUTO_RECONNECT_MAX_RETRIES = 5
-        private val AUTO_RECONNECT_DELAYS_MS = longArrayOf(2000, 4000, 8000, 16000, 30000)
+        private val AUTO_RECONNECT_DELAYS_MS = longArrayOf(3000, 3000, 3000, 3000, 3000)
     }
 
     @Inject
@@ -119,6 +120,7 @@ class SlipNetVpnService : VpnService() {
     private var lastTrafficTxBytes = 0L
     private var staleTrafficChecks = 0
     private var quicDownChecks = 0
+    private var healthCheckCount = 0
 
     // Persistence for service resilience
     private lateinit var prefs: SharedPreferences
@@ -1944,6 +1946,7 @@ class SlipNetVpnService : VpnService() {
         lastTrafficTxBytes = 0L
         staleTrafficChecks = 0
         quicDownChecks = 0
+        healthCheckCount = 0
 
         healthCheckJob = serviceScope.launch(Dispatchers.IO) {
             // Give the connection time to establish before monitoring
@@ -1985,6 +1988,26 @@ class SlipNetVpnService : VpnService() {
                             }
                             break
                         }
+                    }
+                }
+
+                // For SSH-based tunnels: actively probe the SSH session every ~30s.
+                // session.isConnected is a local flag that can stay true even when the
+                // remote end is gone (NAT timeout, server crash). sendKeepAliveMsg()
+                // forces a round-trip that detects a dead session immediately.
+                healthCheckCount++
+                val usesSsh = currentTunnelType == TunnelType.SSH ||
+                        currentTunnelType == TunnelType.DNSTT_SSH ||
+                        currentTunnelType == TunnelType.SLIPSTREAM_SSH ||
+                        currentTunnelType == TunnelType.NAIVE_SSH
+                if (usesSsh && healthCheckCount % SSH_PROBE_INTERVAL == 0) {
+                    val alive = SshTunnelBridge.probeSessionAlive()
+                    if (!alive) {
+                        Log.e(TAG, "SSH session probe failed — session is dead")
+                        launch(Dispatchers.Main) {
+                            handleTunnelFailure("SSH session unresponsive")
+                        }
+                        break
                     }
                 }
 

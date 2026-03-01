@@ -503,12 +503,28 @@ object SshTunnelBridge {
     }
 
     /**
-     * Check if the SSH tunnel is healthy.
+     * Check if the SSH tunnel is healthy (passive — checks local flags only).
      */
     fun isClientHealthy(): Boolean {
         val s = session ?: return false
         val ss = serverSocket ?: return false
         return running.get() && s.isConnected && !ss.isClosed
+    }
+
+    /**
+     * Active liveness probe: sends an SSH keepalive and waits for a reply.
+     * Returns true if the server responded, false if the session is dead or unresponsive.
+     * Call from a background thread — this blocks for up to [timeoutMs].
+     */
+    fun probeSessionAlive(timeoutMs: Int = 10000): Boolean {
+        val s = session ?: return false
+        if (!s.isConnected) return false
+        return try {
+            s.sendKeepAliveMsg()
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /**
