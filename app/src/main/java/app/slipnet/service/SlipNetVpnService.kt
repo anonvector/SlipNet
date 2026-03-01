@@ -264,8 +264,21 @@ class SlipNetVpnService : VpnService() {
 
                 val dnsServer = profile.resolvers.firstOrNull()?.host ?: DEFAULT_DNS
                 // Remote DNS: the DNS servers used on the remote side of the tunnel
-                val remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
-                val remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
+                var remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
+                var remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
+
+                // DNSTT+SSH: default to server's local resolver (127.0.0.53) instead of
+                // external DNS (8.8.8.8). External DNS servers often close long-lived TCP
+                // connections opened via SSH direct-tcpip, causing DNS workers to die.
+                // Only override when user hasn't set a custom remote DNS.
+                if (currentTunnelType == TunnelType.DNSTT_SSH) {
+                    val dnsMode = preferencesDataStore.remoteDnsMode.first()
+                    if (dnsMode == "default") {
+                        remoteDns = "127.0.0.53"
+                        remoteDnsFallback = "8.8.8.8"
+                    }
+                }
+
                 Log.i(TAG, "Remote DNS: $remoteDns (fallback: $remoteDnsFallback)")
 
                 // The startup order differs between tunnel types:
@@ -2162,8 +2175,17 @@ class SlipNetVpnService : VpnService() {
 
                 val proxyPort = preferencesDataStore.proxyListenPort.first()
                 val proxyHost = preferencesDataStore.proxyListenAddress.first()
-                val remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
-                val remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
+                var remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
+                var remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
+
+                // DNSTT+SSH: default to server's local resolver (same override as initial connect)
+                if (currentTunnelType == TunnelType.DNSTT_SSH) {
+                    val dnsMode = preferencesDataStore.remoteDnsMode.first()
+                    if (dnsMode == "default") {
+                        remoteDns = "127.0.0.53"
+                        remoteDnsFallback = "8.8.8.8"
+                    }
+                }
 
                 // Restart the appropriate proxy
                 if (currentTunnelType == TunnelType.SSH) {
