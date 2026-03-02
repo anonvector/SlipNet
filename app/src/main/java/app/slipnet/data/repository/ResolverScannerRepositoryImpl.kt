@@ -138,7 +138,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         // First, do a basic connectivity check (against the parent zone)
         val basicCheck = withTimeoutOrNull(timeoutMs) {
             val randSub = generateRandomSubdomain()
-            performDnsQuery(host, port, "$randSub.$parentDomain", DNS_TYPE_A)
+            performDnsQuery(host, port, "$randSub.$parentDomain", DNS_TYPE_A, timeoutMs)
         }
 
         if (basicCheck == null) {
@@ -205,7 +205,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             val randSub = generateRandomSubdomain()
             val queryDomain = "$randSub.$testDomain"
             val result = withTimeoutOrNull(timeoutMs) {
-                performDnsQuery(host, port, queryDomain, recordType)
+                performDnsQuery(host, port, queryDomain, recordType, timeoutMs)
             }
             // Success if we got a response OR if we got NXDOMAIN/NOERROR
             // (NXDOMAIN is acceptable - means server queried properly)
@@ -229,7 +229,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             val randSub2 = generateRandomSubdomain()
             val queryDomain = "$randSub1.$randSub2.$testDomain"
             val result = withTimeoutOrNull(timeoutMs) {
-                performDnsQuery(host, port, queryDomain, DNS_TYPE_A)
+                performDnsQuery(host, port, queryDomain, DNS_TYPE_A, timeoutMs)
             }
             // Any response (including NXDOMAIN) means the resolver processed the query
             result != null
@@ -330,7 +330,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         for (ip in testNetIps) {
             try {
                 val result = withTimeoutOrNull(timeoutMs) {
-                    performDnsQuery(ip, 53, testDomain, DNS_TYPE_A)
+                    performDnsQuery(ip, 53, testDomain, DNS_TYPE_A, timeoutMs)
                 }
                 if (result != null) {
                     // A TEST-NET IP responded — ISP is intercepting DNS traffic
@@ -967,12 +967,13 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         host: String,
         port: Int,
         domain: String,
-        recordType: Int = DNS_TYPE_A
+        recordType: Int = DNS_TYPE_A,
+        timeoutMs: Long = 3000
     ): DnsQueryResult = withContext(Dispatchers.IO) {
         var socket: DatagramSocket? = null
         try {
             socket = DatagramSocket()
-            socket.soTimeout = 3000 // 3 second socket timeout
+            socket.soTimeout = timeoutMs.toInt().coerceIn(500, 30000)
 
             val dnsQuery = buildDnsQuery(domain, recordType)
             val serverAddress = InetAddress.getByName(host)
@@ -1315,7 +1316,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             // the delegation "t.example.com NS ns.example.com").
             val nsDomain = getParentDomain(testDomain)
             val nsResult = withTimeoutOrNull(timeoutMs) {
-                performDnsQuery(host, port, nsDomain, DNS_TYPE_NS)
+                performDnsQuery(host, port, nsDomain, DNS_TYPE_NS, timeoutMs)
             } ?: return@withContext false
 
             if (!nsResult.success || nsResult.rawResponse == null) return@withContext false
@@ -1327,7 +1328,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             // Resolve the first NS hostname (glue record) via A query
             val nsHostname = nsHosts[0].trimEnd('.')
             val glueResult = withTimeoutOrNull(timeoutMs) {
-                performDnsQuery(host, port, nsHostname, DNS_TYPE_A)
+                performDnsQuery(host, port, nsHostname, DNS_TYPE_A, timeoutMs)
             } ?: return@withContext false
 
             // Pass only if the A query succeeded and returned an IP

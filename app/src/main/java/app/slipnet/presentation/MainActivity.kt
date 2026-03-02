@@ -91,7 +91,7 @@ class MainActivity : ComponentActivity() {
 
     private fun handleDeepLink(intent: Intent?) {
         val uri = intent?.data?.toString()
-        if (uri != null && uri.startsWith("slipnet://")) {
+        if (uri != null && (uri.startsWith("slipnet://") || uri.startsWith("slipnet-enc://"))) {
             _deepLinkUri.value = uri
         }
     }

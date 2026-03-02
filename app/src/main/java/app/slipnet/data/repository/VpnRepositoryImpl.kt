@@ -582,7 +582,8 @@ class VpnRepositoryImpl @Inject constructor(
             gsoEnabled = profile.gsoEnabled,
             debugPoll = debugLogging,
             debugStreams = debugLogging,
-            idlePollIntervalMs = 2000
+            idlePollIntervalMs = 2000,
+            idleTimeoutMs = 120000
         )
         if (result.isFailure) {
             val exception = result.exceptionOrNull()

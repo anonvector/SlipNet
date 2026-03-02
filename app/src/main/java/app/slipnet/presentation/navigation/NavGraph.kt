@@ -59,8 +59,8 @@ fun NavGraph(
                 onNavigateBack = {
                     navController.popBackStack()
                 },
-                onNavigateToScanner = {
-                    navController.navigate(NavRoutes.DnsScanner.createRoute(fromProfile = true))
+                onNavigateToScanner = { savedId ->
+                    navController.navigate(NavRoutes.DnsScanner.createRoute(savedId, fromProfile = true))
                 },
                 selectedResolvers = selectedResolvers
             )
@@ -81,8 +81,8 @@ fun NavGraph(
                 onNavigateBack = {
                     navController.popBackStack()
                 },
-                onNavigateToScanner = {
-                    navController.navigate(NavRoutes.DnsScanner.createRoute(profileId, fromProfile = true))
+                onNavigateToScanner = { savedId ->
+                    navController.navigate(NavRoutes.DnsScanner.createRoute(savedId ?: profileId, fromProfile = true))
                 },
                 selectedResolvers = selectedResolvers
             )

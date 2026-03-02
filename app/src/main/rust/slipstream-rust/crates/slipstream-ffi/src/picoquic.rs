@@ -237,6 +237,7 @@ extern "C" {
         initial_mtu_ipv6: u32,
     );
     pub fn picoquic_set_key_log_file_from_env(quic: *mut picoquic_quic_t);
+    pub fn picoquic_set_default_idle_timeout(quic: *mut picoquic_quic_t, idle_timeout_ms: u64);
     pub fn picoquic_enable_path_callbacks_default(quic: *mut picoquic_quic_t, are_enabled: c_int);
 
     pub fn picoquic_explain_crypto_error(

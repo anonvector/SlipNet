@@ -1,6 +1,5 @@
 package app.slipnet.util
 
-import app.slipnet.BuildConfig
 import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -9,13 +8,18 @@ import javax.crypto.spec.SecretKeySpec
 
 object LockPasswordUtil {
 
+    init {
+        System.loadLibrary("slipstream")
+    }
+
+    private external fun nativeGetConfigKey(): ByteArray
+
     private const val FORMAT_VERSION: Byte = 0x01
     private const val IV_LENGTH = 12
     private const val GCM_TAG_BITS = 128
 
     private val aesKey: SecretKeySpec by lazy {
-        val keyHex = BuildConfig.CONFIG_ENCRYPTION_KEY
-        val keyBytes = keyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val keyBytes = nativeGetConfigKey()
         SecretKeySpec(keyBytes, "AES")
     }
 

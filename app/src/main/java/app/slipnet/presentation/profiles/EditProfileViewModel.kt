@@ -92,6 +92,7 @@ data class EditProfileUiState(
     val isAutoDetecting: Boolean = false,
     val saveSuccess: Boolean = false,
     val showRestartVpnMessage: Boolean = false,
+    val savedProfileIdForScanner: Long? = null,
     val error: String? = null,
     val nameError: String? = null,
     val domainError: String? = null,
@@ -887,9 +888,28 @@ class EditProfileViewModel @Inject constructor(
 
 
     fun save() {
-        val state = _uiState.value
+        if (!validateProfile()) return
+        persistProfile(forScanner = false)
+    }
 
-        // Validation
+    /**
+     * Save the profile and signal navigation to the DNS scanner.
+     * If validation fails, errors are shown on the form fields.
+     */
+    fun saveForScanner() {
+        if (!validateProfile()) return
+        persistProfile(forScanner = true)
+    }
+
+    fun clearScannerNavigation() {
+        _uiState.value = _uiState.value.copy(savedProfileIdForScanner = null)
+    }
+
+    /**
+     * Validate the current profile form. Sets field errors and returns false if invalid.
+     */
+    private fun validateProfile(): Boolean {
+        val state = _uiState.value
         var hasError = false
 
         if (state.name.isBlank()) {
@@ -1003,7 +1023,15 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
-        if (hasError) return
+        return !hasError
+    }
+
+    /**
+     * Persist the validated profile. If [forScanner] is true, signals scanner navigation
+     * instead of navigating back.
+     */
+    private fun persistProfile(forScanner: Boolean) {
+        val state = _uiState.value
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isSaving = true)
@@ -1047,16 +1075,24 @@ class EditProfileViewModel @Inject constructor(
                 val savedId = saveProfileUseCase(profile)
                 setActiveProfileUseCase(savedId)
 
-                // Check if VPN is currently connected to this profile
-                val connState = connectionManager.connectionState.value
-                val isVpnActive = connState is ConnectionState.Connected ||
-                        connState is ConnectionState.Connecting
+                if (forScanner) {
+                    _uiState.value = _uiState.value.copy(
+                        isSaving = false,
+                        profileId = savedId,
+                        savedProfileIdForScanner = savedId
+                    )
+                } else {
+                    // Check if VPN is currently connected to this profile
+                    val connState = connectionManager.connectionState.value
+                    val isVpnActive = connState is ConnectionState.Connected ||
+                            connState is ConnectionState.Connecting
 
-                _uiState.value = _uiState.value.copy(
-                    isSaving = false,
-                    saveSuccess = true,
-                    showRestartVpnMessage = isVpnActive
-                )
+                    _uiState.value = _uiState.value.copy(
+                        isSaving = false,
+                        saveSuccess = true,
+                        showRestartVpnMessage = isVpnActive
+                    )
+                }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,

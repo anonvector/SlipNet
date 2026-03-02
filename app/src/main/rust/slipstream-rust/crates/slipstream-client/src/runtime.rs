@@ -51,7 +51,7 @@ use slipstream_ffi::{
         picoquic_close, picoquic_cnx_t, picoquic_connection_id_t, picoquic_create,
         picoquic_create_client_cnx, picoquic_current_time, picoquic_disable_keep_alive,
         picoquic_enable_keep_alive, picoquic_enable_path_callbacks,
-        picoquic_enable_path_callbacks_default, picoquic_get_next_wake_delay,
+        picoquic_enable_path_callbacks_default, picoquic_get_next_wake_delay, picoquic_set_default_idle_timeout,
         picoquic_prepare_next_packet_ex, picoquic_set_callback, slipstream_has_ready_stream,
         slipstream_is_flow_blocked, slipstream_mixed_cc_algorithm, slipstream_set_cc_override,
         slipstream_set_default_path_mode, PICOQUIC_CONNECTION_ID_MAX_SIZE,
@@ -210,6 +210,10 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
         }
         unsafe {
             configure_quic_with_custom(quic, mixed_cc, mtu);
+            if config.idle_timeout_ms > 0 {
+                picoquic_set_default_idle_timeout(quic, config.idle_timeout_ms);
+                info!("QUIC idle timeout set to {}ms", config.idle_timeout_ms);
+            }
             picoquic_enable_path_callbacks_default(quic, 1);
             let override_ptr = cc_override
                 .as_ref()

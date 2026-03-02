@@ -203,6 +203,7 @@ fn main() {
         debug_poll: args.debug_poll,
         debug_streams: args.debug_streams,
         idle_poll_interval_ms: idle_poll_interval,
+        idle_timeout_ms: 0, // 0 = use picoquic default
     };
 
     let runtime = Builder::new_current_thread()

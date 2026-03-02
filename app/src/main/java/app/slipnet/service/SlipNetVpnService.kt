@@ -13,6 +13,7 @@ import android.net.ProxyInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import app.slipnet.util.AppLog as Log
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.local.datastore.SplitTunnelingMode
@@ -125,6 +126,8 @@ class SlipNetVpnService : VpnService() {
     // Persistence for service resilience
     private lateinit var prefs: SharedPreferences
 
+    // WakeLock to prevent CPU sleep during VPN (Doze mode kills QUIC keep-alives)
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -237,6 +240,22 @@ class SlipNetVpnService : VpnService() {
             // Show connecting notification
             val notification = notificationHelper.createVpnNotification(ConnectionState.Connecting)
             startForeground(NotificationHelper.VPN_NOTIFICATION_ID, notification)
+
+            // Acquire WakeLock to prevent CPU sleep (Doze mode kills QUIC keep-alives)
+            if (wakeLock == null) {
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SlipNet:VpnWakeLock").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+                Log.d(TAG, "WakeLock acquired")
+            }
+
+            // Warn if battery optimization is not disabled
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                Log.w(TAG, "Battery optimization is enabled - VPN may be interrupted by Doze mode")
+            }
 
             try {
                 // Read proxy-only mode setting
@@ -3020,6 +3039,15 @@ class SlipNetVpnService : VpnService() {
     private suspend fun cleanupConnection() {
         Log.d(TAG, "Cleaning up connection resources")
 
+        // Release WakeLock
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+                Log.d(TAG, "WakeLock released")
+            }
+        }
+        wakeLock = null
+
         // Stop health monitoring
         healthCheckJob?.cancel()
         healthCheckJob = null
@@ -3095,8 +3123,37 @@ class SlipNetVpnService : VpnService() {
         }
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.i(TAG, "Task removed (app swiped from recents)")
+
+        // If VPN is active, save state and re-deliver start intent to keep running
+        if (currentProfileId != -1L) {
+            saveConnectionState(currentProfileId, true)
+            val restartIntent = Intent(this, SlipNetVpnService::class.java).apply {
+                action = ACTION_CONNECT
+                putExtra(EXTRA_PROFILE_ID, currentProfileId)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(restartIntent)
+            } else {
+                startService(restartIntent)
+            }
+            Log.i(TAG, "Re-delivered start intent for profile $currentProfileId")
+        }
+    }
+
     override fun onDestroy() {
         Log.i(TAG, "Service onDestroy")
+
+        // Safety net: release WakeLock if still held
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+                Log.d(TAG, "WakeLock released (onDestroy safety net)")
+            }
+        }
+        wakeLock = null
 
         // Capture state before cleanup resets currentProfileId to -1
         val wasActive = currentProfileId != -1L
@@ -3135,6 +3192,15 @@ class SlipNetVpnService : VpnService() {
      */
     private fun cleanupConnectionSync() {
         Log.d(TAG, "Quick cleanup (sync)")
+
+        // Release WakeLock
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+                Log.d(TAG, "WakeLock released (sync)")
+            }
+        }
+        wakeLock = null
 
         // Stop health monitoring
         healthCheckJob?.cancel()

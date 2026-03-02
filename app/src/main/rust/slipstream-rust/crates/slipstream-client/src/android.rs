@@ -5,6 +5,10 @@
 //! - State flags (running, listener ready, QUIC ready)
 //! - Socket protection via VpnService.protect()
 
+mod config_key {
+    include!(concat!(env!("OUT_DIR"), "/config_key.rs"));
+}
+
 use crate::error::ClientError;
 use crate::runtime::run_client;
 use jni::objects::{JBooleanArray, JClass, JIntArray, JObject, JObjectArray, JString, JValue};
@@ -232,6 +236,7 @@ pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSlips
     debug_poll: jboolean,
     debug_streams: jboolean,
     idle_poll_interval: jint,
+    idle_timeout_ms: jint,
 ) -> jint {
     // Catch panics to prevent crashes
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
@@ -249,6 +254,7 @@ pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSlips
             debug_poll,
             debug_streams,
             idle_poll_interval,
+            idle_timeout_ms,
         )
     }));
 
@@ -276,6 +282,7 @@ fn start_client_impl<'local>(
     debug_poll: jboolean,
     debug_streams: jboolean,
     idle_poll_interval: jint,
+    idle_timeout_ms: jint,
 ) -> jint {
     info!("nativeStartSlipstreamClient called");
 
@@ -452,6 +459,7 @@ fn start_client_impl<'local>(
     let dbg_poll = debug_poll != JNI_FALSE;
     let dbg_streams = debug_streams != JNI_FALSE;
     let idle_poll_ms = idle_poll_interval.max(0) as u64;
+    let idle_timeout = idle_timeout_ms.max(0) as u64;
 
     let handle = thread::Builder::new()
         .name("slipstream-client".to_string())
@@ -467,6 +475,7 @@ fn start_client_impl<'local>(
                 dbg_poll,
                 dbg_streams,
                 idle_poll_ms,
+                idle_timeout,
             );
         });
 
@@ -516,6 +525,7 @@ fn run_client_thread(
     debug_poll: bool,
     debug_streams: bool,
     idle_poll_interval_ms: u64,
+    idle_timeout_ms: u64,
 ) {
     info!("Client thread started");
 
@@ -532,6 +542,7 @@ fn run_client_thread(
             debug_poll,
             debug_streams,
             idle_poll_interval_ms,
+            idle_timeout_ms,
         };
 
         // Build tokio runtime
@@ -646,6 +657,26 @@ pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeIsQuicRead
         JNI_TRUE
     } else {
         JNI_FALSE
+    }
+}
+
+// ============================================================================
+// Config Key Retrieval
+// ============================================================================
+
+/// Return the obfuscated config encryption key (32 bytes) to Kotlin.
+#[no_mangle]
+pub extern "system" fn Java_app_slipnet_util_LockPasswordUtil_nativeGetConfigKey<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jni::sys::jbyteArray {
+    let key = config_key::reconstruct_config_key();
+    match env.byte_array_from_slice(&key) {
+        Ok(arr) => arr.into_raw(),
+        Err(e) => {
+            error!("Failed to create config key byte array: {:?}", e);
+            std::ptr::null_mut()
+        }
     }
 }
 

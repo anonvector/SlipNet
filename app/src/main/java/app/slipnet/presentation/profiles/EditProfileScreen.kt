@@ -83,7 +83,7 @@ import app.slipnet.tunnel.DohServer
 fun EditProfileScreen(
     profileId: Long?,
     onNavigateBack: () -> Unit,
-    onNavigateToScanner: (() -> Unit)? = null,
+    onNavigateToScanner: ((Long?) -> Unit)? = null,
     selectedResolvers: String? = null,
     viewModel: EditProfileViewModel = hiltViewModel()
 ) {
@@ -114,6 +114,14 @@ fun EditProfileScreen(
                 ).show()
             }
             onNavigateBack()
+        }
+    }
+
+    // Navigate to scanner after profile is saved
+    LaunchedEffect(uiState.savedProfileIdForScanner) {
+        uiState.savedProfileIdForScanner?.let { savedId ->
+            viewModel.clearScannerNavigation()
+            onNavigateToScanner?.invoke(savedId)
         }
     }
 
@@ -294,7 +302,7 @@ fun EditProfileScreen(
 
                         if (onNavigateToScanner != null) {
                             OutlinedButton(
-                                onClick = onNavigateToScanner,
+                                onClick = { viewModel.saveForScanner() },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Icon(Icons.Default.Search, contentDescription = null)
@@ -695,7 +703,7 @@ fun EditProfileScreen(
                     // Scan Resolvers button
                     if (onNavigateToScanner != null) {
                         OutlinedButton(
-                            onClick = onNavigateToScanner,
+                            onClick = { viewModel.saveForScanner() },
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Icon(Icons.Default.Search, contentDescription = null)

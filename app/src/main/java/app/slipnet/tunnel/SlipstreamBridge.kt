@@ -90,7 +90,8 @@ object SlipstreamBridge {
         gsoEnabled: Boolean = false,
         debugPoll: Boolean = false,
         debugStreams: Boolean = false,
-        idlePollIntervalMs: Int = 2000
+        idlePollIntervalMs: Int = 2000,
+        idleTimeoutMs: Int = 120000
     ): Result<Unit> {
         if (!isLibraryLoaded) {
             return Result.failure(IllegalStateException("Native library not loaded"))
@@ -140,7 +141,8 @@ object SlipstreamBridge {
                 gsoEnabled = gsoEnabled,
                 debugPoll = debugPoll,
                 debugStreams = debugStreams,
-                idlePollInterval = idlePollIntervalMs
+                idlePollInterval = idlePollIntervalMs,
+                idleTimeoutMs = idleTimeoutMs
             )
 
             when (result) {
@@ -229,7 +231,7 @@ object SlipstreamBridge {
         // Verify the port is actually listening
         return try {
             java.net.Socket().use { socket ->
-                socket.connect(java.net.InetSocketAddress("127.0.0.1", currentPort), 200)
+                socket.connect(java.net.InetSocketAddress("127.0.0.1", currentPort), 1000)
                 true
             }
         } catch (e: Exception) {
@@ -280,7 +282,8 @@ object SlipstreamBridge {
         gsoEnabled: Boolean,
         debugPoll: Boolean,
         debugStreams: Boolean,
-        idlePollInterval: Int
+        idlePollInterval: Int,
+        idleTimeoutMs: Int
     ): Int
 
     private external fun nativeStopSlipstreamClient()

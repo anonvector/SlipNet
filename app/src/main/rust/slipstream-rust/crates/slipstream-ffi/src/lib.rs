@@ -35,6 +35,7 @@ pub struct ClientConfig<'a> {
     pub debug_poll: bool,
     pub debug_streams: bool,
     pub idle_poll_interval_ms: u64,
+    pub idle_timeout_ms: u64,
 }
 
 pub use runtime::{
