@@ -55,7 +55,7 @@ data class DnsScannerUiState(
     // E2E tunnel test state
     val e2eScannerState: E2eScannerState = E2eScannerState(),
     val testUrl: String = "http://www.google.com/generate_204",
-    val e2eTimeoutMs: String = "10000",
+    val e2eTimeoutMs: String = "7000",
     val isVpnActive: Boolean = false,
     val profile: ServerProfile? = null
 ) {

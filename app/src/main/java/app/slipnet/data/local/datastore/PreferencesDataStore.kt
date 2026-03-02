@@ -581,7 +581,7 @@ class PreferencesDataStore @Inject constructor(
     }
 
     val scannerE2eTimeoutMs: Flow<String> = dataStore.data.map { prefs ->
-        prefs[Keys.SCANNER_E2E_TIMEOUT_MS] ?: "5000"
+        prefs[Keys.SCANNER_E2E_TIMEOUT_MS] ?: "7000"
     }
 
     val scannerTestUrl: Flow<String> = dataStore.data.map { prefs ->
