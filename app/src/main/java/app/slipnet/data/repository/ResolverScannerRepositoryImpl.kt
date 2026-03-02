@@ -172,22 +172,14 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             randomSubdomain2 = randomSubdomain2
         )
 
-        // Only mark as WORKING if all 4 tests pass (strict requirement for DNS tunneling)
-        val status = if (tunnelResult.isCompatible) {
-            ResolverStatus.WORKING
-        } else {
-            ResolverStatus.ERROR
-        }
-
+        // Mark as WORKING if resolver responded (basic check passed above)
+        // Score indicates tunnel compatibility quality (4/4 = fully compatible)
         ResolverScanResult(
             host = host,
             port = port,
-            status = status,
+            status = ResolverStatus.WORKING,
             responseTimeMs = responseTime,
-            tunnelTestResult = tunnelResult,
-            errorMessage = if (!tunnelResult.isCompatible) {
-                "Score: ${tunnelResult.score}/${tunnelResult.maxScore} - ${tunnelResult.details}"
-            } else null
+            tunnelTestResult = tunnelResult
         )
     }
 

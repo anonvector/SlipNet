@@ -15,6 +15,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -35,12 +37,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Warning
@@ -124,8 +129,11 @@ fun ScanResultsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
     var sortOption by remember { mutableStateOf(SortOption.NONE) }
+    var scoreFilter by remember { mutableStateOf(ScoreFilter.ALL) }
     var proxyWarningDismissed by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("scanner_ui", Context.MODE_PRIVATE) }
+    var showSortFilter by remember { mutableStateOf(prefs.getBoolean("show_sort_filter", true)) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(uiState.error) {
@@ -319,7 +327,8 @@ fun ScanResultsScreen(
 
             // Results
             val filteredResults = uiState.scannerState.results.filter {
-                it.status == ResolverStatus.WORKING
+                it.status == ResolverStatus.WORKING &&
+                    (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore
             }
 
             val displayResults = when (sortOption) {
@@ -328,6 +337,9 @@ fun ScanResultsScreen(
                     it.host.split(".").map { part -> part.toIntOrNull() ?: 0 }
                         .fold(0L) { acc, i -> acc * 256 + i }
                 })
+                SortOption.SCORE -> filteredResults.sortedByDescending {
+                    it.tunnelTestResult?.score ?: 0
+                }
                 SortOption.E2E_SPEED -> filteredResults.sortedBy {
                     it.e2eTestResult?.totalMs ?: Long.MAX_VALUE
                 }
@@ -411,20 +423,53 @@ fun ScanResultsScreen(
                     }
                 }
 
-                if (displayResults.isNotEmpty()) {
-                    SortControlBar(
-                        sortOption = sortOption,
-                        onSortOptionChange = { sortOption = it },
-                        modifier = Modifier.padding(bottom = navBarPadding.calculateBottomPadding())
-                    )
+                if (displayResults.isNotEmpty() || scoreFilter != ScoreFilter.ALL) {
+                    Column(modifier = Modifier.padding(bottom = navBarPadding.calculateBottomPadding())) {
+                        // Toggle handle
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showSortFilter = !showSortFilter
+                                    prefs.edit().putBoolean("show_sort_filter", showSortFilter).apply()
+                                }
+                        ) {
+                            Icon(
+                                imageVector = if (showSortFilter) Icons.Default.KeyboardArrowDown
+                                              else Icons.Default.KeyboardArrowUp,
+                                contentDescription = if (showSortFilter) "Hide sort & filter" else "Show sort & filter",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                                    .size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        AnimatedVisibility(visible = showSortFilter) {
+                            SortControlBar(
+                                sortOption = sortOption,
+                                onSortOptionChange = { sortOption = it },
+                                scoreFilter = scoreFilter,
+                                onScoreFilterChange = { scoreFilter = it }
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+private enum class ScoreFilter(val label: String, val minScore: Int) {
+    ALL("All", 0),
+    SCORE_3_PLUS("3+", 3),
+    SCORE_4("4/4", 4)
+}
+
 private enum class SortOption {
-    NONE, SPEED, IP, E2E_SPEED
+    NONE, SPEED, IP, SCORE, E2E_SPEED
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -432,84 +477,141 @@ private enum class SortOption {
 private fun SortControlBar(
     sortOption: SortOption,
     onSortOptionChange: (SortOption) -> Unit,
+    scoreFilter: ScoreFilter,
+    onScoreFilterChange: (ScoreFilter) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = modifier.fillMaxWidth()
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(
-                text = "Sort:",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            FilterChip(
-                selected = sortOption == SortOption.SPEED,
-                onClick = {
-                    onSortOptionChange(if (sortOption == SortOption.SPEED) SortOption.NONE else SortOption.SPEED)
-                },
-                label = { Text("Speed") },
-                leadingIcon = {
-                    Icon(
-                        Icons.Default.Speed,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                    selectedLabelColor = MaterialTheme.colorScheme.primary,
-                    selectedLeadingIconColor = MaterialTheme.colorScheme.primary
+            // Sort row
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(start = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Sort:",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            )
 
-            FilterChip(
-                selected = sortOption == SortOption.IP,
-                onClick = {
-                    onSortOptionChange(if (sortOption == SortOption.IP) SortOption.NONE else SortOption.IP)
-                },
-                label = { Text("IP") },
-                leadingIcon = {
-                    Icon(
-                        Icons.Default.Dns,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                FilterChip(
+                    selected = sortOption == SortOption.SPEED,
+                    onClick = {
+                        onSortOptionChange(if (sortOption == SortOption.SPEED) SortOption.NONE else SortOption.SPEED)
+                    },
+                    label = { Text("Speed") },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Speed,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.primary,
+                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary
                     )
-                },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                    selectedLabelColor = MaterialTheme.colorScheme.primary,
-                    selectedLeadingIconColor = MaterialTheme.colorScheme.primary
                 )
-            )
 
-            FilterChip(
-                selected = sortOption == SortOption.E2E_SPEED,
-                onClick = {
-                    onSortOptionChange(if (sortOption == SortOption.E2E_SPEED) SortOption.NONE else SortOption.E2E_SPEED)
-                },
-                label = { Text("E2E") },
-                leadingIcon = {
-                    Icon(
-                        Icons.Default.Speed,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                FilterChip(
+                    selected = sortOption == SortOption.IP,
+                    onClick = {
+                        onSortOptionChange(if (sortOption == SortOption.IP) SortOption.NONE else SortOption.IP)
+                    },
+                    label = { Text("IP") },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Dns,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.primary,
+                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary
                     )
-                },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                    selectedLabelColor = MaterialTheme.colorScheme.tertiary,
-                    selectedLeadingIconColor = MaterialTheme.colorScheme.tertiary
                 )
-            )
+
+                FilterChip(
+                    selected = sortOption == SortOption.SCORE,
+                    onClick = {
+                        onSortOptionChange(if (sortOption == SortOption.SCORE) SortOption.NONE else SortOption.SCORE)
+                    },
+                    label = { Text("Score") },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.primary,
+                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary
+                    )
+                )
+
+                FilterChip(
+                    selected = sortOption == SortOption.E2E_SPEED,
+                    onClick = {
+                        onSortOptionChange(if (sortOption == SortOption.E2E_SPEED) SortOption.NONE else SortOption.E2E_SPEED)
+                    },
+                    label = { Text("E2E") },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Speed,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.tertiary,
+                        selectedLeadingIconColor = MaterialTheme.colorScheme.tertiary
+                    )
+                )
+            }
+
+            // Filter row
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(start = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Filter:",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                ScoreFilter.entries.forEach { filter ->
+                    FilterChip(
+                        selected = scoreFilter == filter,
+                        onClick = { onScoreFilterChange(filter) },
+                        label = { Text(filter.label) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.secondary
+                        )
+                    )
+                }
+            }
         }
     }
 }
@@ -977,7 +1079,11 @@ private fun ResultsResolverItem(
                             text = "${tunnelResult.score}/${tunnelResult.maxScore}",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (tunnelResult.isCompatible) WorkingGreen else CensoredOrange
+                            color = when {
+                                tunnelResult.score == tunnelResult.maxScore -> WorkingGreen
+                                tunnelResult.score >= 3 -> CensoredOrange
+                                else -> ErrorRed
+                            }
                         )
                     }
                 }
