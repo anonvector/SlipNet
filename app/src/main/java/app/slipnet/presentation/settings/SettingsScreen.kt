@@ -1,6 +1,11 @@
 package app.slipnet.presentation.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import app.slipnet.BuildConfig
+import app.slipnet.presentation.common.components.AboutDialogContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -21,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CallSplit
@@ -61,6 +67,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -91,7 +98,11 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import java.net.Inet4Address
@@ -131,6 +142,21 @@ fun SettingsScreen(
     }
 
     val addressOptions = getAddressOptions()
+
+    // Battery optimization state
+    val context = LocalContext.current
+    var isBatteryOptimized by remember { mutableStateOf(true) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager
+                isBatteryOptimized = !pm.isIgnoringBatteryOptimizations(context.packageName)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
 
@@ -220,6 +246,27 @@ fun SettingsScreen(
                     range = 0..120,
                     valueFormatter = { if (it == 0) "Off" else "$it min" },
                     onValueChange = { viewModel.setSleepTimerMinutes(it) }
+                )
+
+                SettingsDivider()
+
+                ClickableSettingItem(
+                    icon = Icons.Default.BatteryAlert,
+                    title = "Battery optimization",
+                    description = if (isBatteryOptimized) "Not exempted — VPN may disconnect in background"
+                                  else "Exempted — VPN will run reliably in background",
+                    onClick = {
+                        try {
+                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            }
+                            context.startActivity(intent)
+                        } catch (_: Exception) {
+                            // Fallback to battery optimization settings list
+                            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                            context.startActivity(intent)
+                        }
+                    }
                 )
             }
 
@@ -790,84 +837,10 @@ fun SettingsScreen(
 
     // About Dialog
     if (showAboutDialog) {
-        val clipboardManager = LocalClipboardManager.current
-        val uriHandler = LocalUriHandler.current
-        val donationAddress = ""
-
         AlertDialog(
             onDismissRequest = { showAboutDialog = false },
             title = { Text("About SlipNet") },
-            text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        text = "SlipNet VPN v${BuildConfig.VERSION_NAME}",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text(
-                        text = "A free, source-available anti-censorship VPN tool designed to bypass internet restrictions. SlipNet tunnels your traffic through DNS, SSH, Tor, and other protocols to keep you connected when access is blocked.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    // GitHub
-                    Text(
-                        text = "GitHub",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "github.com/anonvector/SlipNet",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable {
-                            uriHandler.openUri("https://github.com/anonvector/SlipNet")
-                        }
-                    )
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    // Donate
-                    Text(
-                        text = "Donate (USDT \u2013 BEP20 / ERC20)",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = donationAddress,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                        )
-                        IconButton(
-                            onClick = {
-                                clipboardManager.setText(AnnotatedString(donationAddress))
-                            },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.ContentCopy,
-                                contentDescription = "Copy donation address",
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    Text(
-                        text = "Your support helps keep this project alive and free for everyone.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
+            text = { AboutDialogContent() },
             confirmButton = {
                 TextButton(onClick = { showAboutDialog = false }) {
                     Text("Close")

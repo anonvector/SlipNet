@@ -14,8 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
-val appVersionName = "2.0.1"
-val appVersionCode = 32
+val appVersionName = "2.1.0"
+val appVersionCode = 33
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -89,7 +89,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "CONFIG_ENCRYPTION_KEY", "\"$configEncryptionKey\"")
     }
 
     buildTypes {
@@ -342,6 +341,9 @@ cargo {
         spec.environment("OPENSSL_CRYPTO_LIBRARY", opensslAbiDir.resolve("lib/libcrypto.a").absolutePath)
         spec.environment("OPENSSL_SSL_LIBRARY", opensslAbiDir.resolve("lib/libssl.a").absolutePath)
         spec.environment("OPENSSL_USE_STATIC_LIBS", "1")
+
+        // Pass config encryption key to Rust build.rs for obfuscation
+        spec.environment("CONFIG_ENCRYPTION_KEY", configEncryptionKey)
 
         val toolchainPrebuilt = android.ndkDirectory
             .resolve("toolchains/llvm/prebuilt")

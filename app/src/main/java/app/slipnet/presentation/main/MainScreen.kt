@@ -4,7 +4,10 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.net.Uri
 import android.net.VpnService
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -112,6 +115,7 @@ import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.PingResult
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
+import app.slipnet.presentation.common.components.AboutDialogContent
 import app.slipnet.presentation.common.components.ProfileListItem
 import app.slipnet.presentation.common.components.QrCodeDialog
 import app.slipnet.presentation.common.icons.TorIcon
@@ -164,6 +168,11 @@ fun MainScreen(
     var pendingConnect by remember { mutableStateOf(false) }
     var pendingProfile by remember { mutableStateOf<ServerProfile?>(null) }
 
+    // Battery optimization prompt (shown once on first connect)
+    var showBatteryOptDialog by remember { mutableStateOf(false) }
+    var pendingConnectAfterBatteryPrompt by remember { mutableStateOf(false) }
+    var pendingProfileAfterBatteryPrompt by remember { mutableStateOf<ServerProfile?>(null) }
+
     // Dialog/sheet state
     var showShareDialog by remember { mutableStateOf(false) }
     var showLogSheet by remember { mutableStateOf(false) }
@@ -183,8 +192,9 @@ fun MainScreen(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && pendingConnect) {
-            if (pendingProfile != null) {
-                viewModel.connect(pendingProfile)
+            val profile = pendingProfile
+            if (profile != null) {
+                viewModel.connect(profile)
             } else {
                 viewModel.connect()
             }
@@ -261,6 +271,20 @@ fun MainScreen(
         label = "fabPadding"
     )
 
+    // Helper: proceed with VPN permission check and connect
+    fun proceedWithConnect(profile: ServerProfile? = null) {
+        if (activity != null) {
+            val vpnIntent = VpnService.prepare(activity)
+            if (vpnIntent != null) {
+                pendingConnect = true
+                pendingProfile = profile
+                vpnPermissionLauncher.launch(vpnIntent)
+            } else {
+                if (profile != null) viewModel.connect(profile) else viewModel.connect()
+            }
+        }
+    }
+
     // Helper to request VPN permission and connect
     fun requestConnectOrToggle() {
         when (uiState.connectionState) {
@@ -268,18 +292,18 @@ fun MainScreen(
             is ConnectionState.Connecting -> viewModel.disconnect()
             else -> {
                 if (activity != null) {
-                    // Always check VpnService.prepare() — even in proxy-only mode.
-                    // This detects if another VPN (e.g. v2ray) is active. Without this,
-                    // our tunnel sockets route through the other VPN and fail silently.
-                    // Granting permission revokes the other VPN, unblocking our tunnel.
-                    val vpnIntent = VpnService.prepare(activity)
-                    if (vpnIntent != null) {
-                        pendingConnect = true
-                        pendingProfile = null
-                        vpnPermissionLauncher.launch(vpnIntent)
-                    } else {
-                        viewModel.connect()
+                    // Check battery optimization on first connect
+                    val prefs = context.getSharedPreferences("vpn_service_state", Context.MODE_PRIVATE)
+                    val prompted = prefs.getBoolean("battery_opt_prompted", false)
+                    val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    if (!prompted && !pm.isIgnoringBatteryOptimizations(context.packageName)) {
+                        pendingConnectAfterBatteryPrompt = true
+                        pendingProfileAfterBatteryPrompt = null
+                        showBatteryOptDialog = true
+                        return
                     }
+
+                    proceedWithConnect()
                 }
             }
         }
@@ -688,6 +712,70 @@ fun MainScreen(
         )
     }
 
+    // Battery optimization dialog (shown once on first connect)
+    if (showBatteryOptDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showBatteryOptDialog = false
+                // Mark as prompted so we don't ask again
+                context.getSharedPreferences("vpn_service_state", Context.MODE_PRIVATE)
+                    .edit().putBoolean("battery_opt_prompted", true).apply()
+                // Proceed with connect regardless
+                if (pendingConnectAfterBatteryPrompt) {
+                    pendingConnectAfterBatteryPrompt = false
+                    proceedWithConnect(pendingProfileAfterBatteryPrompt)
+                    pendingProfileAfterBatteryPrompt = null
+                }
+            },
+            title = { Text("Disable Battery Optimization") },
+            text = {
+                Text("For reliable VPN operation, disable battery optimization for SlipNet. " +
+                     "Without this, Android may suspend the VPN when the screen is off.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showBatteryOptDialog = false
+                        context.getSharedPreferences("vpn_service_state", Context.MODE_PRIVATE)
+                            .edit().putBoolean("battery_opt_prompted", true).apply()
+                        // Open battery optimization settings
+                        try {
+                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            }
+                            context.startActivity(intent)
+                        } catch (_: Exception) {
+                            try {
+                                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                            } catch (_: Exception) { }
+                        }
+                        // Proceed with connect
+                        if (pendingConnectAfterBatteryPrompt) {
+                            pendingConnectAfterBatteryPrompt = false
+                            proceedWithConnect(pendingProfileAfterBatteryPrompt)
+                            pendingProfileAfterBatteryPrompt = null
+                        }
+                    }
+                ) { Text("Disable") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showBatteryOptDialog = false
+                        context.getSharedPreferences("vpn_service_state", Context.MODE_PRIVATE)
+                            .edit().putBoolean("battery_opt_prompted", true).apply()
+                        // Proceed with connect without disabling
+                        if (pendingConnectAfterBatteryPrompt) {
+                            pendingConnectAfterBatteryPrompt = false
+                            proceedWithConnect(pendingProfileAfterBatteryPrompt)
+                            pendingProfileAfterBatteryPrompt = null
+                        }
+                    }
+                ) { Text("Skip") }
+            }
+        )
+    }
+
     // Import preview dialog
     uiState.importPreview?.let { preview ->
         AlertDialog(
@@ -886,84 +974,10 @@ fun MainScreen(
 
     // First launch About dialog
     if (uiState.showFirstLaunchAbout) {
-        val clipboardManager = LocalClipboardManager.current
-        val uriHandler = LocalUriHandler.current
-        val donationAddress = ""
-
         AlertDialog(
             onDismissRequest = { viewModel.dismissFirstLaunchAbout() },
             title = { Text("Welcome to SlipNet") },
-            text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        text = "SlipNet VPN v${app.slipnet.BuildConfig.VERSION_NAME}",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text(
-                        text = "A free, source-available anti-censorship VPN tool designed to bypass internet restrictions. SlipNet tunnels your traffic through DNS, SSH, Tor, and other protocols to keep you connected when access is blocked.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    // GitHub
-                    Text(
-                        text = "GitHub",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "github.com/anonvector/SlipNet",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable {
-                            uriHandler.openUri("https://github.com/anonvector/SlipNet")
-                        }
-                    )
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    // Donate
-                    Text(
-                        text = "Donate (USDT \u2013 BEP20 / ERC20)",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = donationAddress,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        IconButton(
-                            onClick = {
-                                clipboardManager.setText(AnnotatedString(donationAddress))
-                            },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.ContentCopy,
-                                contentDescription = "Copy donation address",
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    Text(
-                        text = "Your support helps keep this project alive and free for everyone.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
+            text = { AboutDialogContent() },
             confirmButton = {
                 TextButton(onClick = { viewModel.dismissFirstLaunchAbout() }) {
                     Text("Get Started")
