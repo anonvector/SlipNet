@@ -55,7 +55,7 @@ data class DnsScannerUiState(
     // E2E tunnel test state
     val e2eScannerState: E2eScannerState = E2eScannerState(),
     val testUrl: String = "http://www.google.com/generate_204",
-    val e2eTimeoutMs: String = "5000",
+    val e2eTimeoutMs: String = "10000",
     val isVpnActive: Boolean = false,
     val profile: ServerProfile? = null
 ) {
@@ -221,14 +221,8 @@ class DnsScannerViewModel @Inject constructor(
             try {
                 val profile = profileRepository.getProfileById(id)
                 if (profile != null) {
-                    // DNSTT needs longer E2E timeout — Noise/KCP/smux handshake
-                    // alone takes 3-15s of DNS round-trips before the tunnel is usable.
-                    val isDnstt = profile.tunnelType == TunnelType.DNSTT ||
-                            profile.tunnelType == TunnelType.DNSTT_SSH
-                    val e2eTimeout = if (isDnstt) "15000" else _uiState.value.e2eTimeoutMs
                     _uiState.value = _uiState.value.copy(
-                        profile = profile,
-                        e2eTimeoutMs = e2eTimeout
+                        profile = profile
                     )
                 }
             } catch (e: Exception) {
@@ -249,7 +243,7 @@ class DnsScannerViewModel @Inject constructor(
         val id = profileId ?: return
         try {
             val profile = profileRepository.getProfileById(id) ?: return
-            if (profile.domain.isNotBlank()) {
+            if (!profile.isLocked && profile.domain.isNotBlank()) {
                 _uiState.value = _uiState.value.copy(testDomain = profile.domain)
             }
         } catch (e: Exception) {

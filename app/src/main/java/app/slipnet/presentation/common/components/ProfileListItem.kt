@@ -202,7 +202,7 @@ fun ProfileListItem(
                 // Subtitle: server/domain info (hidden when locked)
                 Text(
                     text = if (profile.isLocked) {
-                        profile.tunnelType.displayName
+                        "Locked"
                     } else {
                         when (profile.tunnelType) {
                             TunnelType.DOH -> DOH_SERVERS.firstOrNull { it.url == profile.dohUrl }?.name
@@ -221,19 +221,17 @@ fun ProfileListItem(
                     overflow = TextOverflow.Ellipsis
                 )
 
-                // Detail line: tunnel type (hidden when locked — subtitle already shows it)
-                if (!profile.isLocked) {
-                    Text(
-                        text = when (profile.tunnelType) {
-                            TunnelType.SNOWFLAKE -> EditProfileViewModel.detectBridgeType(profile.torBridgeLines).displayName
-                            else -> profile.tunnelType.displayName
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                // Detail line: tunnel type
+                Text(
+                    text = when (profile.tunnelType) {
+                        TunnelType.SNOWFLAKE -> EditProfileViewModel.detectBridgeType(profile.torBridgeLines).displayName
+                        else -> profile.tunnelType.displayName
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
             // Action buttons (compact)
