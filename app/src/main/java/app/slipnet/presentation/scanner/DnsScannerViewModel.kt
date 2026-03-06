@@ -868,12 +868,14 @@ class DnsScannerViewModel @Inject constructor(
         // For the default list, always fetch original order so famous resolvers stay at the top.
         val resolvers = if (state.shuffleList && state.listSource == ListSource.DEFAULT) {
             val defaultResolvers = scannerRepository.getDefaultResolvers()
-            val priorityCount = scannerRepository.getDefaultResolverPriorityCount()
-            val secondaryCount = scannerRepository.getDefaultResolverSecondaryCount()
-            Log.d("DnsScanner", "Shuffle default: priorityCount=$priorityCount, secondaryCount=$secondaryCount, total=${defaultResolvers.size}, first5=${defaultResolvers.take(5)}")
-            defaultResolvers.take(priorityCount) +
-                defaultResolvers.drop(priorityCount).take(secondaryCount).shuffled() +
-                defaultResolvers.drop(priorityCount + secondaryCount).shuffled()
+            val boundaries = scannerRepository.getDefaultResolverTierBoundaries()
+            Log.d("DnsScanner", "Shuffle default: tiers=${boundaries.size + 1}, boundaries=$boundaries, total=${defaultResolvers.size}")
+            // First tier (before first marker) stays in order; all others are shuffled
+            val indices = listOf(0) + boundaries + listOf(defaultResolvers.size)
+            indices.zipWithNext().flatMapIndexed { i, (from, to) ->
+                val tier = defaultResolvers.subList(from, to)
+                if (i == 0) tier else tier.shuffled()
+            }
         } else if (state.shuffleList) {
             state.resolverList.shuffled()
         } else {

@@ -395,7 +395,7 @@ fun EditProfileScreen(
                                 )
 
                                 if (onNavigateToScanner != null) {
-                                    OutlinedButton(
+                                    Button(
                                         onClick = { viewModel.saveForScanner() },
                                         modifier = Modifier.fillMaxWidth(),
                                         shape = RoundedCornerShape(10.dp)
@@ -621,38 +621,6 @@ fun EditProfileScreen(
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Surface(
-                        onClick = {
-                            val intent = android.content.Intent(
-                                android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse("https://github.com/anonvector/slipgate")
-                            )
-                            context.startActivity(intent)
-                        },
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 12.dp, horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.OpenInNew,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "Server setup guide",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
                 }
 
                 // SSH Port (shown only for SSH-only, near domain)
@@ -753,42 +721,6 @@ fun EditProfileScreen(
                     }
                 }
 
-                // NoizDNS server setup guide
-                if (uiState.isNoizdnsBased) {
-                    Surface(
-                        onClick = {
-                            val intent = android.content.Intent(
-                                android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse("https://github.com/anonvector/noizdns-deploy")
-                            )
-                            context.startActivity(intent)
-                        },
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 12.dp, horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.OpenInNew,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "Server setup guide",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                }
-
                 // NoizDNS stealth mode toggle
                 if (uiState.isNoizdnsBased) {
                     Row(
@@ -876,9 +808,10 @@ fun EditProfileScreen(
 
                     // Scan Resolvers button
                     if (onNavigateToScanner != null) {
-                        OutlinedButton(
+                        Button(
                             onClick = { viewModel.saveForScanner() },
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp)
                         ) {
                             Icon(Icons.Default.Search, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
@@ -1432,6 +1365,60 @@ fun EditProfileScreen(
                             },
                             modifier = Modifier.fillMaxWidth()
                         )
+                    }
+                }
+
+                // Server setup guide
+                if (uiState.isNoizdnsBased || uiState.isNaiveBased || uiState.isSlipstreamBased) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    val guideUrl = when {
+                        uiState.isNoizdnsBased -> "https://github.com/anonvector/noizdns-deploy"
+                        uiState.isNaiveBased -> "https://github.com/anonvector/slipgate"
+                        uiState.isSlipstreamBased -> "https://github.com/anonvector/slipgate"
+                        else -> null
+                    }
+                    val guideLabel = when {
+                        uiState.isNoizdnsBased -> "NoizDNS Server Setup Guide"
+                        uiState.isNaiveBased -> "NaiveProxy Server Setup Guide"
+                        uiState.isSlipstreamBased -> "Slipstream Server Setup Guide"
+                        else -> null
+                    }
+                    if (guideUrl != null && guideLabel != null) {
+                        Surface(
+                            onClick = {
+                                val intent = android.content.Intent(
+                                    android.content.Intent.ACTION_VIEW,
+                                    android.net.Uri.parse(guideUrl)
+                                )
+                                context.startActivity(intent)
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 14.dp, horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.OpenInNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    guideLabel,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
                     }
                 }
 

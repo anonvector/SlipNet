@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
@@ -151,6 +152,11 @@ fun ScanResultsScreen(
     // null = no dialog, "copy" or "export" = pending action
     var pendingAction by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    BackHandler {
+        viewModel.stopScan()
+        onNavigateBack()
+    }
 
     LaunchedEffect(uiState.error) {
         uiState.error?.let { error ->

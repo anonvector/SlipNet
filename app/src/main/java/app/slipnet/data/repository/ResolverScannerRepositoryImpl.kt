@@ -46,32 +46,23 @@ class ResolverScannerRepositoryImpl @Inject constructor(
 ) : ResolverScannerRepository {
 
     private var cachedResolvers: List<String>? = null
-    private var cachedPriorityCount: Int = 0
-    private var cachedSecondaryCount: Int = 0
+    private var cachedTierBoundaries: List<Int> = emptyList()
 
     override fun getDefaultResolvers(): List<String> {
-        // Return cached list if available
         cachedResolvers?.let { return it }
 
-        // Load from raw resource file; supports two "# SHUFFLE_BELOW" markers:
+        // Load from raw resource file; supports N "# SHUFFLE_BELOW" markers:
         // - Before first marker: top priority resolvers (not shuffled, scanned first)
-        // - Between first and second marker: secondary resolvers (shuffled, scanned second)
-        // - After second marker: remaining resolvers (shuffled, scanned last)
+        // - Between consecutive markers: independent tiers (each shuffled separately)
+        // - After last marker: remaining resolvers (shuffled, scanned last)
         val resolvers = mutableListOf<String>()
-        var markerCount = 0
-        var firstMarkerIndex = 0
-        var secondMarkerIndex = 0
+        val boundaries = mutableListOf<Int>()
         try {
             context.resources.openRawResource(R.raw.resolvers).bufferedReader().useLines { lines ->
                 for (line in lines) {
                     val trimmed = line.trim()
                     if (trimmed == "# SHUFFLE_BELOW") {
-                        markerCount++
-                        if (markerCount == 1) {
-                            firstMarkerIndex = resolvers.size
-                        } else if (markerCount == 2) {
-                            secondMarkerIndex = resolvers.size
-                        }
+                        boundaries.add(resolvers.size)
                         continue
                     }
                     if (trimmed.isNotBlank() && !trimmed.startsWith("#") && isValidIpAddress(trimmed)) {
@@ -80,32 +71,18 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 }
             }
         } catch (e: Exception) {
-            // Fallback to basic public DNS if resource loading fails
             return listOf("8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1")
         }
 
-        if (markerCount == 0) {
-            firstMarkerIndex = 0
-            secondMarkerIndex = 0
-        } else if (markerCount == 1) {
-            // Single marker: treat as priority count, no secondary section
-            secondMarkerIndex = resolvers.size
-        }
-        cachedPriorityCount = firstMarkerIndex
-        cachedSecondaryCount = secondMarkerIndex - firstMarkerIndex
+        cachedTierBoundaries = boundaries
         cachedResolvers = resolvers
-        Log.d("ResolverScanner", "Parsed ${resolvers.size} resolvers, priorityCount=$firstMarkerIndex, secondaryCount=${cachedSecondaryCount}, markers=$markerCount, first5=${resolvers.take(5)}")
+        Log.d("ResolverScanner", "Parsed ${resolvers.size} resolvers, tiers=${boundaries.size + 1}, boundaries=$boundaries, first5=${resolvers.take(5)}")
         return resolvers
     }
 
-    override fun getDefaultResolverPriorityCount(): Int {
+    override fun getDefaultResolverTierBoundaries(): List<Int> {
         if (cachedResolvers == null) getDefaultResolvers()
-        return cachedPriorityCount
-    }
-
-    override fun getDefaultResolverSecondaryCount(): Int {
-        if (cachedResolvers == null) getDefaultResolvers()
-        return cachedSecondaryCount
+        return cachedTierBoundaries
     }
 
     override fun parseResolverList(content: String): List<String> {

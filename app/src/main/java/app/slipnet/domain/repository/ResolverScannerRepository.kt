@@ -16,15 +16,12 @@ interface ResolverScannerRepository {
     fun getDefaultResolvers(): List<String>
 
     /**
-     * Number of priority (famous) resolvers at the top of the default list that should not be shuffled.
+     * Tier boundaries from `# SHUFFLE_BELOW` markers in the resolver list.
+     * Returns indices where each marker appeared. Items before the first marker are
+     * never shuffled; items between consecutive markers form independent shuffle tiers.
+     * Example: markers at [10, 50] → tier 0 (0..9, unshuffled), tier 1 (10..49, shuffled), tier 2 (50..end, shuffled)
      */
-    fun getDefaultResolverPriorityCount(): Int
-
-    /**
-     * Number of secondary resolvers (between first and second SHUFFLE_BELOW markers) that are
-     * shuffled independently and scanned before the remaining resolvers.
-     */
-    fun getDefaultResolverSecondaryCount(): Int
+    fun getDefaultResolverTierBoundaries(): List<Int>
 
     /**
      * Parse a text file content into a list of IP addresses
