@@ -74,7 +74,7 @@ data class DnsScannerUiState(
     // E2E tunnel test state
     val e2eScannerState: E2eScannerState = E2eScannerState(),
     val testUrl: String = "http://www.gstatic.com/generate_204",
-    val e2eTimeoutMs: String = "7000",
+    val e2eTimeoutMs: String = "9000",
     val isVpnActive: Boolean = false,
     val profile: ServerProfile? = null,
     // Simple scan mode
@@ -1169,7 +1169,7 @@ class DnsScannerViewModel @Inject constructor(
             var testedCount = startTestedCount
             var passedCount = startPassedCount
             val testUrl = _uiState.value.testUrl
-            val e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 7000L
+            val e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 9000L
 
             for ((host, port) in channel) {
                 _uiState.value = _uiState.value.copy(
@@ -1481,7 +1481,7 @@ class DnsScannerViewModel @Inject constructor(
             var testedCount = 0
             var passedCount = 0
             val testUrl = _uiState.value.testUrl
-            val e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 7000L
+            val e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 9000L
 
             for ((host, port) in channel) {
                 _uiState.value = _uiState.value.copy(

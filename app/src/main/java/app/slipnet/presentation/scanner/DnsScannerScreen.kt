@@ -500,7 +500,7 @@ private fun ConfigurationSection(
     shuffleList: Boolean = false,
     expandNeighbors: Boolean = true,
     testUrl: String = "",
-    e2eTimeoutMs: String = "7000",
+    e2eTimeoutMs: String = "9000",
     showTestUrl: Boolean = false,
     onTestDomainChange: (String) -> Unit,
     onTimeoutChange: (String) -> Unit,
@@ -674,7 +674,7 @@ private fun ConfigurationSection(
                     value = e2eTimeoutMs,
                     onValueChange = { onE2eTimeoutChange(it.filter { c -> c.isDigit() }) },
                     label = { Text("E2E Timeout (ms)") },
-                    placeholder = { Text("7000") },
+                    placeholder = { Text("9000") },
                     leadingIcon = {
                         Icon(
                             Icons.Default.Schedule,
