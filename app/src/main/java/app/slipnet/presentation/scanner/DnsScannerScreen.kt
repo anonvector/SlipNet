@@ -160,7 +160,7 @@ fun DnsScannerScreen(
         val dialogText = if (isSimple) {
             val e2e = uiState.simpleModeE2eState
             buildString {
-                append("You scanned ${ss.scannedCount} of ${ss.totalCount} resolvers")
+                append("You scanned ${ss.scannedCount} of ${ss.totalCount}${if (ss.focusRangeCount > 0) " + ${ss.focusRangeCount} neighbors" else ""} resolvers")
                 append(" and found ${ss.workingCount} working.")
                 if (e2e.testedCount > 0) {
                     append(" E2E tested ${e2e.testedCount}, ${e2e.passedCount} passed.")
@@ -168,7 +168,7 @@ fun DnsScannerScreen(
                 append(" Continue from where you left off?")
             }
         } else {
-            "You scanned ${ss.scannedCount} of ${ss.totalCount} resolvers" +
+            "You scanned ${ss.scannedCount} of ${ss.totalCount}${if (ss.focusRangeCount > 0) " + ${ss.focusRangeCount} neighbors" else ""} resolvers" +
                     " and found ${ss.workingCount} working." +
                     " Continue from where you left off?"
         }

@@ -120,8 +120,12 @@ data class ScannerState(
     val totalCount: Int = 0,
     val scannedCount: Int = 0,
     val workingCount: Int = 0,
+    val timeoutCount: Int = 0,
+    val errorCount: Int = 0,
+    val focusRangeCount: Int = 0,
+    /** Only WORKING results are kept in memory to avoid OOM on large scans. */
     val results: List<ResolverScanResult> = emptyList()
 ) {
     val progress: Float
-        get() = if (totalCount > 0) scannedCount.toFloat() / totalCount else 0f
+        get() = if (totalCount + focusRangeCount > 0) scannedCount.toFloat() / (totalCount + focusRangeCount) else 0f
 }

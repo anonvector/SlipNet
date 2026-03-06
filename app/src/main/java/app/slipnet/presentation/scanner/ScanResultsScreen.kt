@@ -230,7 +230,7 @@ fun ScanResultsScreen(
                             val e2e = uiState.simpleModeE2eState
                             val scanState = uiState.scannerState
                             val subtitle = if (scanState.isScanning || e2e.isRunning) {
-                                "DNS: ${scanState.scannedCount}/${scanState.totalCount} — E2E: ${e2e.testedCount}/${e2e.queuedCount} (${e2e.passedCount} passed)"
+                                "DNS: ${scanState.scannedCount}/${scanState.totalCount}${if (scanState.focusRangeCount > 0) " + ${scanState.focusRangeCount} neighbors" else ""} — E2E: ${e2e.testedCount}/${e2e.queuedCount} (${e2e.passedCount} passed)"
                             } else if (e2e.testedCount > 0) {
                                 "${e2e.passedCount} passed of ${e2e.testedCount} tested"
                             } else null
@@ -243,7 +243,7 @@ fun ScanResultsScreen(
                             }
                         } else if (uiState.scannerState.isScanning) {
                             Text(
-                                text = "Scanning ${uiState.scannerState.scannedCount} of ${uiState.scannerState.totalCount}...",
+                                text = "Scanning ${uiState.scannerState.scannedCount} of ${uiState.scannerState.totalCount}${if (uiState.scannerState.focusRangeCount > 0) " + ${uiState.scannerState.focusRangeCount} neighbors" else ""}...",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.primary
                             )
@@ -577,6 +577,8 @@ fun ScanResultsScreen(
                                 isSelected = isSelected,
                                 isLimitReached = uiState.isSelectionLimitReached,
                                 showSelection = canApply,
+                                isE2eTesting = uiState.e2eScannerState.isRunning && uiState.e2eScannerState.currentResolver == result.host,
+                                e2ePhase = if (uiState.e2eScannerState.currentResolver == result.host) uiState.e2eScannerState.currentPhase else null,
                                 onToggleSelection = if (canApply) {
                                     { viewModel.toggleResolverSelection(result.host) }
                                 } else null
@@ -1151,7 +1153,7 @@ private fun SimpleModeProgressSection(
                     ResultsStatChip(
                         icon = Icons.Default.Search,
                         label = "Scanned",
-                        value = "${scannerState.scannedCount}/${scannerState.totalCount}",
+                        value = "${scannerState.scannedCount}/${scannerState.totalCount}${if (scannerState.focusRangeCount > 0) " + ${scannerState.focusRangeCount}" else ""}",
                         color = MaterialTheme.colorScheme.secondary
                     )
                     ResultsStatChip(
@@ -1381,6 +1383,8 @@ private fun ResultsResolverItem(
     isSelected: Boolean,
     isLimitReached: Boolean = false,
     showSelection: Boolean = true,
+    isE2eTesting: Boolean = false,
+    e2ePhase: String? = null,
     onToggleSelection: (() -> Unit)? = null
 ) {
     val isDisabled = isLimitReached && !isSelected
@@ -1388,6 +1392,7 @@ private fun ResultsResolverItem(
 
     val backgroundColor by animateColorAsState(
         targetValue = when {
+            isE2eTesting -> MaterialTheme.colorScheme.tertiaryContainer
             isSelected && showSelection -> MaterialTheme.colorScheme.primaryContainer
             else -> MaterialTheme.colorScheme.surfaceContainerLow
         },
@@ -1476,9 +1481,28 @@ private fun ResultsResolverItem(
                     )
                 }
 
+                // E2E tunnel test: currently testing indicator
+                if (isE2eTesting) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                        Text(
+                            text = "E2E: ${e2ePhase ?: "testing..."}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                }
+
                 // E2E tunnel test result
                 result.e2eTestResult?.let { e2e ->
-                    E2eResultRow(e2e)
+                    E2eResultChip(e2e)
                 }
             }
 
@@ -1494,37 +1518,41 @@ private fun ResultsResolverItem(
 }
 
 @Composable
-private fun E2eResultRow(e2e: E2eTestResult) {
-    if (e2e.success) {
+private fun E2eResultChip(e2e: E2eTestResult) {
+    val bgColor = if (e2e.success) WorkingGreen.copy(alpha = 0.12f) else ErrorRed.copy(alpha = 0.12f)
+    val textColor = if (e2e.success) WorkingGreen else ErrorRed
+
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = bgColor
+    ) {
         Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "E2E ${e2e.totalMs}ms",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = WorkingGreen
-            )
-        }
-    } else {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "E2E",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = ErrorRed
-            )
-            Text(
-                text = e2e.errorMessage ?: "Failed",
-                style = MaterialTheme.typography.labelSmall,
-                color = ErrorRed,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            if (e2e.success) {
+                Text(
+                    text = "E2E ${e2e.totalMs}ms",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = textColor
+                )
+            } else {
+                Text(
+                    text = "E2E",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = textColor
+                )
+                Text(
+                    text = e2e.errorMessage ?: "Failed",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = textColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
