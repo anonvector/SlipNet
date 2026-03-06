@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import app.slipnet.R
 import app.slipnet.SlipNetApp
@@ -29,6 +30,19 @@ class NotificationHelper @Inject constructor(
         const val AUTO_RECONNECT_NOTIFICATION_ID = 4
         const val PROBE_FAIL_NOTIFICATION_ID = 5
         private const val REQUEST_CODE_PROBE_RECONNECT = 105
+    }
+
+    private fun createServicePendingIntent(
+        requestCode: Int,
+        intent: Intent,
+        foreground: Boolean = false
+    ): PendingIntent {
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        return if (foreground && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(context, requestCode, intent, flags)
+        } else {
+            PendingIntent.getService(context, requestCode, intent, flags)
+        }
     }
 
     fun createVpnNotification(
@@ -69,11 +83,9 @@ class NotificationHelper @Inject constructor(
                 val disconnectIntent = Intent(context, SlipNetVpnService::class.java).apply {
                     action = SlipNetVpnService.ACTION_DISCONNECT
                 }
-                val disconnectPendingIntent = PendingIntent.getService(
-                    context,
-                    REQUEST_CODE_DISCONNECT,
-                    disconnectIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                val disconnectPendingIntent = createServicePendingIntent(
+                    requestCode = REQUEST_CODE_DISCONNECT,
+                    intent = disconnectIntent
                 )
 
                 builder
@@ -115,11 +127,9 @@ class NotificationHelper @Inject constructor(
         val disconnectIntent = Intent(context, SlipNetVpnService::class.java).apply {
             action = SlipNetVpnService.ACTION_DISCONNECT
         }
-        val disconnectPendingIntent = PendingIntent.getService(
-            context,
-            REQUEST_CODE_DISCONNECT,
-            disconnectIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val disconnectPendingIntent = createServicePendingIntent(
+            requestCode = REQUEST_CODE_DISCONNECT,
+            intent = disconnectIntent
         )
 
         return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_VPN_STATUS)
@@ -153,11 +163,9 @@ class NotificationHelper @Inject constructor(
         val disconnectIntent = Intent(context, SlipNetVpnService::class.java).apply {
             action = SlipNetVpnService.ACTION_DISCONNECT
         }
-        val disconnectPendingIntent = PendingIntent.getService(
-            context,
-            REQUEST_CODE_AUTO_RECONNECT_CANCEL,
-            disconnectIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val disconnectPendingIntent = createServicePendingIntent(
+            requestCode = REQUEST_CODE_AUTO_RECONNECT_CANCEL,
+            intent = disconnectIntent
         )
 
         return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_VPN_STATUS)
@@ -191,11 +199,10 @@ class NotificationHelper @Inject constructor(
             action = SlipNetVpnService.ACTION_CONNECT
             putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profileId)
         }
-        val reconnectPendingIntent = PendingIntent.getService(
-            context,
-            REQUEST_CODE_RECONNECT,
-            reconnectIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val reconnectPendingIntent = createServicePendingIntent(
+            requestCode = REQUEST_CODE_RECONNECT,
+            intent = reconnectIntent,
+            foreground = true
         )
 
         return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_CONNECTION_EVENTS)
@@ -255,11 +262,10 @@ class NotificationHelper @Inject constructor(
             action = SlipNetVpnService.ACTION_CONNECT
             putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profileId)
         }
-        val reconnectPendingIntent = PendingIntent.getService(
-            context,
-            REQUEST_CODE_RECONNECT_DISCONNECT,
-            reconnectIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val reconnectPendingIntent = createServicePendingIntent(
+            requestCode = REQUEST_CODE_RECONNECT_DISCONNECT,
+            intent = reconnectIntent,
+            foreground = true
         )
 
         return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_CONNECTION_EVENTS)
@@ -288,11 +294,10 @@ class NotificationHelper @Inject constructor(
             action = SlipNetVpnService.ACTION_CONNECT
             putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profileId)
         }
-        val reconnectPendingIntent = PendingIntent.getService(
-            context,
-            REQUEST_CODE_PROBE_RECONNECT,
-            reconnectIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val reconnectPendingIntent = createServicePendingIntent(
+            requestCode = REQUEST_CODE_PROBE_RECONNECT,
+            intent = reconnectIntent,
+            foreground = true
         )
 
         return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_CONNECTION_EVENTS)

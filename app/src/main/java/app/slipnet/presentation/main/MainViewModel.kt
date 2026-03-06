@@ -270,12 +270,12 @@ class MainViewModel @Inject constructor(
             val lastCheck = preferencesDataStore.lastUpdateCheckTime.first()
             val now = System.currentTimeMillis()
             if (now - lastCheck < app.slipnet.util.UpdateChecker.CHECK_INTERVAL_MS) return@launch
+            preferencesDataStore.setLastUpdateCheckTime(now)
 
             val skipped = preferencesDataStore.skippedUpdateVersion.first()
             val current = app.slipnet.BuildConfig.VERSION_NAME
 
             val update = app.slipnet.util.UpdateChecker.check(current) ?: return@launch
-            preferencesDataStore.setLastUpdateCheckTime(now)
 
             // Don't show if user already skipped this version
             if (update.versionName == skipped) return@launch

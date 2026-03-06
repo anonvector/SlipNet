@@ -6,18 +6,12 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.net.VpnService
 import android.view.View
 import android.widget.RemoteViews
 import app.slipnet.R
 import app.slipnet.domain.model.ConnectionState
-import app.slipnet.presentation.MainActivity
 import app.slipnet.service.VpnConnectionManager
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -25,8 +19,6 @@ class VpnWidgetProvider : AppWidgetProvider() {
 
     @Inject
     lateinit var connectionManager: VpnConnectionManager
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onUpdate(
         context: Context,
@@ -45,53 +37,7 @@ class VpnWidgetProvider : AppWidgetProvider() {
         }
     }
 
-    override fun onReceive(context: Context, intent: Intent) {
-        super.onReceive(context, intent)
-
-        if (intent.action == ACTION_TOGGLE_VPN) {
-            handleToggle(context)
-        }
-    }
-
-    private fun handleToggle(context: Context) {
-        if (!::connectionManager.isInitialized) return
-
-        scope.launch {
-            val currentState = connectionManager.connectionState.value
-
-            when (currentState) {
-                is ConnectionState.Connected,
-                is ConnectionState.Connecting -> {
-                    connectionManager.disconnect()
-                }
-                is ConnectionState.Disconnected,
-                is ConnectionState.Error -> {
-                    val profile = connectionManager.getActiveProfile()
-                        ?: connectionManager.getLastConnectedProfile()
-                        ?: return@launch
-
-                    val vpnIntent = VpnService.prepare(context)
-                    if (vpnIntent != null) {
-                        // Need VPN permission — open the app
-                        val appIntent = Intent(context, MainActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        context.startActivity(appIntent)
-                        return@launch
-                    }
-
-                    connectionManager.connect(profile)
-                }
-                is ConnectionState.Disconnecting -> {
-                    // Wait for disconnect to complete
-                }
-            }
-        }
-    }
-
     companion object {
-        const val ACTION_TOGGLE_VPN = "app.slipnet.widget.TOGGLE_VPN"
-
         fun notifyStateChanged(context: Context, state: ConnectionState) {
             val appWidgetManager = AppWidgetManager.getInstance(context) ?: return
             val componentName = ComponentName(context, VpnWidgetProvider::class.java)
@@ -109,8 +55,8 @@ class VpnWidgetProvider : AppWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.widget_vpn_toggle)
 
             // Set tap action
-            val toggleIntent = Intent(context, VpnWidgetProvider::class.java).apply {
-                action = ACTION_TOGGLE_VPN
+            val toggleIntent = Intent(context, VpnWidgetToggleReceiver::class.java).apply {
+                action = VpnWidgetToggleReceiver.ACTION_TOGGLE_VPN
             }
             val pendingIntent = PendingIntent.getBroadcast(
                 context, 0, toggleIntent,
