@@ -122,8 +122,11 @@ jobs:
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           echo "CONFIG_ENCRYPTION_KEY=$CONFIG_ENCRYPTION_KEY" >> local.properties
 
-      - name: Build Release APK
-        run: ./gradlew assembleRelease --no-daemon
+      - name: Build Full Release APK
+        run: ./gradlew assembleFullRelease --no-daemon
+
+      - name: Build Lite Release APK
+        run: ./gradlew assembleLiteRelease --no-daemon
 
       - name: Collect release APKs
         run: |
