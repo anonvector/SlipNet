@@ -1,5 +1,6 @@
 package app.slipnet.presentation.scanner
 
+import android.os.PowerManager
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -67,6 +68,7 @@ data class DnsScannerUiState(
     val cidrGroups: List<CidrGroup> = emptyList(),
     val selectedOctets: Set<Int> = emptySet(),
     val shuffleList: Boolean = true,
+    val expandNeighbors: Boolean = true,
     val showResumeDialog: Boolean = false,
     val transparentProxyDetected: Boolean = false,
     // E2E tunnel test state
@@ -242,6 +244,26 @@ class DnsScannerViewModel @Inject constructor(
     private var simpleModeChannel: Channel<Pair<String, Int>>? = null
     private var simpleModeE2eJob: Job? = null
     private val gson = Gson()
+
+    // Wake lock to keep CPU alive during scanning when app is backgrounded
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val pm = appContext.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SlipNet:ScanWakeLock").apply {
+            acquire(60 * 60 * 1000L) // 60-min safety timeout
+        }
+        Log.d("DnsScanner", "WakeLock acquired")
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+            Log.d("DnsScanner", "WakeLock released")
+        }
+        wakeLock = null
+    }
 
     init {
         loadSavedSession()
@@ -692,6 +714,10 @@ class DnsScannerViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(shuffleList = enabled)
     }
 
+    fun updateExpandNeighbors(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(expandNeighbors = enabled)
+    }
+
     fun setScanMode(mode: ScanMode) {
         val state = _uiState.value
         if (state.scannerState.isScanning || state.e2eScannerState.isRunning || state.simpleModeE2eState.isRunning) return
@@ -830,6 +856,7 @@ class DnsScannerViewModel @Inject constructor(
     }
 
     fun startFreshScan() {
+        acquireWakeLock()
         _uiState.value = _uiState.value.copy(showResumeDialog = false)
         clearSavedSession()
 
@@ -898,6 +925,7 @@ class DnsScannerViewModel @Inject constructor(
     }
 
     fun resumeScan() {
+        acquireWakeLock()
         _uiState.value = _uiState.value.copy(showResumeDialog = false)
         clearSavedSession()
 
@@ -928,6 +956,7 @@ class DnsScannerViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 scannerState = state.scannerState.copy(isScanning = false)
             )
+            releaseWakeLock()
             return
         }
 
@@ -963,11 +992,13 @@ class DnsScannerViewModel @Inject constructor(
         val state = _uiState.value
         val profile = state.profile ?: run {
             _uiState.value = state.copy(error = "No profile loaded")
+            releaseWakeLock()
             return
         }
 
         if (vpnRepository.isConnected()) {
             _uiState.value = state.copy(error = "Disconnect VPN before running Simple Scan")
+            releaseWakeLock()
             return
         }
 
@@ -1001,6 +1032,7 @@ class DnsScannerViewModel @Inject constructor(
                 scannerState = state.scannerState.copy(isScanning = false),
                 simpleModeE2eState = state.simpleModeE2eState.copy(isRunning = false)
             )
+            releaseWakeLock()
             return
         }
 
@@ -1048,7 +1080,7 @@ class DnsScannerViewModel @Inject constructor(
         if (hasDnsWork) {
             scanJob = viewModelScope.launch {
                 val scannedSet = state.resolverList.toMutableSet()
-                val useFocusRange = state.listSource in listOf(ListSource.COUNTRY_RANGE, ListSource.CUSTOM_RANGE)
+                val useFocusRange = state.expandNeighbors && state.listSource in listOf(ListSource.COUNTRY_RANGE, ListSource.CUSTOM_RANGE)
                 val focusRangeQueue = mutableListOf<String>()
                 val expandedSubnets = mutableSetOf<String>()
                 val maxFocusRange = 5000
@@ -1220,7 +1252,7 @@ class DnsScannerViewModel @Inject constructor(
             var uiUpdateCounter = 0
 
             // Focus range: collect /24 neighbors of working resolvers (capped at 5000)
-            val useFocusRange = _uiState.value.listSource in listOf(ListSource.COUNTRY_RANGE, ListSource.CUSTOM_RANGE)
+            val useFocusRange = _uiState.value.expandNeighbors && _uiState.value.listSource in listOf(ListSource.COUNTRY_RANGE, ListSource.CUSTOM_RANGE)
             val focusRangeQueue = mutableListOf<String>()
             val expandedSubnets = mutableSetOf<String>()
             val maxFocusRange = 5000
@@ -1302,6 +1334,7 @@ class DnsScannerViewModel @Inject constructor(
 
             emitState(false)
             clearSavedSession()
+            releaseWakeLock()
         }
     }
 
@@ -1348,7 +1381,7 @@ class DnsScannerViewModel @Inject constructor(
         // Coroutine 1: DNS scan — produces working resolver candidates
         scanJob = viewModelScope.launch {
             val scannedSet = allHostsMutable.toMutableSet()
-            val useFocusRange = _uiState.value.listSource in listOf(ListSource.COUNTRY_RANGE, ListSource.CUSTOM_RANGE)
+            val useFocusRange = _uiState.value.expandNeighbors && _uiState.value.listSource in listOf(ListSource.COUNTRY_RANGE, ListSource.CUSTOM_RANGE)
             val focusRangeQueue = mutableListOf<String>()
             val expandedSubnets = mutableSetOf<String>()
             val maxFocusRange = 5000
@@ -1498,10 +1531,12 @@ class DnsScannerViewModel @Inject constructor(
                     currentPhase = ""
                 )
             )
+            releaseWakeLock()
         }
     }
 
     fun stopScan() {
+        releaseWakeLock()
         val isSimpleMode = _uiState.value.scanMode == ScanMode.SIMPLE
         scanJob?.cancel()
         if (isSimpleMode) {
@@ -1587,6 +1622,7 @@ class DnsScannerViewModel @Inject constructor(
         val startPassedCount = if (fresh) 0
         else allWorking.count { it.e2eTestResult?.success == true }
 
+        acquireWakeLock()
         _uiState.value = _uiState.value.copy(
             e2eScannerState = E2eScannerState(
                 isRunning = true,
@@ -1637,10 +1673,12 @@ class DnsScannerViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 e2eScannerState = _uiState.value.e2eScannerState.copy(isRunning = false)
             )
+            releaseWakeLock()
         }
     }
 
     fun stopE2eTest() {
+        releaseWakeLock()
         e2eJob?.cancel()
         _uiState.value = _uiState.value.copy(
             e2eScannerState = _uiState.value.e2eScannerState.copy(
@@ -1681,6 +1719,7 @@ class DnsScannerViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        releaseWakeLock()
         scanJob?.cancel()
         e2eJob?.cancel()
         simpleModeChannel?.close()

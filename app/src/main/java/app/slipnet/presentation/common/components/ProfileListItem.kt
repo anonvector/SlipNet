@@ -114,7 +114,8 @@ fun ProfileListItem(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     if (profile.isLocked) {
                         Spacer(modifier = Modifier.width(6.dp))

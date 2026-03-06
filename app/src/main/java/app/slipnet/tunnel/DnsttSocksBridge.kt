@@ -42,6 +42,7 @@ object DnsttSocksBridge {
     private const val BIND_RETRY_DELAY_MS = 200L
     private const val BUFFER_SIZE = 65536  // 64KB for better throughput
     private const val TCP_CONNECT_TIMEOUT_MS = 10000
+    private const val RELAY_IDLE_TIMEOUT_MS = 300_000  // 5 min idle timeout for relay sockets
     private const val DNS_POOL_SIZE_DEFAULT = 5
     private const val DNS_POOL_SIZE_AUTHORITATIVE = 10
     private const val DNS_KEEPALIVE_INTERVAL_MS = 40_000L
@@ -755,16 +756,18 @@ object DnsttSocksBridge {
             clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
             clientOutput.flush()
 
-            clientSocket.soTimeout = 0
+            clientSocket.soTimeout = RELAY_IDLE_TIMEOUT_MS
+            remoteSocket.soTimeout = RELAY_IDLE_TIMEOUT_MS
 
             // Bridge bidirectionally
             remoteSocket.use { remote ->
                 val t1 = Thread({
                     try {
                         copyStream(clientInput, remoteOutput)
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
+                        logd("dnstt-bridge-c2s: ${e.message}")
                     } finally {
-                        try { remoteOutput.close() } catch (_: Exception) {}
+                        try { remote.shutdownOutput() } catch (_: Exception) {}
                     }
                 }, "dnstt-bridge-c2s")
                 t1.isDaemon = true
@@ -772,11 +775,13 @@ object DnsttSocksBridge {
 
                 try {
                     copyStream(remoteInput, clientOutput)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    logd("dnstt-bridge-s2c: ${e.message}")
                 } finally {
+                    try { clientSocket.shutdownOutput() } catch (_: Exception) {}
+                    t1.join(5000)
                     try { remote.close() } catch (_: Exception) {}
                     remoteSockets.remove(remote)
-                    t1.interrupt()
                 }
             }
         } catch (e: Exception) {
@@ -1112,17 +1117,13 @@ object DnsttSocksBridge {
     }
 
     private fun copyStream(input: InputStream, output: OutputStream) {
-        val buffered = BufferedOutputStream(output, BUFFER_SIZE)
         val buffer = ByteArray(BUFFER_SIZE)
         while (!Thread.currentThread().isInterrupted) {
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) break
-            buffered.write(buffer, 0, bytesRead)
-            if (bytesRead < BUFFER_SIZE || input.available() == 0) {
-                buffered.flush()
-            }
+            output.write(buffer, 0, bytesRead)
+            output.flush()
         }
-        buffered.flush()
     }
 
     private fun InputStream.readFully(buffer: ByteArray) {

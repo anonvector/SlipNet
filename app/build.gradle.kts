@@ -14,8 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
-val appVersionName = "2.2.1"
-val appVersionCode = 36
+val appVersionName = "2.2.3"
+val appVersionCode = 38
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -104,9 +104,6 @@ android {
             versionNameSuffix = "-lite"
             buildConfigField("boolean", "INCLUDE_TOR", "false")
             buildConfigField("boolean", "INCLUDE_NAIVE", "false")
-            ndk {
-                abiFilters += "arm64-v8a"
-            }
         }
     }
 

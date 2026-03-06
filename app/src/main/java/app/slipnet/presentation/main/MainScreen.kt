@@ -188,6 +188,7 @@ fun MainScreen(
     var importText by remember { mutableStateOf("") }
     var showAddMenu by remember { mutableStateOf(false) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
+    var showDeleteDuplicatesDialog by remember { mutableStateOf(false) }
     var profileToDelete by remember { mutableStateOf<ServerProfile?>(null) }
     // Export lock dialog state
     var exportLockProfile by remember { mutableStateOf<ServerProfile?>(null) }
@@ -406,6 +407,14 @@ fun MainScreen(
                                     showOverflowMenu = false
                                     showImportDialog = true
                                 }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete Duplicate Profiles") },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    showDeleteDuplicatesDialog = true
+                                },
+                                enabled = uiState.profiles.size > 1
                             )
                             DropdownMenuItem(
                                 text = { Text("Delete All Profiles") },
@@ -804,6 +813,28 @@ fun MainScreen(
         )
     }
 
+    // Delete duplicate profiles confirmation dialog
+    if (showDeleteDuplicatesDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDuplicatesDialog = false },
+            title = { Text("Delete Duplicate Profiles") },
+            text = {
+                Text("This will remove profiles with identical connection settings, keeping one copy of each.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteDuplicateProfiles()
+                        showDeleteDuplicatesDialog = false
+                    }
+                ) { Text("Delete Duplicates") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDuplicatesDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     // Battery optimization dialog (shown once on first connect)
     if (showBatteryOptDialog) {
         AlertDialog(
@@ -1153,6 +1184,40 @@ fun MainScreen(
             confirmButton = {
                 TextButton(onClick = { viewModel.dismissFirstLaunchAbout() }) {
                     Text("Get Started")
+                }
+            }
+        )
+    }
+
+    // Update available dialog
+    uiState.availableUpdate?.let { update ->
+        val context = LocalContext.current
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissUpdate() },
+            title = { Text("Update Available") },
+            text = {
+                Text("Version ${update.versionName} is available. You are on ${BuildConfig.VERSION_NAME}.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.dismissUpdate()
+                    val intent = android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse(update.downloadUrl)
+                    )
+                    context.startActivity(intent)
+                }) {
+                    Text("Download")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { viewModel.skipUpdate() }) {
+                        Text("Skip")
+                    }
+                    TextButton(onClick = { viewModel.dismissUpdate() }) {
+                        Text("Later")
+                    }
                 }
             }
         )

@@ -34,7 +34,6 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
 
       - name: Cache Rust/Cargo
-        id: cache-rust
         uses: actions/cache@v4
         with:
           path: |
@@ -46,14 +45,12 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install Rust
-        if: steps.cache-rust.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi
 
       - name: Install cargo-ndk
-        if: steps.cache-rust.outputs.cache-hit != 'true'
-        run: cargo install cargo-ndk
+        run: cargo install cargo-ndk --locked
 
       - name: Cache OpenSSL
         id: cache-openssl
@@ -72,12 +69,12 @@ jobs:
 
       - name: Verify OpenSSL installation
         run: |
-          echo "Checking OpenSSL files..."
-          ls -la ~/android-openssl/android-ssl/
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-            echo "Checking $abi..."
-            ls -la ~/android-openssl/android-ssl/$abi/lib/
+          for abi in arm64-v8a armeabi-v7a; do
+            for lib in libssl.a libcrypto.a; do
+              test -f ~/android-openssl/android-ssl/$abi/lib/$lib || { echo "Missing $abi/lib/$lib"; exit 1; }
+            done
           done
+          echo "OpenSSL verification passed"
 
       - name: Cache Gradle packages
         uses: actions/cache@v4
@@ -108,12 +105,14 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          cat > keystore.properties << EOF
+          cat > keystore.properties <<EOF
           storeFile=../slipnet-release.keystore
           storePassword=$KEYSTORE_PASSWORD
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           EOF
+          # Strip leading whitespace from heredoc indentation
+          sed -i 's/^[[:space:]]*//' keystore.properties
 
       - name: Set up local.properties
         env:
@@ -131,10 +130,8 @@ jobs:
       - name: Collect release APKs
         run: |
           mkdir -p release-apks
-          # Full: all APKs (arm64, armeabi-v7a, universal)
           cp app/build/outputs/apk/full/release/SlipNet-*-full-*.apk release-apks/ 2>/dev/null || true
-          # Lite: universal only (arm64-only build)
-          cp app/build/outputs/apk/lite/release/SlipNet-*-lite-*-universal.apk release-apks/ 2>/dev/null || true
+          cp app/build/outputs/apk/lite/release/SlipNet-*-lite-*.apk release-apks/ 2>/dev/null || true
 
       - name: Upload Release APKs
         uses: actions/upload-artifact@v4
@@ -157,7 +154,7 @@ jobs:
           path: ./artifacts
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: ./artifacts/*.apk
           generate_release_notes: true

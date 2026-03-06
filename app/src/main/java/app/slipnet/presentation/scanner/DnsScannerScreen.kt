@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ShareLocation
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
@@ -256,6 +257,7 @@ fun DnsScannerScreen(
                 timeoutMs = uiState.timeoutMs,
                 concurrency = uiState.concurrency,
                 shuffleList = uiState.shuffleList,
+                expandNeighbors = uiState.expandNeighbors,
                 testUrl = uiState.testUrl,
                 e2eTimeoutMs = uiState.e2eTimeoutMs,
                 showTestUrl = uiState.profileId != null,
@@ -263,6 +265,7 @@ fun DnsScannerScreen(
                 onTimeoutChange = { viewModel.updateTimeout(it) },
                 onConcurrencyChange = { viewModel.updateConcurrency(it) },
                 onShuffleListChange = { viewModel.updateShuffleList(it) },
+                onExpandNeighborsChange = { viewModel.updateExpandNeighbors(it) },
                 onTestUrlChange = { viewModel.updateTestUrl(it) },
                 onE2eTimeoutChange = { viewModel.updateE2eTimeout(it) }
             )
@@ -495,6 +498,7 @@ private fun ConfigurationSection(
     timeoutMs: String,
     concurrency: String,
     shuffleList: Boolean = false,
+    expandNeighbors: Boolean = true,
     testUrl: String = "",
     e2eTimeoutMs: String = "7000",
     showTestUrl: Boolean = false,
@@ -502,6 +506,7 @@ private fun ConfigurationSection(
     onTimeoutChange: (String) -> Unit,
     onConcurrencyChange: (String) -> Unit,
     onShuffleListChange: (Boolean) -> Unit = {},
+    onExpandNeighborsChange: (Boolean) -> Unit = {},
     onTestUrlChange: (String) -> Unit = {},
     onE2eTimeoutChange: (String) -> Unit = {}
 ) {
@@ -610,6 +615,40 @@ private fun ConfigurationSection(
                 Switch(
                     checked = shuffleList,
                     onCheckedChange = onShuffleListChange
+                )
+            }
+
+            // Expand neighbors toggle
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.ShareLocation,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Scan neighboring IPs",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    Switch(
+                        checked = expandNeighbors,
+                        onCheckedChange = onExpandNeighborsChange
+                    )
+                }
+                Text(
+                    text = "Expands /24 subnets of working IPs. Only applies to country and custom range scans.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 

@@ -93,6 +93,9 @@ class PreferencesDataStore @Inject constructor(
         val SCANNER_COUNTRY = stringPreferencesKey("scanner_country")
         val SCANNER_SAMPLE_COUNT = intPreferencesKey("scanner_sample_count")
         val SCANNER_CUSTOM_RANGE = stringPreferencesKey("scanner_custom_range")
+        // Update Checker Keys
+        val SKIPPED_UPDATE_VERSION = stringPreferencesKey("skipped_update_version")
+        val LAST_UPDATE_CHECK_TIME = longPreferencesKey("last_update_check_time")
     }
 
     // Auto-connect on boot
@@ -666,6 +669,24 @@ class PreferencesDataStore @Inject constructor(
 
     suspend fun clearScanSession() = withContext(Dispatchers.IO) {
         scanSessionFile.delete()
+    }
+
+    // ── Update Checker ──────────────────────────────────────────────────
+
+    val skippedUpdateVersion: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SKIPPED_UPDATE_VERSION] ?: ""
+    }
+
+    val lastUpdateCheckTime: Flow<Long> = dataStore.data.map { prefs ->
+        prefs[Keys.LAST_UPDATE_CHECK_TIME] ?: 0L
+    }
+
+    suspend fun setSkippedUpdateVersion(version: String) {
+        dataStore.edit { it[Keys.SKIPPED_UPDATE_VERSION] = version }
+    }
+
+    suspend fun setLastUpdateCheckTime(time: Long) {
+        dataStore.edit { it[Keys.LAST_UPDATE_CHECK_TIME] = time }
     }
 }
 

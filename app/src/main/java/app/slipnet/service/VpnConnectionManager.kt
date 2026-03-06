@@ -156,6 +156,7 @@ class VpnConnectionManager @Inject constructor(
         }
     }
 
+
     fun refreshTrafficStats() {
         vpnRepository.refreshTrafficStats()
     }

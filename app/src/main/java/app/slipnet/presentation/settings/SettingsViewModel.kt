@@ -54,8 +54,18 @@ data class SettingsUiState(
     // Remote DNS Settings
     val remoteDnsMode: String = "default",
     val customRemoteDns: String = "",
-    val customRemoteDnsFallback: String = ""
+    val customRemoteDnsFallback: String = "",
+    // Update checker
+    val updateCheckResult: UpdateCheckResult = UpdateCheckResult.IDLE
 )
+
+enum class UpdateCheckResult {
+    IDLE,
+    CHECKING,
+    UP_TO_DATE,
+    UPDATE_AVAILABLE,
+    ERROR
+}
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -191,7 +201,8 @@ class SettingsViewModel @Inject constructor(
                     customRemoteDnsFallback = remoteDns.third
                 )
             }.collect { newState ->
-                _uiState.value = newState
+                // Preserve update check state across DataStore re-emissions
+                _uiState.value = newState.copy(updateCheckResult = _uiState.value.updateCheckResult)
             }
         }
     }
@@ -385,5 +396,28 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             preferencesDataStore.setCustomRemoteDnsFallback(dns)
         }
+    }
+
+    // ── Update Checker ──────────────────────────────────────────────────
+
+    var availableUpdate: app.slipnet.util.AppUpdate? = null
+        private set
+
+    fun checkForUpdate() {
+        _uiState.value = _uiState.value.copy(updateCheckResult = UpdateCheckResult.CHECKING)
+        viewModelScope.launch {
+            val current = app.slipnet.BuildConfig.VERSION_NAME
+            val update = app.slipnet.util.UpdateChecker.check(current)
+            availableUpdate = update
+            preferencesDataStore.setLastUpdateCheckTime(System.currentTimeMillis())
+            _uiState.value = _uiState.value.copy(
+                updateCheckResult = if (update != null) UpdateCheckResult.UPDATE_AVAILABLE
+                else UpdateCheckResult.UP_TO_DATE
+            )
+        }
+    }
+
+    fun clearUpdateCheck() {
+        _uiState.value = _uiState.value.copy(updateCheckResult = UpdateCheckResult.IDLE)
     }
 }

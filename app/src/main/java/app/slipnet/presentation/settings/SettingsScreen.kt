@@ -3,6 +3,7 @@ package app.slipnet.presentation.settings
 import android.content.Intent
 import android.net.Uri
 import android.os.PowerManager
+import androidx.compose.material3.CircularProgressIndicator
 import android.provider.Settings
 import app.slipnet.BuildConfig
 import app.slipnet.presentation.common.components.AboutDialogContent
@@ -614,13 +615,51 @@ fun SettingsScreen(
                 }
             }
 
-            // App Info
-            Text(
-                text = "SlipNet VPN v${BuildConfig.VERSION_NAME}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.align(Alignment.CenterHorizontally)
-            )
+            // App Info + Check for updates
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "SlipNet VPN v${BuildConfig.VERSION_NAME}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                when (uiState.updateCheckResult) {
+                    UpdateCheckResult.CHECKING -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                text = "Checking...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    UpdateCheckResult.UP_TO_DATE -> {
+                        Text(
+                            text = "You're up to date",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    else -> {
+                        TextButton(onClick = { viewModel.checkForUpdate() }) {
+                            Text(
+                                text = "Check for updates",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
         }
@@ -1002,6 +1041,38 @@ fun SettingsScreen(
                 }
             }
         )
+    }
+
+    // Update available dialog
+    if (uiState.updateCheckResult == UpdateCheckResult.UPDATE_AVAILABLE) {
+        val update = viewModel.availableUpdate
+        if (update != null) {
+            val context = LocalContext.current
+            AlertDialog(
+                onDismissRequest = { viewModel.clearUpdateCheck() },
+                title = { Text("Update Available") },
+                text = {
+                    Text("Version ${update.versionName} is available. You are on ${BuildConfig.VERSION_NAME}.")
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.clearUpdateCheck()
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse(update.downloadUrl)
+                        )
+                        context.startActivity(intent)
+                    }) {
+                        Text("Download")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.clearUpdateCheck() }) {
+                        Text("Later")
+                    }
+                }
+            )
+        }
     }
 }
 

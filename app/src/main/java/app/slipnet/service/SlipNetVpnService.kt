@@ -66,9 +66,6 @@ class SlipNetVpnService : VpnService() {
         private const val HEALTH_CHECK_INTERVAL_MS = 15000L
         private const val QUIC_DOWN_THRESHOLD = 2 // Reconnect after 2 checks (~30s) with QUIC down
         private const val SSH_PROBE_INTERVAL = 2 // Probe SSH session every 2 health checks (~30s)
-        private const val DATA_PROBE_TIMEOUT_MS = 5000 // Timeout for SOCKS5 data probe
-        private const val DATA_PROBE_TIMEOUT_DNS_TUNNEL_MS = 10000 // Longer timeout for slow DNS tunnels
-        private const val DNS_TUNNEL_PROBE_INTERVAL = 4 // Probe DNS tunnels every 4 health checks (~60s)
 
         // Persistence keys for auto-restart
         private const val PREFS_NAME = "vpn_service_state"
@@ -122,7 +119,6 @@ class SlipNetVpnService : VpnService() {
     // Health check state
     private var quicDownChecks = 0
     private var healthCheckCount = 0
-    private var probeFailNotificationShowing = false
 
     // Persistence for service resilience
     private lateinit var prefs: SharedPreferences
@@ -2036,9 +2032,6 @@ class SlipNetVpnService : VpnService() {
         healthCheckJob?.cancel()
         quicDownChecks = 0
         healthCheckCount = 0
-        probeFailNotificationShowing = false
-        getSystemService(NotificationManager::class.java).cancel(NotificationHelper.PROBE_FAIL_NOTIFICATION_ID)
-
         healthCheckJob = serviceScope.launch(Dispatchers.IO) {
             // Give the connection time to establish before monitoring
             delay(10_000L)
@@ -2097,37 +2090,6 @@ class SlipNetVpnService : VpnService() {
                     }
                 }
 
-                // End-to-end data probe. DNS tunnels are bandwidth-constrained,
-                // so probe less often (~60s) to avoid wasting tunnel capacity.
-                val isDnsTunnel = currentTunnelType == TunnelType.DNSTT ||
-                        currentTunnelType == TunnelType.DNSTT_SSH ||
-                        currentTunnelType == TunnelType.NOIZDNS ||
-                        currentTunnelType == TunnelType.NOIZDNS_SSH
-                val probeInterval = if (isDnsTunnel) DNS_TUNNEL_PROBE_INTERVAL else 1
-                if (healthCheckCount % probeInterval != 0) continue
-
-                Log.d(TAG, "Data probe #$healthCheckCount — testing end-to-end...")
-                val probeOk = probeDataPath(isDnsTunnel)
-                if (!probeOk) {
-                    Log.e(TAG, "Data probe failed — tunnel is not passing traffic")
-                    launch(Dispatchers.Main) {
-                        connectionManager.onVpnError("Tunnel is not passing traffic")
-                        if (!probeFailNotificationShowing) {
-                            probeFailNotificationShowing = true
-                            val notification = notificationHelper.createProbeFailNotification(currentProfileId)
-                            val notificationManager = getSystemService(NotificationManager::class.java)
-                            notificationManager.notify(NotificationHelper.PROBE_FAIL_NOTIFICATION_ID, notification)
-                        }
-                    }
-                } else {
-                    if (probeFailNotificationShowing) {
-                        probeFailNotificationShowing = false
-                        val notificationManager = getSystemService(NotificationManager::class.java)
-                        notificationManager.cancel(NotificationHelper.PROBE_FAIL_NOTIFICATION_ID)
-                        Log.d(TAG, "Data probe recovered — dismissed failure notification")
-                    }
-                    Log.d(TAG, "Data probe #$healthCheckCount OK")
-                }
             }
         }
     }
@@ -2867,69 +2829,6 @@ class SlipNetVpnService : VpnService() {
         }
     }
 
-    /**
-     * End-to-end data probe for all tunnel types.
-     * Sends a SOCKS5 CONNECT through the local proxy, then an HTTP GET to
-     * www.gstatic.com/generate_204 and verifies the 204 response.
-     * This proves data actually flows end-to-end through the tunnel.
-     */
-    private suspend fun probeDataPath(isDnsTunnel: Boolean = false): Boolean = withContext(Dispatchers.IO) {
-        val timeout = if (isDnsTunnel) DATA_PROBE_TIMEOUT_DNS_TUNNEL_MS else DATA_PROBE_TIMEOUT_MS
-        var socket: java.net.Socket? = null
-        try {
-            val port = preferencesDataStore.proxyListenPort.first()
-            socket = java.net.Socket()
-            socket.connect(java.net.InetSocketAddress("127.0.0.1", port), timeout)
-            socket.soTimeout = timeout
-
-            val output = socket.getOutputStream()
-            val input = socket.getInputStream()
-
-            // Step 1: SOCKS5 greeting
-            output.write(byteArrayOf(0x05, 0x01, 0x00))
-            output.flush()
-            val greetResp = ByteArray(2)
-            if (input.read(greetResp) != 2 || greetResp[0] != 0x05.toByte()) return@withContext false
-
-            // Step 2: SOCKS5 CONNECT to www.gstatic.com:80
-            val domain = "www.gstatic.com".toByteArray()
-            val connectReq = ByteArray(7 + domain.size)
-            connectReq[0] = 0x05; connectReq[1] = 0x01; connectReq[2] = 0x00
-            connectReq[3] = 0x03; connectReq[4] = domain.size.toByte()
-            System.arraycopy(domain, 0, connectReq, 5, domain.size)
-            connectReq[5 + domain.size] = 0x00; connectReq[6 + domain.size] = 0x50 // port 80
-            output.write(connectReq)
-            output.flush()
-
-            // Read CONNECT response
-            val connResp = ByteArray(4)
-            if (input.read(connResp) != 4) return@withContext false
-            if ((connResp[1].toInt() and 0xFF) != 0x00) return@withContext false
-            // Drain remaining address bytes
-            when (connResp[3].toInt() and 0xFF) {
-                0x01 -> input.read(ByteArray(6))
-                0x03 -> { val len = input.read(); input.read(ByteArray(len + 2)) }
-                0x04 -> input.read(ByteArray(18))
-            }
-
-            // Step 3: HTTP GET /generate_204 — verifies actual data flows through tunnel
-            val httpReq = "GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\nConnection: close\r\n\r\n"
-            output.write(httpReq.toByteArray())
-            output.flush()
-
-            // Read HTTP response status line
-            val buf = ByteArray(32)
-            val n = input.read(buf)
-            if (n <= 0) return@withContext false
-            val statusLine = String(buf, 0, n)
-            statusLine.contains("204")
-        } catch (e: Exception) {
-            Log.w(TAG, "Data probe failed: ${e.message}")
-            false
-        } finally {
-            try { socket?.close() } catch (_: Exception) {}
-        }
-    }
 
     private suspend fun establishVpnInterface(dnsServer: String): ParcelFileDescriptor? {
         val mtu = try { preferencesDataStore.vpnMtu.first() } catch (_: Exception) { VPN_MTU }

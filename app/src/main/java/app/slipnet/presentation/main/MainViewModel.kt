@@ -74,7 +74,9 @@ data class MainUiState(
     // Ping results per profile ID
     val pingResults: Map<Long, PingResult> = emptyMap(),
     val isPingRunning: Boolean = false,
-    val sleepTimerRemainingSeconds: Int = 0
+    val sleepTimerRemainingSeconds: Int = 0,
+    // Update checker
+    val availableUpdate: app.slipnet.util.AppUpdate? = null
 )
 
 @HiltViewModel
@@ -108,6 +110,7 @@ class MainViewModel @Inject constructor(
         observeProxyOnlyMode()
         observeDebugLogging()
         checkFirstLaunch()
+        checkForUpdate()
     }
 
     // ── Connection ──────────────────────────────────────────────────────
@@ -259,6 +262,40 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    // ── Update Checker ──────────────────────────────────────────────────
+
+    private fun checkForUpdate() {
+        viewModelScope.launch {
+            // Throttle: skip if checked recently
+            val lastCheck = preferencesDataStore.lastUpdateCheckTime.first()
+            val now = System.currentTimeMillis()
+            if (now - lastCheck < app.slipnet.util.UpdateChecker.CHECK_INTERVAL_MS) return@launch
+
+            val skipped = preferencesDataStore.skippedUpdateVersion.first()
+            val current = app.slipnet.BuildConfig.VERSION_NAME
+
+            val update = app.slipnet.util.UpdateChecker.check(current) ?: return@launch
+            preferencesDataStore.setLastUpdateCheckTime(now)
+
+            // Don't show if user already skipped this version
+            if (update.versionName == skipped) return@launch
+
+            _uiState.value = _uiState.value.copy(availableUpdate = update)
+        }
+    }
+
+    fun dismissUpdate() {
+        _uiState.value = _uiState.value.copy(availableUpdate = null)
+    }
+
+    fun skipUpdate() {
+        val version = _uiState.value.availableUpdate?.versionName ?: return
+        _uiState.value = _uiState.value.copy(availableUpdate = null)
+        viewModelScope.launch {
+            preferencesDataStore.setSkippedUpdateVersion(version)
+        }
+    }
+
     private fun observeProfiles() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true)
@@ -353,6 +390,39 @@ class MainViewModel @Inject constructor(
             }
         }
     }
+
+    fun deleteDuplicateProfiles() {
+        viewModelScope.launch {
+            val profiles = _uiState.value.profiles
+            val connectedId = (_uiState.value.connectionState as? ConnectionState.Connected)
+                ?.profile?.id
+
+            // Group by connection-relevant fields; keep the first (oldest by sortOrder) in each group
+            val seen = mutableSetOf<String>()
+            val duplicateIds = mutableListOf<Long>()
+            for (profile in profiles) {
+                val key = profile.duplicateKey()
+                if (!seen.add(key)) {
+                    // Skip the currently connected profile
+                    if (profile.id != connectedId) {
+                        duplicateIds.add(profile.id)
+                    }
+                }
+            }
+            for (id in duplicateIds) {
+                deleteProfileUseCase(id)
+            }
+        }
+    }
+
+    private fun ServerProfile.duplicateKey(): String = listOf(
+        tunnelType.value, domain, dnsttPublicKey, dohUrl,
+        sshHost, sshPort, sshUsername, sshPassword, sshAuthType.name, sshPrivateKey,
+        resolvers.map { "${it.host}:${it.port}" }.sorted().joinToString(","),
+        naivePort, naiveUsername, naivePassword,
+        socksUsername.orEmpty(), socksPassword.orEmpty(),
+        torBridgeLines
+    ).joinToString("|")
 
     fun deleteAllProfiles() {
         viewModelScope.launch {

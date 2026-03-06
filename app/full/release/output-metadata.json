@@ -11,9 +11,9 @@
       "type": "UNIVERSAL",
       "filters": [],
       "attributes": [],
-      "versionCode": 34,
-      "versionName": "2.1.1",
-      "outputFile": "SlipNet-v2.1.1-full-release-universal.apk"
+      "versionCode": 37,
+      "versionName": "2.2.2",
+      "outputFile": "SlipNet-v2.2.2-full-release-universal.apk"
     },
     {
       "type": "ONE_OF_MANY",
@@ -24,9 +24,9 @@
         }
       ],
       "attributes": [],
-      "versionCode": 34,
-      "versionName": "2.1.1",
-      "outputFile": "SlipNet-v2.1.1-full-release-arm64-v8a.apk"
+      "versionCode": 37,
+      "versionName": "2.2.2",
+      "outputFile": "SlipNet-v2.2.2-full-release-arm64-v8a.apk"
     },
     {
       "type": "ONE_OF_MANY",
@@ -37,9 +37,9 @@
         }
       ],
       "attributes": [],
-      "versionCode": 34,
-      "versionName": "2.1.1",
-      "outputFile": "SlipNet-v2.1.1-full-release-armeabi-v7a.apk"
+      "versionCode": 37,
+      "versionName": "2.2.2",
+      "outputFile": "SlipNet-v2.2.2-full-release-armeabi-v7a.apk"
     }
   ],
   "elementType": "File",
@@ -48,18 +48,18 @@
       "minApi": 28,
       "maxApi": 30,
       "baselineProfiles": [
-        "baselineProfiles/1/SlipNet-v2.1.1-full-release-universal.dm",
-        "baselineProfiles/1/SlipNet-v2.1.1-full-release-arm64-v8a.dm",
-        "baselineProfiles/1/SlipNet-v2.1.1-full-release-armeabi-v7a.dm"
+        "baselineProfiles/1/SlipNet-v2.2.2-full-release-universal.dm",
+        "baselineProfiles/1/SlipNet-v2.2.2-full-release-arm64-v8a.dm",
+        "baselineProfiles/1/SlipNet-v2.2.2-full-release-armeabi-v7a.dm"
       ]
     },
     {
       "minApi": 31,
       "maxApi": 2147483647,
       "baselineProfiles": [
-        "baselineProfiles/0/SlipNet-v2.1.1-full-release-universal.dm",
-        "baselineProfiles/0/SlipNet-v2.1.1-full-release-arm64-v8a.dm",
-        "baselineProfiles/0/SlipNet-v2.1.1-full-release-armeabi-v7a.dm"
+        "baselineProfiles/0/SlipNet-v2.2.2-full-release-universal.dm",
+        "baselineProfiles/0/SlipNet-v2.2.2-full-release-arm64-v8a.dm",
+        "baselineProfiles/0/SlipNet-v2.2.2-full-release-armeabi-v7a.dm"
       ]
     }
   ],
