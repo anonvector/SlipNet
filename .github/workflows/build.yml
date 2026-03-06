@@ -123,7 +123,7 @@ jobs:
           echo "CONFIG_ENCRYPTION_KEY=$CONFIG_ENCRYPTION_KEY" >> local.properties
 
       - name: Build Release APK
-        run: ./gradlew assembleFullRelease --no-daemon --stacktrace
+        run: ./gradlew assembleRelease --no-daemon
 
       - name: Collect release APKs
         run: |
