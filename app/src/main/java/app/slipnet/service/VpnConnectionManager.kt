@@ -11,6 +11,7 @@ import app.slipnet.domain.repository.ProfileRepository
 import app.slipnet.widget.VpnWidgetCompactProvider
 import app.slipnet.widget.VpnWidgetProvider
 import app.slipnet.util.DeviceIdUtil
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -88,7 +89,7 @@ class VpnConnectionManager @Inject constructor(
             action = SlipNetVpnService.ACTION_CONNECT
             putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profile.id)
         }
-        context.startForegroundService(intent)
+        ContextCompat.startForegroundService(context, intent)
     }
 
     fun reconnect(profile: ServerProfile) {
@@ -114,7 +115,7 @@ class VpnConnectionManager @Inject constructor(
             action = SlipNetVpnService.ACTION_CONNECT
             putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profile.id)
         }
-        context.startForegroundService(intent)
+        ContextCompat.startForegroundService(context, intent)
     }
 
     fun disconnect() {

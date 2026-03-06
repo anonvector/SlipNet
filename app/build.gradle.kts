@@ -434,8 +434,8 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.9.7")
 
     // Hilt
-    implementation("com.google.dagger:hilt-android:2.59.1")
-    kapt("com.google.dagger:hilt-compiler:2.59.1")
+    implementation("com.google.dagger:hilt-android:2.57.1")
+    kapt("com.google.dagger:hilt-compiler:2.57.1")
     implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
 
     // Room

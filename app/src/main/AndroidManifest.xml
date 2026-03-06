@@ -41,7 +41,7 @@
 
     <application
         android:name=".SlipNetApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -98,11 +98,9 @@
         <!-- Boot Receiver -->
         <receiver
             android:name=".service.BootReceiver"
-            android:exported="true"
-            android:directBootAware="true">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 
@@ -112,7 +110,6 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="app.slipnet.widget.TOGGLE_VPN" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
@@ -125,12 +122,15 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="app.slipnet.widget.TOGGLE_VPN_COMPACT" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_vpn_compact_info" />
         </receiver>
+
+        <receiver
+            android:name=".widget.VpnWidgetToggleReceiver"
+            android:exported="false" />
 
         <!-- QR code scanner (force portrait) -->
         <activity

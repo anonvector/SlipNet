@@ -6,16 +6,22 @@ import android.content.Intent
 import android.net.VpnService
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.repository.ProfileRepository
+import app.slipnet.util.AppLog as Log
 import dagger.hilt.android.AndroidEntryPoint
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class BootReceiver : BroadcastReceiver() {
+
+    companion object {
+        private const val TAG = "BootReceiver"
+    }
 
     @Inject
     lateinit var preferencesDataStore: PreferencesDataStore
@@ -26,38 +32,46 @@ class BootReceiver : BroadcastReceiver() {
     @Inject
     lateinit var connectionManager: VpnConnectionManager
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED &&
-            intent.action != Intent.ACTION_LOCKED_BOOT_COMPLETED) {
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED) {
             return
         }
 
+        val pendingResult = goAsync()
+        val appContext = context.applicationContext
+
         scope.launch {
-            val autoConnect = preferencesDataStore.autoConnectOnBoot.first()
-            if (!autoConnect) {
-                return@launch
-            }
+            try {
+                val autoConnect = preferencesDataStore.autoConnectOnBoot.first()
+                if (!autoConnect) {
+                    return@launch
+                }
 
-            // Get active or last connected profile
-            val profile = profileRepository.getActiveProfile().first()
-                ?: getLastConnectedProfile()
-                ?: return@launch
+                // Get active or last connected profile
+                val profile = profileRepository.getActiveProfile().first()
+                    ?: getLastConnectedProfile()
+                    ?: return@launch
 
-            // Check if we have VPN permission (must have been granted before)
-            val vpnIntent = VpnService.prepare(context)
-            if (vpnIntent != null) {
-                // VPN permission not granted, can't auto-connect
-                return@launch
-            }
+                // Check if we have VPN permission (must have been granted before)
+                val vpnIntent = VpnService.prepare(appContext)
+                if (vpnIntent != null) {
+                    // VPN permission not granted, can't auto-connect
+                    return@launch
+                }
 
-            // Start VPN service
-            val serviceIntent = Intent(context, SlipNetVpnService::class.java).apply {
-                action = SlipNetVpnService.ACTION_CONNECT
-                putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profile.id)
+                // Start VPN service
+                val serviceIntent = Intent(appContext, SlipNetVpnService::class.java).apply {
+                    action = SlipNetVpnService.ACTION_CONNECT
+                    putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profile.id)
+                }
+                ContextCompat.startForegroundService(appContext, serviceIntent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to auto-connect on boot", e)
+            } finally {
+                pendingResult.finish()
             }
-            context.startForegroundService(serviceIntent)
         }
     }
 
