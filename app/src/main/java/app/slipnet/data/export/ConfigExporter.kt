@@ -14,8 +14,8 @@ import javax.inject.Singleton
  * Single profile format: slipnet://[base64-encoded-profile]
  * Multiple profiles: one URI per line
  *
- * Encoded profile format v15 (pipe-delimited):
- * v15|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash
+ * Encoded profile format v16 (pipe-delimited):
+ * v16|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -25,11 +25,13 @@ class ConfigExporter @Inject constructor() {
     companion object {
         const val SCHEME = "slipnet://"
         const val ENCRYPTED_SCHEME = "slipnet-enc://"
-        const val VERSION = "15"
+        const val VERSION = "16"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
         const val MODE_DNSTT_SSH = "dnstt_ssh"
+        const val MODE_NOIZDNS = "sayedns"
+        const val MODE_NOIZDNS_SSH = "sayedns_ssh"
         const val MODE_SSH = "ssh"
         const val MODE_DOH = "doh"
         const val MODE_SNOWFLAKE = "snowflake"
@@ -45,10 +47,31 @@ class ConfigExporter @Inject constructor() {
         return encodeProfile(profile)
     }
 
-    fun exportSingleProfileLocked(profile: ServerProfile, password: String): String {
+    fun exportSingleProfileLocked(
+        profile: ServerProfile,
+        password: String,
+        expirationDate: Long = 0,
+        allowSharing: Boolean = false,
+        boundDeviceId: String = ""
+    ): String {
         val hash = LockPasswordUtil.hashPassword(password)
-        val lockedProfile = profile.copy(isLocked = true, lockPasswordHash = hash)
+        val lockedProfile = profile.copy(
+            isLocked = true,
+            lockPasswordHash = hash,
+            expirationDate = expirationDate,
+            allowSharing = allowSharing,
+            boundDeviceId = boundDeviceId
+        )
         val data = buildProfileData(lockedProfile)
+        val encrypted = LockPasswordUtil.encryptConfig(data)
+        val encoded = Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        return "$ENCRYPTED_SCHEME$encoded"
+    }
+
+    fun reExportLockedProfile(profile: ServerProfile): String {
+        if (!profile.isLocked) throw IllegalStateException("Profile is not locked")
+        if (!profile.allowSharing) throw IllegalStateException("Profile does not allow re-sharing")
+        val data = buildProfileData(profile)
         val encrypted = LockPasswordUtil.encryptConfig(data)
         val encoded = Base64.encodeToString(encrypted, Base64.NO_WRAP)
         return "$ENCRYPTED_SCHEME$encoded"
@@ -69,6 +92,8 @@ class ConfigExporter @Inject constructor() {
             TunnelType.SLIPSTREAM_SSH -> MODE_SLIPSTREAM_SSH
             TunnelType.DNSTT -> MODE_DNSTT
             TunnelType.DNSTT_SSH -> MODE_DNSTT_SSH
+            TunnelType.NOIZDNS -> MODE_NOIZDNS
+            TunnelType.NOIZDNS_SSH -> MODE_NOIZDNS_SSH
             TunnelType.SSH -> MODE_SSH
             TunnelType.DOH -> MODE_DOH
             TunnelType.SNOWFLAKE -> MODE_SNOWFLAKE
@@ -109,7 +134,10 @@ class ConfigExporter @Inject constructor() {
             profile.naiveUsername,
             Base64.encodeToString(profile.naivePassword.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
             if (profile.isLocked) "1" else "0",
-            profile.lockPasswordHash
+            profile.lockPasswordHash,
+            profile.expirationDate.toString(),
+            if (profile.allowSharing) "1" else "0",
+            profile.boundDeviceId
         ).joinToString(FIELD_DELIMITER)
     }
 

@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import app.slipnet.domain.model.PingResult
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TunnelType
+import app.slipnet.domain.model.isAvailable
 import app.slipnet.presentation.profiles.EditProfileViewModel
 import app.slipnet.presentation.theme.ConnectedGreen
 import app.slipnet.presentation.theme.ConnectingOrange
@@ -124,6 +125,34 @@ fun ProfileListItem(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    if (profile.isExpired) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Expired",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = DisconnectedRed,
+                            modifier = Modifier
+                                .background(
+                                    DisconnectedRed.copy(alpha = 0.15f),
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    if (!profile.tunnelType.isAvailable()) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Not available in Lite",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f),
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                     if (isConnected) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
@@ -161,6 +190,23 @@ fun ProfileListItem(
                                 strokeWidth = 1.5.dp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                        is PingResult.Testing -> {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                androidx.compose.material3.CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = ConnectingOrange
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = pingResult.phase,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ConnectingOrange,
+                                    maxLines = 1
+                                )
+                            }
                         }
                         is PingResult.Success -> {
                             val latencyColor = when {
@@ -209,6 +255,7 @@ fun ProfileListItem(
                                 ?: profile.dohUrl
                             TunnelType.SSH -> "${profile.domain}:${profile.sshPort}"
                             TunnelType.DNSTT_SSH -> "${profile.domain} via SSH"
+                            TunnelType.NOIZDNS_SSH -> "${profile.domain} via SSH"
                             TunnelType.NAIVE_SSH -> "${profile.domain}:${profile.naivePort} via SSH"
                             TunnelType.NAIVE -> "${profile.domain}:${profile.naivePort}"
                             TunnelType.SNOWFLAKE -> "Tor Network"
@@ -250,8 +297,8 @@ fun ProfileListItem(
                     )
                 }
 
-                // Export with submenu (hidden for locked profiles)
-                if (!profile.isLocked) {
+                // Export with submenu (shown for unlocked profiles or locked profiles that allow sharing)
+                if (!profile.isLocked || profile.allowSharing) {
                     Box {
                         IconButton(
                             onClick = { showExportMenu = true },

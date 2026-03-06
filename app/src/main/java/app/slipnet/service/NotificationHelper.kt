@@ -27,6 +27,8 @@ class NotificationHelper @Inject constructor(
         private const val REQUEST_CODE_RECONNECT_DISCONNECT = 103
         private const val REQUEST_CODE_AUTO_RECONNECT_CANCEL = 104
         const val AUTO_RECONNECT_NOTIFICATION_ID = 4
+        const val PROBE_FAIL_NOTIFICATION_ID = 5
+        private const val REQUEST_CODE_PROBE_RECONNECT = 105
     }
 
     fun createVpnNotification(
@@ -264,6 +266,39 @@ class NotificationHelper @Inject constructor(
             .setSmallIcon(R.drawable.ic_vpn_key)
             .setContentTitle("VPN Disconnected")
             .setContentText("Connection to $profileName was interrupted")
+            .setContentIntent(mainPendingIntent)
+            .addAction(R.drawable.ic_vpn_key, "Reconnect", reconnectPendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+    }
+
+    fun createProbeFailNotification(profileId: Long): Notification {
+        val mainIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val mainPendingIntent = PendingIntent.getActivity(
+            context,
+            REQUEST_CODE_MAIN,
+            mainIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val reconnectIntent = Intent(context, SlipNetVpnService::class.java).apply {
+            action = SlipNetVpnService.ACTION_CONNECT
+            putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profileId)
+        }
+        val reconnectPendingIntent = PendingIntent.getService(
+            context,
+            REQUEST_CODE_PROBE_RECONNECT,
+            reconnectIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_CONNECTION_EVENTS)
+            .setSmallIcon(R.drawable.ic_vpn_key)
+            .setContentTitle("Tunnel not passing traffic")
+            .setContentText("The VPN tunnel appears to be broken")
             .setContentIntent(mainPendingIntent)
             .addAction(R.drawable.ic_vpn_key, "Reconnect", reconnectPendingIntent)
             .setAutoCancel(true)

@@ -33,8 +33,8 @@ fn exceeded_max_failures() -> bool {
 }
 use crate::dns::{
     add_paths, expire_inflight_polls, handle_dns_response, maybe_report_debug,
-    refresh_resolver_path, resolve_resolvers, resolver_mode_to_c, send_poll_queries,
-    sockaddr_storage_to_socket_addr, DnsResponseContext,
+    probe_resolvers, refresh_resolver_path, resolve_resolvers, resolver_mode_to_c,
+    send_poll_queries, sockaddr_storage_to_socket_addr, DnsResponseContext, PROBE_TIMEOUT_MS,
 };
 use crate::error::ClientError;
 use crate::pacing::{cwnd_target_polls, inflight_packet_estimate};
@@ -158,6 +158,8 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
     let _state = state;
 
     let mut reconnect_delay = Duration::from_millis(RECONNECT_SLEEP_MIN_MS);
+    let resolver_count = config.resolvers.len();
+    let mut primary_idx: usize = 0;
 
     loop {
         // Check for shutdown before QUIC setup (picoquic_create etc. can be slow)
@@ -166,9 +168,22 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
             return Ok(0);
         }
 
-        let mut resolvers = resolve_resolvers(config.resolvers, mtu, config.debug_poll)?;
+        let mut resolvers = resolve_resolvers(config.resolvers, mtu, config.debug_poll, primary_idx)?;
         if resolvers.is_empty() {
             return Err(ClientError::new("At least one resolver is required"));
+        }
+
+        // Probe all resolvers to find the fastest responding one
+        if resolvers.len() > 1 {
+            if let Some(best) = probe_resolvers(&udp, &resolvers, config.domain, PROBE_TIMEOUT_MS).await {
+                if best != primary_idx {
+                    info!("Probe selected resolver {} (index {}) over current primary (index {})", resolvers[best].addr, best, primary_idx);
+                    primary_idx = best;
+                    resolvers = resolve_resolvers(config.resolvers, mtu, config.debug_poll, primary_idx)?;
+                }
+            } else {
+                warn!("No resolver responded to probe within timeout, using index {}", primary_idx);
+            }
         }
 
         let mut local_addr_storage = socket_addr_to_storage(udp.local_addr().map_err(map_io)?);
@@ -222,12 +237,13 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
             slipstream_set_cc_override(override_ptr);
         }
         unsafe {
-            slipstream_set_default_path_mode(resolver_mode_to_c(resolvers[0].mode));
+            slipstream_set_default_path_mode(resolver_mode_to_c(resolvers[primary_idx].mode));
         }
         if let Some(cert) = config.cert {
             configure_pinned_certificate(quic, cert).map_err(ClientError::new)?;
         }
-        let mut server_storage = resolvers[0].storage;
+        let mut server_storage = resolvers[primary_idx].storage;
+        info!("Using resolver {} as primary (index {})", resolvers[primary_idx].addr, primary_idx);
         // picoquic_create_client_cnx calls picoquic_start_client_cnx internally (see picoquic/quicctx.c).
         let cnx = unsafe {
             picoquic_create_client_cnx(
@@ -245,7 +261,7 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
             return Err(ClientError::new("Could not create QUIC connection"));
         }
 
-        apply_path_mode(cnx, &mut resolvers[0])?;
+        apply_path_mode(cnx, &mut resolvers[primary_idx])?;
 
         unsafe {
             picoquic_set_callback(cnx, Some(client_callback), state_ptr as *mut _);
@@ -703,8 +719,13 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
         }
 
         // Track connection failures - if we never became ready, count as failure
+        // and rotate to the next resolver for the next attempt.
         if !quic_ready_signaled {
             record_connection_failure();
+            if resolver_count > 1 {
+                primary_idx = (primary_idx + 1) % resolver_count;
+                info!("Rotating primary resolver to index {} for next attempt", primary_idx);
+            }
             if exceeded_max_failures() {
                 error!("Exceeded max consecutive connection failures, giving up");
                 return Err(ClientError::new(

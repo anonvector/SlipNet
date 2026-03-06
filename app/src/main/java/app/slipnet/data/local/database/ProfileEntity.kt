@@ -22,7 +22,7 @@ data class ProfileEntity(
     val authoritativeMode: Boolean = false,
 
     @ColumnInfo(name = "keep_alive_interval")
-    val keepAliveInterval: Int = 200,
+    val keepAliveInterval: Int = 5000,
 
     @ColumnInfo(name = "congestion_control")
     val congestionControl: String = "bbr",
@@ -118,5 +118,17 @@ data class ProfileEntity(
     val isLocked: Boolean = false,
 
     @ColumnInfo(name = "lock_password_hash", defaultValue = "")
-    val lockPasswordHash: String = ""
+    val lockPasswordHash: String = "",
+
+    @ColumnInfo(name = "expiration_date", defaultValue = "0")
+    val expirationDate: Long = 0,
+
+    @ColumnInfo(name = "allow_sharing", defaultValue = "0")
+    val allowSharing: Boolean = false,
+
+    @ColumnInfo(name = "bound_device_id", defaultValue = "")
+    val boundDeviceId: String = "",
+
+    @ColumnInfo(name = "noizdns_stealth", defaultValue = "0")
+    val noizdnsStealth: Boolean = false
 )

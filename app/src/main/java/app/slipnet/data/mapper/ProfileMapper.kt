@@ -59,7 +59,11 @@ class ProfileMapper @Inject constructor(
             naiveUsername = entity.naiveUsername,
             naivePassword = entity.naivePassword,
             isLocked = entity.isLocked,
-            lockPasswordHash = entity.lockPasswordHash
+            lockPasswordHash = entity.lockPasswordHash,
+            expirationDate = entity.expirationDate,
+            allowSharing = entity.allowSharing,
+            boundDeviceId = entity.boundDeviceId,
+            noizdnsStealth = entity.noizdnsStealth
         )
     }
 
@@ -103,7 +107,11 @@ class ProfileMapper @Inject constructor(
             naiveUsername = profile.naiveUsername,
             naivePassword = profile.naivePassword,
             isLocked = profile.isLocked,
-            lockPasswordHash = profile.lockPasswordHash
+            lockPasswordHash = profile.lockPasswordHash,
+            expirationDate = profile.expirationDate,
+            allowSharing = profile.allowSharing,
+            boundDeviceId = profile.boundDeviceId,
+            noizdnsStealth = profile.noizdnsStealth
         )
     }
 

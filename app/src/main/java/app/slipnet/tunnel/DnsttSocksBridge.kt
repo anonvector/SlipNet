@@ -8,6 +8,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -84,6 +85,60 @@ object DnsttSocksBridge {
     private var workerCreationLocks = Array(DNS_POOL_SIZE_DEFAULT) { ReentrantLock() }
     private var dnsKeepaliveThread: Thread? = null
 
+    // Circuit breaker: stop DNS worker recreation when tunnel is overwhelmed.
+    // Prevents thundering herd where dozens of FWD_UDP sessions all try to
+    // recreate workers simultaneously, consuming all smux streams.
+    private val consecutiveFailures = AtomicInteger(0)
+    @Volatile private var circuitOpenUntil: Long = 0
+    private const val CIRCUIT_BREAKER_THRESHOLD = 5
+    private const val CIRCUIT_BREAKER_COOLDOWN_MS = 3000L
+
+    private fun isCircuitOpen(): Boolean {
+        if (System.currentTimeMillis() < circuitOpenUntil) return true
+        // Reset if cooldown has passed
+        if (consecutiveFailures.get() >= CIRCUIT_BREAKER_THRESHOLD) {
+            consecutiveFailures.set(0)
+        }
+        return false
+    }
+
+    private fun recordDnsSuccess() {
+        consecutiveFailures.set(0)
+    }
+
+    private fun recordDnsFailure() {
+        if (consecutiveFailures.incrementAndGet() >= CIRCUIT_BREAKER_THRESHOLD) {
+            circuitOpenUntil = System.currentTimeMillis() + CIRCUIT_BREAKER_COOLDOWN_MS
+            logd("FWD_UDP: circuit breaker OPEN — cooling down ${CIRCUIT_BREAKER_COOLDOWN_MS}ms")
+        }
+    }
+
+    // CONNECT concurrency limit and circuit breaker.
+    // Browsers open 20-40+ connections per page load; without a cap each becomes
+    // a smux stream that floods the bandwidth-constrained DNS tunnel.
+    private const val MAX_CONCURRENT_CONNECTS = 8
+    private const val CONNECT_CIRCUIT_THRESHOLD = 3
+    private const val CONNECT_CIRCUIT_COOLDOWN_MS = 5000L
+    private val connectSemaphore = Semaphore(MAX_CONCURRENT_CONNECTS)
+    private val connectFailures = AtomicInteger(0)
+    @Volatile private var connectCircuitOpenUntil: Long = 0
+
+    private fun isConnectCircuitOpen(): Boolean {
+        if (System.currentTimeMillis() < connectCircuitOpenUntil) return true
+        if (connectFailures.get() >= CONNECT_CIRCUIT_THRESHOLD) {
+            connectFailures.set(0)
+        }
+        return false
+    }
+
+    private fun recordConnectSuccess() { connectFailures.set(0) }
+    private fun recordConnectFailure() {
+        if (connectFailures.incrementAndGet() >= CONNECT_CIRCUIT_THRESHOLD) {
+            connectCircuitOpenUntil = System.currentTimeMillis() + CONNECT_CIRCUIT_COOLDOWN_MS
+            logd("CONNECT: circuit breaker OPEN — cooling down ${CONNECT_CIRCUIT_COOLDOWN_MS}ms")
+        }
+    }
+
     fun start(
         dnsttPort: Int,
         dnsttHost: String = "127.0.0.1",
@@ -108,6 +163,11 @@ object DnsttSocksBridge {
         this.socksPassword = socksPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
         this.dnsFallbackHost = dnsFallback ?: FALLBACK_DNS_HOST
+        // Reset circuit breakers
+        consecutiveFailures.set(0)
+        circuitOpenUntil = 0
+        connectFailures.set(0)
+        connectCircuitOpenUntil = 0
         // Resize worker pool based on authoritative mode
         val poolSize = dnsPoolSize
         dnsWorkers = arrayOfNulls(poolSize)
@@ -386,6 +446,11 @@ object DnsttSocksBridge {
      * Phase 4: DoH fallback if all TCP methods fail.
      */
     private fun forwardDnsPooled(payload: ByteArray): ByteArray? {
+        // Fail fast if DNSTT tunnel is dead
+        if (!DnsttBridge.isRunning()) return null
+        // Circuit breaker: skip if tunnel is overwhelmed
+        if (isCircuitOpen()) return null
+
         val startIdx = (dnsRoundRobin.getAndIncrement() and 0x7FFFFFFF) % dnsPoolSize
 
         // Phase 1: Try all existing live workers (non-blocking lock to skip busy ones)
@@ -403,39 +468,62 @@ object DnsttSocksBridge {
                     continue
                 }
                 val result = sendDnsQuery(worker, payload)
-                if (result != null) return result
+                if (result != null) {
+                    recordDnsSuccess()
+                    return result
+                }
             } catch (e: Exception) {
                 logd("FWD_UDP: DNS worker $idx failed: ${e.message}")
                 dnsWorkers[idx] = null
+                recordDnsFailure()
             } finally {
                 worker.lock.unlock()
             }
         }
 
+        // Circuit breaker: re-check after phase 1 failures
+        if (isCircuitOpen()) return null
+
         // Phase 2: All workers dead/busy — recreate one inline
         for (i in 0 until dnsPoolSize) {
             val idx = (startIdx + i) % dnsPoolSize
-            val newWorker = recreateDnsWorkerSync(idx) ?: continue
+            val newWorker = recreateDnsWorkerSync(idx)
+            if (newWorker == null) { recordDnsFailure(); continue }
             if (!newWorker.lock.tryLock(5, TimeUnit.SECONDS)) continue
             try {
                 val result = sendDnsQuery(newWorker, payload)
-                if (result != null) return result
+                if (result != null) {
+                    recordDnsSuccess()
+                    return result
+                }
             } catch (e: Exception) {
                 logd("FWD_UDP: recreated DNS worker $idx failed: ${e.message}")
                 dnsWorkers[idx] = null
+                recordDnsFailure()
             } finally {
                 newWorker.lock.unlock()
             }
             break
         }
 
+        // Circuit breaker: re-check before expensive fallbacks
+        if (isCircuitOpen()) return null
+
         // Phase 3: Per-query fallback (old behavior — new connection per query)
         logd("FWD_UDP: all workers failed, falling back to per-query connection")
         val tcpResult = forwardDnsTcpOneShot(payload)
-        if (tcpResult != null) return tcpResult
+        if (tcpResult != null) {
+            recordDnsSuccess()
+            return tcpResult
+        }
+        recordDnsFailure()
 
-        // Phase 4: DoH fallback
-        return forwardDnsDoH(payload)
+        // Phase 4: DoH fallback — always attempt, bypasses tunnel entirely
+        val dohResult = forwardDnsDoH(payload)
+        if (dohResult != null) {
+            recordDnsSuccess()
+        }
+        return dohResult
     }
 
     private fun bindServerSocket(host: String, port: Int): ServerSocket {
@@ -539,6 +627,17 @@ object DnsttSocksBridge {
                         return@Thread
                     }
 
+                    // Reject IPv6 CONNECT early — Dante typically lacks IPv6
+                    // connectivity, so forwarding these wastes tunnel streams and
+                    // generates suspicious burst patterns visible to DPI.
+                    // Reply 0x05 = "Connection refused" so apps fall back to IPv4.
+                    if (addrType == 0x04) {
+                        logd("CONNECT: rejected IPv6 $destHost:$destPort locally")
+                        output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                        output.flush()
+                        return@Thread
+                    }
+
                     // Handle CONNECT (cmd 0x01) — chain through DNSTT
                     handleConnect(destHost, destPort, rawAddr, portBytes, socket, input, output)
                 }
@@ -567,6 +666,32 @@ object DnsttSocksBridge {
         clientInput: InputStream,
         clientOutput: OutputStream
     ) {
+        // Fail fast if DNSTT tunnel is dead — avoids 10s connect timeout per request
+        if (!DnsttBridge.isRunning()) {
+            logd("CONNECT: DNSTT not running, rejecting $destHost:$destPort")
+            clientOutput.write(byteArrayOf(0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+            clientOutput.flush()
+            return
+        }
+
+        // CONNECT circuit breaker: tunnel is overwhelmed, reject immediately
+        if (isConnectCircuitOpen()) {
+            logd("CONNECT: circuit open, rejecting $destHost:$destPort")
+            clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+            clientOutput.flush()
+            return
+        }
+
+        // Limit concurrent CONNECT operations to avoid flooding the tunnel.
+        // Non-blocking: reject immediately if all slots are taken.
+        if (!connectSemaphore.tryAcquire()) {
+            logd("CONNECT: at capacity ($MAX_CONCURRENT_CONNECTS), rejecting $destHost:$destPort")
+            clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+            clientOutput.flush()
+            return
+        }
+
+        var semaphoreReleased = false
         val remoteSocket: Socket
         try {
             remoteSocket = Socket()
@@ -574,6 +699,7 @@ object DnsttSocksBridge {
             remoteSocket.tcpNoDelay = true
             remoteSockets.add(remoteSocket)
         } catch (e: Exception) {
+            connectSemaphore.release()
             logd("CONNECT: failed to connect to DNSTT: ${e.message}")
             clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
             clientOutput.flush()
@@ -587,6 +713,7 @@ object DnsttSocksBridge {
             // SOCKS5 greeting to DNSTT → Dante (user/pass auth)
             if (!performSocksAuth(remoteInput, remoteOutput)) {
                 Log.w(TAG, "CONNECT: Dante auth failed")
+                connectSemaphore.release(); semaphoreReleased = true
                 clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                 clientOutput.flush()
                 remoteSocket.close()
@@ -604,6 +731,7 @@ object DnsttSocksBridge {
 
             if (connRespHeader[1] != 0x00.toByte()) {
                 logd("CONNECT: Dante rejected to $destHost:$destPort (rep=${connRespHeader[1]})")
+                connectSemaphore.release(); semaphoreReleased = true
                 clientOutput.write(byteArrayOf(0x05, connRespHeader[1], 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                 clientOutput.flush()
                 remoteSocket.close()
@@ -617,6 +745,10 @@ object DnsttSocksBridge {
                 0x04 -> { val rest = ByteArray(18); remoteInput.readFully(rest) }
             }
 
+            recordConnectSuccess()
+            // Release semaphore after handshake — stream is established
+            connectSemaphore.release()
+            semaphoreReleased = true
             logd("CONNECT: $destHost:$destPort OK (via DNSTT)")
 
             // Send success to hev-socks5-tunnel
@@ -648,6 +780,8 @@ object DnsttSocksBridge {
                 }
             }
         } catch (e: Exception) {
+            if (!semaphoreReleased) connectSemaphore.release()
+            recordConnectFailure()
             logd("CONNECT: chain error for $destHost:$destPort: ${e.message}")
             try {
                 clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
@@ -696,8 +830,15 @@ object DnsttSocksBridge {
 
             try {
                 val response = if (dest.second == 53) {
-                    // DNS: use persistent worker pool with multi-phase fallback
-                    forwardDnsPooled(payload)
+                    // Block AAAA queries locally — server lacks IPv6, and
+                    // forwarding wastes tunnel bandwidth. Return NODATA so
+                    // apps fall back to A records instantly.
+                    if (DnsUtils.isAAAAQuery(payload)) {
+                        DnsUtils.buildAAAANoDataResponse(payload)
+                    } else {
+                        // DNS: use persistent worker pool with multi-phase fallback
+                        forwardDnsPooled(payload)
+                    }
                 } else {
                     // Non-DNS UDP (QUIC, etc.): drop silently.
                     // Browser falls back to TCP → CONNECT through DNSTT.

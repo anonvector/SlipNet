@@ -773,6 +773,14 @@ object SshTunnelBridge {
                         return@submit
                     }
 
+                    // Reject IPv6 CONNECT — remote server typically lacks IPv6.
+                    if (addrType == 0x04) {
+                        logd("CONNECT: rejected IPv6 $destHost:$destPort locally")
+                        output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                        output.flush()
+                        return@submit
+                    }
+
                     // Block DNS-over-TLS (port 853): Android Private DNS wastes SSH
                     // channels through DNSTT. DNS is handled via persistent workers on port 53.
                     if (destPort == 853) {
@@ -1035,9 +1043,13 @@ object SshTunnelBridge {
                 continue
             }
 
-            // Forward the packet
+            // Forward the packet (block AAAA to avoid IPv6 failures)
             try {
-                val response = forwardUdpPacket(dest.first, dest.second, payload)
+                val response = if (dest.second == 53 && DnsUtils.isAAAAQuery(payload)) {
+                    DnsUtils.buildAAAANoDataResponse(payload)
+                } else {
+                    forwardUdpPacket(dest.first, dest.second, payload)
+                }
                 if (response != null && response.isNotEmpty()) {
                     val respHdr = ByteArray(3)
                     respHdr[0] = ((response.size shr 8) and 0xFF).toByte()

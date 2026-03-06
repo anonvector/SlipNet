@@ -75,11 +75,13 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	noizdns v0.0.0 // indirect
 	www.bamsoftware.com/git/dnstt.git v0.0.0-00010101000000-000000000000 // indirect
 )
 
 replace (
 	dnstt-mobile => ../dnstt-mobile
+	noizdns => ../noizdns
 	snowflake-mobile => ../snowflake-mobile
 	www.bamsoftware.com/git/dnstt.git => ../dnstt
 )

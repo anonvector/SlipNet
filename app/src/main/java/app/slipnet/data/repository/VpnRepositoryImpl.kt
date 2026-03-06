@@ -178,6 +178,62 @@ class VpnRepositoryImpl @Inject constructor(
     }
 
     /**
+     * Start the NoizDNS SOCKS5 proxy. Same as DNSTT but with NoizMode enabled
+     * for DPI evasion (hex encoding, shorter labels, record type mixing, jitter,
+     * cover traffic).
+     */
+    suspend fun startNoizdnsProxy(
+        profile: ServerProfile,
+        portOverride: Int? = null,
+        hostOverride: String? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        connectedProfile = profile
+
+        val dnsServer = when (profile.dnsTransport) {
+            DnsTransport.UDP -> {
+                profile.resolvers.joinToString(",") { "${it.host}:${it.port}" }
+                    .ifBlank { "8.8.8.8:53" }
+            }
+            DnsTransport.DOH -> {
+                profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
+            }
+            DnsTransport.TCP -> {
+                profile.resolvers.joinToString(",") { "tcp://${it.host}:${it.port}" }
+                    .ifBlank { "tcp://8.8.8.8:53" }
+            }
+            DnsTransport.DOT -> {
+                profile.resolvers.joinToString(",") { "tls://${it.host}:${it.port}" }
+                    .ifBlank { "tls://8.8.8.8:853" }
+            }
+        }
+
+        val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
+        val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
+
+        val result = DnsttBridge.startClient(
+            dnsServer = dnsServer,
+            tunnelDomain = profile.domain,
+            publicKey = profile.dnsttPublicKey,
+            listenPort = proxyPort,
+            listenHost = proxyHost,
+            authoritativeMode = profile.dnsttAuthoritative,
+            noizMode = true,
+            stealthMode = profile.noizdnsStealth
+        )
+
+        if (result.isSuccess) {
+            Log.i(TAG, "NoizDNS SOCKS5 proxy started successfully")
+            currentTunnelType = TunnelType.NOIZDNS
+            Result.success(Unit)
+        } else {
+            val error = result.exceptionOrNull()?.message ?: "Failed to start NoizDNS proxy"
+            connectedProfile = null
+            Log.e(TAG, "Failed to start NoizDNS proxy: $error")
+            Result.failure(Exception(error))
+        }
+    }
+
+    /**
      * Start the DoH SOCKS5 proxy. Call this AFTER establishing the VPN interface.
      * DNS queries are encrypted via HTTPS; all other traffic flows directly.
      */
@@ -376,12 +432,15 @@ class VpnRepositoryImpl @Inject constructor(
         val socksUsername = if (useAuth) profile.socksUsername else null
         val socksPassword = if (useAuth) profile.socksPassword else null
 
+        val mtu = try { preferencesDataStore.vpnMtu.first() } catch (_: Exception) { PreferencesDataStore.DEFAULT_MTU }
+
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting hev-socks5-tunnel")
         Log.i(TAG, "  SOCKS5 proxy: 127.0.0.1:$socksPort")
         Log.i(TAG, "  SOCKS auth: ${if (!socksUsername.isNullOrBlank()) "enabled" else "disabled"}")
         Log.i(TAG, "  Tunnel type: ${profile.tunnelType}")
         Log.i(TAG, "  UDP tunneling: $enableUdpTunneling")
+        Log.i(TAG, "  MTU: $mtu")
         Log.i(TAG, "========================================")
 
         // Reject non-DNS UDP at TUN level with ICMP Port Unreachable so apps
@@ -397,8 +456,9 @@ class VpnRepositoryImpl @Inject constructor(
             socksUsername = socksUsername,
             socksPassword = socksPassword,
             enableUdpTunneling = enableUdpTunneling,
-            mtu = 1500,
+            mtu = mtu,
             ipv4Address = "10.255.255.1",
+            ipv6Address = "fd00::1",
             disableQuic = disableQuic,
             rejectNonDnsUdp = rejectNonDnsUdp
         )
@@ -433,12 +493,23 @@ class VpnRepositoryImpl @Inject constructor(
                 DnsttBridge.stopClient()
                 DnsDoHProxy.stop()
             }
+            TunnelType.NOIZDNS -> {
+                Log.d(TAG, "Stopping NoizDNS proxy")
+                DnsttBridge.stopClient()
+                DnsDoHProxy.stop()
+            }
             TunnelType.SSH -> {
                 Log.d(TAG, "Stopping SSH proxy")
                 SshTunnelBridge.stop()
             }
             TunnelType.DNSTT_SSH -> {
                 Log.d(TAG, "Stopping DNSTT+SSH: SSH first, then DNSTT")
+                SshTunnelBridge.stop()
+                DnsttBridge.stopClient()
+                DnsDoHProxy.stop()
+            }
+            TunnelType.NOIZDNS_SSH -> {
+                Log.d(TAG, "Stopping NoizDNS+SSH: SSH first, then NoizDNS")
                 SshTunnelBridge.stop()
                 DnsttBridge.stopClient()
                 DnsDoHProxy.stop()
@@ -525,10 +596,13 @@ class VpnRepositoryImpl @Inject constructor(
 
                 // Step 2: Start hev-socks5-tunnel (tun2socks)
                 // This routes TUN traffic through the SOCKS5 proxy
+                val mtu2 = try { preferencesDataStore.vpnMtu.first() } catch (_: Exception) { PreferencesDataStore.DEFAULT_MTU }
+
                 Log.i(TAG, "========================================")
                 Log.i(TAG, "Starting hev-socks5-tunnel")
                 Log.i(TAG, "  SOCKS5 proxy: 127.0.0.1:$proxyPort")
                 Log.i(TAG, "  SOCKS auth: ${if (!profile.socksUsername.isNullOrBlank()) "enabled" else "disabled"}")
+                Log.i(TAG, "  MTU: $mtu2")
                 Log.i(TAG, "========================================")
 
                 val hevResult = HevSocks5Tunnel.start(
@@ -537,8 +611,9 @@ class VpnRepositoryImpl @Inject constructor(
                     socksPort = proxyPort,
                     socksUsername = profile.socksUsername,
                     socksPassword = profile.socksPassword,
-                    mtu = 1500,
-                    ipv4Address = "10.255.255.1"
+                    mtu = mtu2,
+                    ipv4Address = "10.255.255.1",
+                    ipv6Address = "fd00::1"
                 )
 
                 if (hevResult.isSuccess) {
@@ -582,7 +657,7 @@ class VpnRepositoryImpl @Inject constructor(
             gsoEnabled = profile.gsoEnabled,
             debugPoll = debugLogging,
             debugStreams = debugLogging,
-            idlePollIntervalMs = 2000,
+            idlePollIntervalMs = 10000,
             idleTimeoutMs = 120000
         )
         if (result.isFailure) {

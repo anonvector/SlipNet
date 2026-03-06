@@ -16,6 +16,17 @@ interface ResolverScannerRepository {
     fun getDefaultResolvers(): List<String>
 
     /**
+     * Number of priority (famous) resolvers at the top of the default list that should not be shuffled.
+     */
+    fun getDefaultResolverPriorityCount(): Int
+
+    /**
+     * Number of secondary resolvers (between first and second SHUFFLE_BELOW markers) that are
+     * shuffled independently and scanned before the remaining resolvers.
+     */
+    fun getDefaultResolverSecondaryCount(): Int
+
+    /**
      * Parse a text file content into a list of IP addresses
      */
     fun parseResolverList(content: String): List<String>
@@ -27,6 +38,21 @@ interface ResolverScannerRepository {
      * @param count Number of random IPs to generate
      */
     fun generateCountryRangeIps(context: Context, countryCode: String, count: Int): List<String>
+
+    /**
+     * Load raw CIDR ranges for a country from assets
+     * @param context Android context to access assets
+     * @param countryCode Country code (e.g. "ir", "cn", "ru")
+     * @return List of (startIpLong, endIpLong) pairs
+     */
+    fun loadCountryCidrRanges(context: Context, countryCode: String): List<Pair<Long, Long>>
+
+    /**
+     * Generate random IPs from provided CIDR ranges
+     * @param ranges List of (startIpLong, endIpLong) pairs to sample from
+     * @param count Number of random IPs to generate
+     */
+    fun generateFromRanges(ranges: List<Pair<Long, Long>>, count: Int): List<String>
 
     /**
      * Expand IP ranges into a full list of individual IP addresses

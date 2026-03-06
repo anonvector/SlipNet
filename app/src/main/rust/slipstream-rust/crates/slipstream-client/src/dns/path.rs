@@ -57,10 +57,14 @@ pub(crate) fn add_paths(
         return Ok(());
     }
     let now = unsafe { picoquic_current_time() };
-    let primary_mode = resolvers[0].mode;
+    let primary_mode = resolvers
+        .iter()
+        .find(|r| r.added)
+        .map(|r| r.mode)
+        .unwrap_or(resolvers[0].mode);
     let mut default_mode = primary_mode;
 
-    for resolver in resolvers.iter_mut().skip(1) {
+    for resolver in resolvers.iter_mut() {
         if resolver.added {
             continue;
         }

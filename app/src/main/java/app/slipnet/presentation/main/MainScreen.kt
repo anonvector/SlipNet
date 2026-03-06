@@ -1,5 +1,7 @@
 package app.slipnet.presentation.main
 
+import app.slipnet.BuildConfig
+import app.slipnet.domain.model.TunnelType
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -55,6 +57,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
@@ -62,6 +66,9 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.material.icons.filled.Waves
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -187,6 +194,12 @@ fun MainScreen(
     var exportLockEnabled by remember { mutableStateOf(false) }
     var exportLockPassword by remember { mutableStateOf("") }
     var exportLockMode by remember { mutableStateOf("export") } // "export" or "qr"
+    var exportLockExpiry by remember { mutableStateOf(false) }
+    var exportLockExpiryDays by remember { mutableStateOf("30") }
+    var exportLockAllowSharing by remember { mutableStateOf(false) }
+    var exportLockDeviceId by remember { mutableStateOf("") }
+    var exportLockPasswordVisible by remember { mutableStateOf(false) }
+    var showLiteInfoDialog by remember { mutableStateOf(false) }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -274,6 +287,13 @@ fun MainScreen(
     // Helper: proceed with VPN permission check and connect
     fun proceedWithConnect(profile: ServerProfile? = null) {
         if (activity != null) {
+            // In proxy-only mode, skip VPN permission check — no TUN interface is created,
+            // so VpnService.prepare() is unnecessary and would fail when another app
+            // holds "Always-on VPN".
+            if (uiState.proxyOnlyMode) {
+                if (profile != null) viewModel.connect(profile) else viewModel.connect()
+                return
+            }
             val vpnIntent = VpnService.prepare(activity)
             if (vpnIntent != null) {
                 pendingConnect = true
@@ -289,7 +309,8 @@ fun MainScreen(
     fun requestConnectOrToggle() {
         when (uiState.connectionState) {
             is ConnectionState.Connected,
-            is ConnectionState.Connecting -> viewModel.disconnect()
+            is ConnectionState.Connecting,
+            is ConnectionState.Error -> viewModel.disconnect()
             else -> {
                 if (activity != null) {
                     // Check battery optimization on first connect
@@ -313,11 +334,32 @@ fun MainScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = "SlipNet",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "SlipNet",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (BuildConfig.FLAVOR == "lite") {
+                            Text(
+                                text = "Lite",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (BuildConfig.FLAVOR == "lite") {
+                            IconButton(onClick = { showLiteInfoDialog = true }) {
+                                Icon(
+                                    Icons.Default.Info,
+                                    contentDescription = "Lite version info",
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
                 },
                 actions = {
                     if (uiState.debugLogging) {
@@ -424,6 +466,15 @@ fun MainScreen(
                                 }
                             )
                             AddMenuOption(
+                                icon = Icons.Default.VisibilityOff,
+                                title = "NoizDNS",
+                                description = "DPI-evasion DNS tunnel",
+                                onClick = {
+                                    showAddMenu = false
+                                    onNavigateToAddProfile(TunnelType.NOIZDNS.value)
+                                }
+                            )
+                            AddMenuOption(
                                 icon = Icons.Default.Waves,
                                 title = "Slipstream",
                                 description = "DNS tunnel (QUIC)",
@@ -450,22 +501,36 @@ fun MainScreen(
                                     onNavigateToAddProfile("doh")
                                 }
                             )
+                            if (BuildConfig.INCLUDE_NAIVE) {
+                                AddMenuOption(
+                                    icon = Icons.Default.Shield,
+                                    title = "NaiveProxy",
+                                    description = "Chromium HTTPS tunnel",
+                                    onClick = {
+                                        showAddMenu = false
+                                        onNavigateToAddProfile("naive")
+                                    }
+                                )
+                            }
+                            if (BuildConfig.INCLUDE_TOR) {
+                                AddMenuOption(
+                                    icon = TorIcon,
+                                    title = "Tor",
+                                    description = "Connect via Tor network",
+                                    onClick = {
+                                        showAddMenu = false
+                                        onNavigateToAddProfile("snowflake")
+                                    }
+                                )
+                            }
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                             AddMenuOption(
-                                icon = Icons.Default.Shield,
-                                title = "NaiveProxy",
-                                description = "Chromium HTTPS tunnel",
+                                icon = Icons.Default.FileDownload,
+                                title = "Import",
+                                description = "",
                                 onClick = {
                                     showAddMenu = false
-                                    onNavigateToAddProfile("naive")
-                                }
-                            )
-                            AddMenuOption(
-                                icon = TorIcon,
-                                title = "Tor",
-                                description = "Connect via Tor network",
-                                onClick = {
-                                    showAddMenu = false
-                                    onNavigateToAddProfile("snowflake")
+                                    showImportDialog = true
                                 }
                             )
                         }
@@ -637,6 +702,33 @@ fun MainScreen(
     // Debug log sheet
     if (showLogSheet) {
         DebugLogSheet(onDismiss = { showLogSheet = false })
+    }
+
+    // Lite version info dialog
+    if (showLiteInfoDialog) {
+        AlertDialog(
+            onDismissRequest = { showLiteInfoDialog = false },
+            title = { Text("SlipNet Lite") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("SlipNet Lite is a lightweight version with a smaller app size.")
+                    Text("Included protocols:", fontWeight = FontWeight.Bold)
+                    Text("• Slipstream / Slipstream + SSH")
+                    Text("• DNSTT / DNSTT + SSH")
+                    Text("• NoizDNS / NoizDNS + SSH")
+                    Text("• SSH")
+                    Text("• DOH (DNS over HTTPS)")
+                    Text("Not included (full version only):", fontWeight = FontWeight.Bold)
+                    Text("• Tor (Snowflake)")
+                    Text("• NaïveProxy / NaïveProxy + SSH")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLiteInfoDialog = false }) {
+                    Text("OK")
+                }
+            }
+        )
     }
 
     // Share dialog
@@ -834,66 +926,146 @@ fun MainScreen(
 
     // Export lock dialog
     exportLockProfile?.let { profile ->
-        AlertDialog(
-            onDismissRequest = { exportLockProfile = null },
-            title = { Text(if (exportLockMode == "qr") "Share QR Code" else "Export Profile") },
-            text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "Lock for distribution",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Switch(
-                            checked = exportLockEnabled,
-                            onCheckedChange = { exportLockEnabled = it }
-                        )
-                    }
-                    if (exportLockEnabled) {
-                        OutlinedTextField(
-                            value = exportLockPassword,
-                            onValueChange = { exportLockPassword = it },
-                            label = { Text("Lock Password") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+        // If profile is already locked+sharable, skip dialog and re-export directly
+        if (profile.isLocked && profile.allowSharing) {
+            LaunchedEffect(profile) {
+                if (exportLockMode == "qr") {
+                    viewModel.showQrCodeLockedReExport(profile)
+                } else {
+                    viewModel.reExportLockedProfile(profile)
                 }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val p = exportLockProfile ?: return@TextButton
-                        if (exportLockEnabled) {
-                            if (exportLockMode == "qr") {
-                                viewModel.showQrCodeLocked(p, exportLockPassword)
-                            } else {
-                                viewModel.exportProfileLocked(p, exportLockPassword)
-                            }
-                        } else {
-                            if (exportLockMode == "qr") {
-                                viewModel.showQrCode(p)
-                            } else {
-                                viewModel.exportProfile(p)
-                            }
-                        }
-                        exportLockProfile = null
-                    },
-                    enabled = !exportLockEnabled || exportLockPassword.isNotBlank()
-                ) { Text(if (exportLockMode == "qr") "Share" else "Export") }
-            },
-            dismissButton = {
-                TextButton(onClick = { exportLockProfile = null }) { Text("Cancel") }
+                exportLockProfile = null
             }
-        )
+        } else if (!profile.isLocked) {
+            AlertDialog(
+                onDismissRequest = { exportLockProfile = null },
+                title = { Text(if (exportLockMode == "qr") "Share QR Code" else "Export Profile") },
+                text = {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Lock for distribution",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Switch(
+                                checked = exportLockEnabled,
+                                onCheckedChange = { exportLockEnabled = it }
+                            )
+                        }
+                        if (exportLockEnabled) {
+                            OutlinedTextField(
+                                value = exportLockPassword,
+                                onValueChange = { exportLockPassword = it },
+                                label = { Text("Lock Password") },
+                                visualTransformation = if (exportLockPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                trailingIcon = {
+                                    IconButton(onClick = { exportLockPasswordVisible = !exportLockPasswordVisible }) {
+                                        Icon(
+                                            imageVector = if (exportLockPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = if (exportLockPasswordVisible) "Hide password" else "Show password"
+                                        )
+                                    }
+                                },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            // Expiration toggle + days
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Set expiration",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Switch(
+                                    checked = exportLockExpiry,
+                                    onCheckedChange = { exportLockExpiry = it }
+                                )
+                            }
+                            if (exportLockExpiry) {
+                                OutlinedTextField(
+                                    value = exportLockExpiryDays,
+                                    onValueChange = { exportLockExpiryDays = it.filter { c -> c.isDigit() } },
+                                    label = { Text("Expires in (days)") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+
+                            // Allow re-sharing
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Allow re-sharing",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Switch(
+                                    checked = exportLockAllowSharing,
+                                    onCheckedChange = { exportLockAllowSharing = it }
+                                )
+                            }
+
+                            // Target device ID
+                            OutlinedTextField(
+                                value = exportLockDeviceId,
+                                onValueChange = { exportLockDeviceId = it },
+                                label = { Text("Target Device ID (optional)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                text = "Device ID can be found in Settings on the target device",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val p = exportLockProfile ?: return@TextButton
+                            if (exportLockEnabled) {
+                                val expiryMs = if (exportLockExpiry) {
+                                    val days = exportLockExpiryDays.toLongOrNull() ?: 30
+                                    System.currentTimeMillis() + days * 24 * 60 * 60 * 1000L
+                                } else 0L
+                                if (exportLockMode == "qr") {
+                                    viewModel.showQrCodeLocked(p, exportLockPassword, expiryMs, exportLockAllowSharing, exportLockDeviceId)
+                                } else {
+                                    viewModel.exportProfileLocked(p, exportLockPassword, expiryMs, exportLockAllowSharing, exportLockDeviceId)
+                                }
+                            } else {
+                                if (exportLockMode == "qr") {
+                                    viewModel.showQrCode(p)
+                                } else {
+                                    viewModel.exportProfile(p)
+                                }
+                            }
+                            exportLockProfile = null
+                        },
+                        enabled = !exportLockEnabled || exportLockPassword.isNotBlank()
+                    ) { Text(if (exportLockMode == "qr") "Share" else "Export") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { exportLockProfile = null }) { Text("Cancel") }
+                }
+            )
+        }
     }
 
     // Import input dialog
@@ -1283,11 +1455,13 @@ private fun AddMenuOption(
                 text = title,
                 style = MaterialTheme.typography.titleSmall
             )
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            if (description.isNotEmpty()) {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

@@ -41,6 +41,7 @@ class PreferencesDataStore @Inject constructor(
         val PROXY_LISTEN_PORT = intPreferencesKey("proxy_listen_port")
         // Network Settings Keys
         val DISABLE_QUIC = booleanPreferencesKey("disable_quic")
+        val VPN_MTU = intPreferencesKey("vpn_mtu")
         // Network Optimization Keys
         val DNS_TIMEOUT = intPreferencesKey("dns_timeout")
         val CONNECTION_TIMEOUT = intPreferencesKey("connection_timeout")
@@ -87,6 +88,11 @@ class PreferencesDataStore @Inject constructor(
         val SCANNER_CONCURRENCY = stringPreferencesKey("scanner_concurrency")
         val SCANNER_E2E_TIMEOUT_MS = stringPreferencesKey("scanner_e2e_timeout_ms")
         val SCANNER_TEST_URL = stringPreferencesKey("scanner_test_url")
+        // DNS Scanner Resolver List Selection Keys
+        val SCANNER_LIST_SOURCE = stringPreferencesKey("scanner_list_source")
+        val SCANNER_COUNTRY = stringPreferencesKey("scanner_country")
+        val SCANNER_SAMPLE_COUNT = intPreferencesKey("scanner_sample_count")
+        val SCANNER_CUSTOM_RANGE = stringPreferencesKey("scanner_custom_range")
     }
 
     // Auto-connect on boot
@@ -210,6 +216,17 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setDisableQuic(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[Keys.DISABLE_QUIC] = enabled
+        }
+    }
+
+    // VPN MTU
+    val vpnMtu: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.VPN_MTU] ?: DEFAULT_MTU
+    }
+
+    suspend fun setVpnMtu(mtu: Int) {
+        dataStore.edit { prefs ->
+            prefs[Keys.VPN_MTU] = mtu.coerceIn(512, 1500)
         }
     }
 
@@ -541,6 +558,7 @@ class PreferencesDataStore @Inject constructor(
     companion object {
         const val DEFAULT_REMOTE_DNS = "8.8.8.8"
         const val DEFAULT_REMOTE_DNS_FALLBACK = "1.1.1.1"
+        const val DEFAULT_MTU = 1280
     }
 
     /**
@@ -585,7 +603,7 @@ class PreferencesDataStore @Inject constructor(
     }
 
     val scannerTestUrl: Flow<String> = dataStore.data.map { prefs ->
-        prefs[Keys.SCANNER_TEST_URL] ?: "http://www.google.com/generate_204"
+        prefs[Keys.SCANNER_TEST_URL] ?: "http://www.gstatic.com/generate_204"
     }
 
     suspend fun saveScannerSettings(
@@ -599,6 +617,37 @@ class PreferencesDataStore @Inject constructor(
             prefs[Keys.SCANNER_CONCURRENCY] = concurrency
             prefs[Keys.SCANNER_E2E_TIMEOUT_MS] = e2eTimeoutMs
             prefs[Keys.SCANNER_TEST_URL] = testUrl
+        }
+    }
+
+    // DNS Scanner Resolver List Selection
+    val scannerListSource: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_LIST_SOURCE] ?: "DEFAULT"
+    }
+
+    val scannerCountry: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_COUNTRY] ?: "IR"
+    }
+
+    val scannerSampleCount: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_SAMPLE_COUNT] ?: 2000
+    }
+
+    val scannerCustomRange: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_CUSTOM_RANGE] ?: ""
+    }
+
+    suspend fun saveScannerListSelection(
+        listSource: String,
+        country: String,
+        sampleCount: Int,
+        customRange: String
+    ) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SCANNER_LIST_SOURCE] = listSource
+            prefs[Keys.SCANNER_COUNTRY] = country
+            prefs[Keys.SCANNER_SAMPLE_COUNT] = sampleCount
+            prefs[Keys.SCANNER_CUSTOM_RANGE] = customRange
         }
     }
 

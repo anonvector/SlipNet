@@ -75,6 +75,9 @@ sealed class ImportResult {
  * Decoded profile format v15 (extends v14 with locked profile fields):
  * v15|..same as v14..|isLocked|lockPasswordHash
  *
+ * Decoded profile format v16 (extends v15 with locked profile enhancements):
+ * v16|..same as v15..|expirationDate|allowSharing|boundDeviceId
+ *
  */
 @Singleton
 class ConfigImporter @Inject constructor() {
@@ -86,6 +89,8 @@ class ConfigImporter @Inject constructor() {
         private const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         private const val MODE_DNSTT = "dnstt"
         private const val MODE_DNSTT_SSH = "dnstt_ssh"
+        private const val MODE_NOIZDNS = "sayedns"
+        private const val MODE_NOIZDNS_SSH = "sayedns_ssh"
         private const val MODE_SSH = "ssh"
         private const val MODE_DOH = "doh"
         private const val MODE_SNOWFLAKE = "snowflake"
@@ -109,10 +114,11 @@ class ConfigImporter @Inject constructor() {
         private const val V13_FIELD_COUNT = 28
         private const val V14_FIELD_COUNT = 31
         private const val V15_FIELD_COUNT = 33
-        private const val CURRENT_MAX_VERSION = 15
+        private const val V16_FIELD_COUNT = 36
+        private const val CURRENT_MAX_VERSION = 16
     }
 
-    fun parseAndImport(input: String): ImportResult {
+    fun parseAndImport(input: String, localDeviceId: String = ""): ImportResult {
         val lines = input.trim().lines().filter { it.isNotBlank() }
 
         if (lines.isEmpty()) {
@@ -144,10 +150,15 @@ class ConfigImporter @Inject constructor() {
                 val parseResult = parseProfile(decoded, index + 1)
                 when (parseResult) {
                     is ProfileParseResult.Success -> {
-                        profiles.add(parseResult.profile)
-                        val version = decoded.split(FIELD_DELIMITER).firstOrNull()?.toIntOrNull()
-                        if (version != null && version > CURRENT_MAX_VERSION) {
-                            warnings.add("Line ${index + 1}: Exported from a newer app version — some settings may be missing")
+                        val profile = parseResult.profile
+                        if (profile.boundDeviceId.isNotEmpty() && localDeviceId.isNotEmpty() && profile.boundDeviceId != localDeviceId) {
+                            warnings.add("Line ${index + 1}: Profile is bound to a different device, skipping")
+                        } else {
+                            profiles.add(profile)
+                            val version = decoded.split(FIELD_DELIMITER).firstOrNull()?.toIntOrNull()
+                            if (version != null && version > CURRENT_MAX_VERSION) {
+                                warnings.add("Line ${index + 1}: Exported from a newer app version — some settings may be missing")
+                            }
                         }
                     }
                     is ProfileParseResult.Warning -> warnings.add(parseResult.message)
@@ -172,10 +183,15 @@ class ConfigImporter @Inject constructor() {
             val parseResult = parseProfile(decoded, index + 1)
             when (parseResult) {
                 is ProfileParseResult.Success -> {
-                    profiles.add(parseResult.profile)
-                    val version = decoded.split(FIELD_DELIMITER).firstOrNull()?.toIntOrNull()
-                    if (version != null && version > CURRENT_MAX_VERSION) {
-                        warnings.add("Line ${index + 1}: Exported from a newer app version — some settings may be missing")
+                    val profile = parseResult.profile
+                    if (profile.boundDeviceId.isNotEmpty() && localDeviceId.isNotEmpty() && profile.boundDeviceId != localDeviceId) {
+                        warnings.add("Line ${index + 1}: Profile is bound to a different device, skipping")
+                    } else {
+                        profiles.add(profile)
+                        val version = decoded.split(FIELD_DELIMITER).firstOrNull()?.toIntOrNull()
+                        if (version != null && version > CURRENT_MAX_VERSION) {
+                            warnings.add("Line ${index + 1}: Exported from a newer app version — some settings may be missing")
+                        }
                     }
                 }
                 is ProfileParseResult.Warning -> warnings.add(parseResult.message)
@@ -224,12 +240,13 @@ class ConfigImporter @Inject constructor() {
             "13" -> parseProfileV13(fields, lineNum)
             "14" -> parseProfileV14(fields, lineNum)
             "15" -> parseProfileV15(fields, lineNum)
+            "16" -> parseProfileV16(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 15) {
-                    parseProfileV15(fields, lineNum)
+                if (versionNum != null && versionNum > 16) {
+                    parseProfileV16(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -251,7 +268,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -306,6 +323,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -320,7 +339,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -386,6 +405,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -400,7 +421,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -471,6 +492,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -485,7 +508,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -559,6 +582,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -573,7 +598,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -659,6 +684,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -673,7 +700,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -759,6 +786,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -773,7 +802,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -810,7 +839,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -855,6 +884,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -869,7 +900,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -907,7 +938,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -962,6 +993,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -976,7 +1009,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -1000,7 +1033,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         val resolvers = parseResolvers(resolversStr)
-        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
+        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
@@ -1019,7 +1052,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -1090,6 +1123,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -1104,7 +1139,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -1135,7 +1170,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         val resolvers = parseResolvers(resolversStr)
-        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
+        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
@@ -1154,7 +1189,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -1220,6 +1255,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -1234,7 +1271,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -1270,7 +1307,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         val resolvers = parseResolvers(resolversStr)
-        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
+        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
@@ -1289,7 +1326,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -1357,6 +1394,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -1371,7 +1410,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -1408,7 +1447,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         val resolvers = parseResolvers(resolversStr)
-        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
+        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
@@ -1427,7 +1466,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -1495,6 +1534,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -1509,7 +1550,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -1552,7 +1593,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         val resolvers = parseResolvers(resolversStr)
-        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
+        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.NAIVE_SSH ||
                 tunnelType == TunnelType.NAIVE ||
@@ -1572,7 +1613,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -1650,6 +1691,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SLIPSTREAM_SSH -> TunnelType.SLIPSTREAM_SSH
             MODE_DNSTT -> TunnelType.DNSTT
             MODE_DNSTT_SSH -> TunnelType.DNSTT_SSH
+            MODE_NOIZDNS -> TunnelType.NOIZDNS
+            MODE_NOIZDNS_SSH -> TunnelType.NOIZDNS_SSH
             MODE_SSH -> TunnelType.SSH
             MODE_DOH -> TunnelType.DOH
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
@@ -1664,7 +1707,7 @@ class ConfigImporter @Inject constructor() {
         val domain = fields[3]
         val resolversStr = fields[4]
         val authMode = fields[5] == "1"
-        val keepAlive = fields[6].toIntOrNull() ?: 200
+        val keepAlive = fields[6].toIntOrNull() ?: 5000
         val cc = fields[7]
         val port = fields[8].toIntOrNull() ?: 1080
         val host = fields[9]
@@ -1708,7 +1751,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         val resolvers = parseResolvers(resolversStr)
-        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
+        val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.NAIVE_SSH ||
                 tunnelType == TunnelType.NAIVE ||
@@ -1728,7 +1771,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -1791,6 +1834,30 @@ class ConfigImporter @Inject constructor() {
             naivePassword = naivePassword,
             isLocked = isLocked,
             lockPasswordHash = lockPasswordHash
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV16(fields: List<String>, lineNum: Int): ProfileParseResult {
+        // v16 extends v15 with 3 new fields; fall back to v15 parser for the base fields
+        if (fields.size < V15_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v16 format (expected at least $V15_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        // Parse the v15 base first
+        val baseResult = parseProfileV15(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // Extract v16 fields (positions 33-35), defaulting if absent
+        val expirationDate = if (fields.size > 33) fields[33].toLongOrNull() ?: 0L else 0L
+        val allowSharing = if (fields.size > 34) fields[34] == "1" else false
+        val boundDeviceId = if (fields.size > 35) fields[35] else ""
+
+        val profile = baseResult.profile.copy(
+            expirationDate = expirationDate,
+            allowSharing = allowSharing,
+            boundDeviceId = boundDeviceId
         )
 
         return ProfileParseResult.Success(profile)

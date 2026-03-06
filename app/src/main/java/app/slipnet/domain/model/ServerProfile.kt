@@ -1,12 +1,14 @@
 package app.slipnet.domain.model
 
+import app.slipnet.BuildConfig
+
 data class ServerProfile(
     val id: Long = 0,
     val name: String,
     val domain: String = "",
     val resolvers: List<DnsResolver> = emptyList(),
     val authoritativeMode: Boolean = false,
-    val keepAliveInterval: Int = 200,
+    val keepAliveInterval: Int = 5000,
     val congestionControl: CongestionControl = CongestionControl.BBR,
     val gsoEnabled: Boolean = false,
     val tcpListenPort: Int = 1080,
@@ -51,8 +53,16 @@ data class ServerProfile(
     val naivePassword: String = "",
     // Locked profile (UI-level only — full data stays in DB for VPN service)
     val isLocked: Boolean = false,
-    val lockPasswordHash: String = ""
-)
+    val lockPasswordHash: String = "",
+    // Locked profile enhancements (v16)
+    val expirationDate: Long = 0,
+    val allowSharing: Boolean = false,
+    val boundDeviceId: String = "",
+    // NoizDNS stealth mode: trades speed for DPI resistance (jitter, slow polling, cover traffic)
+    val noizdnsStealth: Boolean = false
+) {
+    val isExpired: Boolean get() = expirationDate > 0 && System.currentTimeMillis() > expirationDate
+}
 
 data class DnsResolver(
     val host: String,
@@ -76,6 +86,8 @@ enum class TunnelType(val value: String, val displayName: String) {
     SLIPSTREAM_SSH("slipstream_ssh", "Slipstream + SSH"),
     DNSTT("dnstt", "DNSTT"),
     DNSTT_SSH("dnstt_ssh", "DNSTT + SSH"),
+    NOIZDNS("sayedns", "NoizDNS"),
+    NOIZDNS_SSH("sayedns_ssh", "NoizDNS + SSH"),
     SSH("ssh", "SSH"),
     DOH("doh", "DOH (DNS over HTTPS)"),
     SNOWFLAKE("snowflake", "Tor"),
@@ -87,6 +99,12 @@ enum class TunnelType(val value: String, val displayName: String) {
             return entries.find { it.value == value } ?: DNSTT
         }
     }
+}
+
+fun TunnelType.isAvailable(): Boolean = when (this) {
+    TunnelType.SNOWFLAKE -> BuildConfig.INCLUDE_TOR
+    TunnelType.NAIVE, TunnelType.NAIVE_SSH -> BuildConfig.INCLUDE_NAIVE
+    else -> true
 }
 
 enum class SshAuthType(val value: String) {

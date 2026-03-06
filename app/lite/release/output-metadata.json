@@ -1,0 +1,67 @@
+{
+  "version": 3,
+  "artifactType": {
+    "type": "APK",
+    "kind": "Directory"
+  },
+  "applicationId": "app.slipnet.lite",
+  "variantName": "liteRelease",
+  "elements": [
+    {
+      "type": "UNIVERSAL",
+      "filters": [],
+      "attributes": [],
+      "versionCode": 35,
+      "versionName": "2.2.0-lite",
+      "outputFile": "SlipNet-v2.2.0-lite-release-universal.apk"
+    },
+    {
+      "type": "ONE_OF_MANY",
+      "filters": [
+        {
+          "filterType": "ABI",
+          "value": "arm64-v8a"
+        }
+      ],
+      "attributes": [],
+      "versionCode": 35,
+      "versionName": "2.2.0-lite",
+      "outputFile": "SlipNet-v2.2.0-lite-release-arm64-v8a.apk"
+    },
+    {
+      "type": "ONE_OF_MANY",
+      "filters": [
+        {
+          "filterType": "ABI",
+          "value": "armeabi-v7a"
+        }
+      ],
+      "attributes": [],
+      "versionCode": 35,
+      "versionName": "2.2.0-lite",
+      "outputFile": "SlipNet-v2.2.0-lite-release-armeabi-v7a.apk"
+    }
+  ],
+  "elementType": "File",
+  "baselineProfiles": [
+    {
+      "minApi": 28,
+      "maxApi": 30,
+      "baselineProfiles": [
+        "baselineProfiles/1/SlipNet-v2.2.0-lite-release-universal.dm",
+        "baselineProfiles/1/SlipNet-v2.2.0-lite-release-arm64-v8a.dm",
+        "baselineProfiles/1/SlipNet-v2.2.0-lite-release-armeabi-v7a.dm"
+      ]
+    },
+    {
+      "minApi": 31,
+      "maxApi": 2147483647,
+      "baselineProfiles": [
+        "baselineProfiles/0/SlipNet-v2.2.0-lite-release-universal.dm",
+        "baselineProfiles/0/SlipNet-v2.2.0-lite-release-arm64-v8a.dm",
+        "baselineProfiles/0/SlipNet-v2.2.0-lite-release-armeabi-v7a.dm"
+      ]
+    }
+  ],
+  "minSdkVersionForDexing": 24
+}

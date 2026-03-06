@@ -14,8 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
-val appVersionName = "2.1.1"
-val appVersionCode = 34
+val appVersionName = "2.2.0"
+val appVersionCode = 35
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -91,6 +91,25 @@ android {
 
     }
 
+    flavorDimensions += "edition"
+    productFlavors {
+        create("full") {
+            dimension = "edition"
+            buildConfigField("boolean", "INCLUDE_TOR", "true")
+            buildConfigField("boolean", "INCLUDE_NAIVE", "true")
+        }
+        create("lite") {
+            dimension = "edition"
+            applicationIdSuffix = ".lite"
+            versionNameSuffix = "-lite"
+            buildConfigField("boolean", "INCLUDE_TOR", "false")
+            buildConfigField("boolean", "INCLUDE_NAIVE", "false")
+            ndk {
+                abiFilters += "arm64-v8a"
+            }
+        }
+    }
+
     buildTypes {
         release {
             isShrinkResources = true
@@ -110,8 +129,7 @@ android {
             val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
             val abiFilter = output.getFilter("ABI")
             val abi = abiFilter ?: "universal"
-            val newName = "SlipNet-v${appVersionName}-${buildType.name}-${abi}.apk"
-            output.outputFileName = newName
+            output.outputFileName = "SlipNet-v${appVersionName}-${flavorName}-${buildType.name}-${abi}.apk"
         }
     }
 
@@ -123,6 +141,7 @@ android {
             isUniversalApk = true
         }
     }
+
     ndkVersion = "29.0.14206865"
     packaging {
         jniLibs {
@@ -363,7 +382,8 @@ tasks.whenTaskAdded {
         "cargoBuildArm", "cargoBuildArm64" -> {
             dependsOn("verifyOpenSsl")
         }
-        "mergeDebugJniLibFolders", "mergeReleaseJniLibFolders" -> {
+        "mergeFullDebugJniLibFolders", "mergeFullReleaseJniLibFolders",
+        "mergeLiteDebugJniLibFolders", "mergeLiteReleaseJniLibFolders" -> {
             dependsOn("cargoBuild")
             // Track Rust JNI output without adding a second source set (avoids duplicate resources).
             inputs.dir(layout.buildDirectory.dir("rustJniLibs/android"))
@@ -381,9 +401,10 @@ tasks.named("clean") {
 }
 
 dependencies {
-    // Combined Go library (DNSTT + Snowflake)
-    // Built via: cd gomobile-build && make build
-    implementation(files("libs/golibs.aar"))
+    // Go libraries — flavor-specific AARs built via: cd gomobile-build && make build
+    // Full: DNSTT + Snowflake, Lite: DNSTT only (smaller binary)
+    "fullImplementation"(files("libs/golibs-full.aar"))
+    "liteImplementation"(files("libs/golibs-lite.aar"))
 
     // Tor binary for Snowflake tunnel — libtor.so extracted from
     // info.guardianproject:tor-android:0.4.9.5 into jniLibs/

@@ -38,6 +38,7 @@ pub(crate) fn resolve_resolvers(
     resolvers: &[ResolverSpec],
     mtu: u32,
     debug_poll: bool,
+    primary_index: usize,
 ) -> Result<Vec<ResolverState>, ClientError> {
     let mut resolved = Vec::with_capacity(resolvers.len());
     let mut seen = HashMap::new();
@@ -52,7 +53,7 @@ pub(crate) fn resolve_resolvers(
             )));
         }
         seen.insert(addr, resolver.mode);
-        let is_primary = idx == 0;
+        let is_primary = idx == primary_index;
         resolved.push(ResolverState {
             addr,
             storage: socket_addr_to_storage(addr),
@@ -125,7 +126,7 @@ mod tests {
             },
         ];
 
-        match resolve_resolvers(&resolvers, 900, false) {
+        match resolve_resolvers(&resolvers, 900, false, 0) {
             Ok(_) => panic!("expected duplicate resolver error"),
             Err(err) => assert!(err.to_string().contains("Duplicate resolver address")),
         }

@@ -10,6 +10,7 @@ import app.slipnet.domain.model.TrafficStats
 import app.slipnet.domain.repository.ProfileRepository
 import app.slipnet.widget.VpnWidgetCompactProvider
 import app.slipnet.widget.VpnWidgetProvider
+import app.slipnet.util.DeviceIdUtil
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,9 +56,22 @@ class VpnConnectionManager @Inject constructor(
         }
     }
 
+    fun getDeviceId(): String {
+        return DeviceIdUtil.getScrambledDeviceId(context)
+    }
+
     fun connect(profile: ServerProfile) {
         if (_connectionState.value is ConnectionState.Connected ||
             _connectionState.value is ConnectionState.Connecting) {
+            return
+        }
+
+        if (profile.isExpired) {
+            _connectionState.value = ConnectionState.Error("This profile has expired")
+            return
+        }
+        if (profile.boundDeviceId.isNotEmpty() && profile.boundDeviceId != getDeviceId()) {
+            _connectionState.value = ConnectionState.Error("This profile is bound to a different device")
             return
         }
 
@@ -78,6 +92,15 @@ class VpnConnectionManager @Inject constructor(
     }
 
     fun reconnect(profile: ServerProfile) {
+        if (profile.isExpired) {
+            _connectionState.value = ConnectionState.Error("This profile has expired")
+            return
+        }
+        if (profile.boundDeviceId.isNotEmpty() && profile.boundDeviceId != getDeviceId()) {
+            _connectionState.value = ConnectionState.Error("This profile is bound to a different device")
+            return
+        }
+
         pendingProfile = profile
         _connectionState.value = ConnectionState.Connecting
 

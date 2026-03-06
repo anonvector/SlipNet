@@ -46,26 +46,66 @@ class ResolverScannerRepositoryImpl @Inject constructor(
 ) : ResolverScannerRepository {
 
     private var cachedResolvers: List<String>? = null
+    private var cachedPriorityCount: Int = 0
+    private var cachedSecondaryCount: Int = 0
 
     override fun getDefaultResolvers(): List<String> {
         // Return cached list if available
         cachedResolvers?.let { return it }
 
-        // Load from raw resource file (famous DNS servers are at the top of the file)
-        val resolvers = try {
+        // Load from raw resource file; supports two "# SHUFFLE_BELOW" markers:
+        // - Before first marker: top priority resolvers (not shuffled, scanned first)
+        // - Between first and second marker: secondary resolvers (shuffled, scanned second)
+        // - After second marker: remaining resolvers (shuffled, scanned last)
+        val resolvers = mutableListOf<String>()
+        var markerCount = 0
+        var firstMarkerIndex = 0
+        var secondMarkerIndex = 0
+        try {
             context.resources.openRawResource(R.raw.resolvers).bufferedReader().useLines { lines ->
-                lines
-                    .map { it.trim() }
-                    .filter { it.isNotBlank() && !it.startsWith("#") && isValidIpAddress(it) }
-                    .toList()
+                for (line in lines) {
+                    val trimmed = line.trim()
+                    if (trimmed == "# SHUFFLE_BELOW") {
+                        markerCount++
+                        if (markerCount == 1) {
+                            firstMarkerIndex = resolvers.size
+                        } else if (markerCount == 2) {
+                            secondMarkerIndex = resolvers.size
+                        }
+                        continue
+                    }
+                    if (trimmed.isNotBlank() && !trimmed.startsWith("#") && isValidIpAddress(trimmed)) {
+                        resolvers.add(trimmed)
+                    }
+                }
             }
         } catch (e: Exception) {
             // Fallback to basic public DNS if resource loading fails
-            listOf("8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1")
+            return listOf("8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1")
         }
 
+        if (markerCount == 0) {
+            firstMarkerIndex = 0
+            secondMarkerIndex = 0
+        } else if (markerCount == 1) {
+            // Single marker: treat as priority count, no secondary section
+            secondMarkerIndex = resolvers.size
+        }
+        cachedPriorityCount = firstMarkerIndex
+        cachedSecondaryCount = secondMarkerIndex - firstMarkerIndex
         cachedResolvers = resolvers
+        Log.d("ResolverScanner", "Parsed ${resolvers.size} resolvers, priorityCount=$firstMarkerIndex, secondaryCount=${cachedSecondaryCount}, markers=$markerCount, first5=${resolvers.take(5)}")
         return resolvers
+    }
+
+    override fun getDefaultResolverPriorityCount(): Int {
+        if (cachedResolvers == null) getDefaultResolvers()
+        return cachedPriorityCount
+    }
+
+    override fun getDefaultResolverSecondaryCount(): Int {
+        if (cachedResolvers == null) getDefaultResolvers()
+        return cachedSecondaryCount
     }
 
     override fun parseResolverList(content: String): List<String> {
@@ -157,23 +197,34 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         // Test TXT record support (against the parent zone)
         val txtSupport = testRecordType(host, port, parentDomain, DNS_TYPE_TXT, timeoutMs)
 
-        // Test random subdomain 1 (nested random subdomains)
-        val randomSubdomain1 = testRandomSubdomain(host, port, testDomain, timeoutMs)
+        // Test random subdomain resolution (two attempts, pass if either succeeds)
+        val randomSubdomain = testRandomSubdomain(host, port, testDomain, timeoutMs)
+            || testRandomSubdomain(host, port, testDomain, timeoutMs)
 
-        // Test random subdomain 2 (another nested random subdomain test)
-        val randomSubdomain2 = testRandomSubdomain(host, port, testDomain, timeoutMs)
+        // Test tunnel realism: send a dnstt-style long base32 TXT query to detect DPI
+        val tunnelRealism = testTunnelRealism(host, port, testDomain, timeoutMs)
+
+        // Test EDNS0 payload size support (probe 512, 900, 1232)
+        val ednsMaxPayload = probeEdnsMaxPayload(host, port, testDomain, timeoutMs)
+        val edns0Support = ednsMaxPayload > 0
+
+        // Test NXDOMAIN correctness (detects DNS hijacking)
+        val nxdomainCorrect = testNxdomainCorrect(host, port, timeoutMs)
 
         val responseTime = System.currentTimeMillis() - startTime
 
         val tunnelResult = DnsTunnelTestResult(
             nsSupport = nsSupport,
             txtSupport = txtSupport,
-            randomSubdomain1 = randomSubdomain1,
-            randomSubdomain2 = randomSubdomain2
+            randomSubdomain = randomSubdomain,
+            tunnelRealism = tunnelRealism,
+            edns0Support = edns0Support,
+            ednsMaxPayload = ednsMaxPayload,
+            nxdomainCorrect = nxdomainCorrect
         )
 
         // Mark as WORKING if resolver responded (basic check passed above)
-        // Score indicates tunnel compatibility quality (4/4 = fully compatible)
+        // Score indicates tunnel compatibility quality (5/5 = fully compatible)
         ResolverScanResult(
             host = host,
             port = port,
@@ -230,6 +281,304 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * Tunnel realism test — sends a query that mimics real dnstt/Slipstream wire
+     * format: a long base32-encoded random payload as the subdomain with QTYPE=TXT.
+     * DPI systems that fingerprint DNS tunnels by entropy/length/record-type will
+     * drop this query while allowing the shorter random-subdomain tests above.
+     * Getting a response (even NXDOMAIN) means the resolver passes tunnel traffic.
+     */
+    private suspend fun testTunnelRealism(
+        host: String,
+        port: Int,
+        testDomain: String,
+        timeoutMs: Long
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            // Generate a random payload roughly the size dnstt/Slipstream would use
+            // (80-120 bytes → ~130-192 base32 chars, split into 57-char DNS labels).
+            val payloadBytes = ByteArray(100).also { Random.nextBytes(it) }
+            val base32Sub = base32Encode(payloadBytes)
+            val dotified = dotifyBase32(base32Sub)
+            val queryDomain = "$dotified.$testDomain"
+
+            val result = withTimeoutOrNull(timeoutMs) {
+                performDnsQuery(host, port, queryDomain, DNS_TYPE_TXT, timeoutMs)
+            }
+            // Any response (including NXDOMAIN/SERVFAIL) means the query survived DPI
+            result != null
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Probe the maximum EDNS payload size the resolver supports.
+     * Tests sizes 512, 900, 1232 in order; returns the largest that works.
+     * 1232 is ideal for DNS tunnels (matches dnsflagday.net recommendation).
+     * Returns 0 if no EDNS support detected.
+     */
+    private suspend fun probeEdnsMaxPayload(
+        host: String,
+        port: Int,
+        testDomain: String,
+        timeoutMs: Long
+    ): Int = withContext(Dispatchers.IO) {
+        val sizes = intArrayOf(512, 900, 1232)
+        var maxWorking = 0
+
+        for (size in sizes) {
+            try {
+                val queryDomain = "${generateRandomSubdomain()}.$testDomain"
+                val dnsQuery = buildDnsQueryWithEdns0(queryDomain, DNS_TYPE_TXT, size)
+                val serverAddress = InetAddress.getByName(host)
+
+                val socket = DatagramSocket()
+                socket.soTimeout = timeoutMs.toInt().coerceIn(500, 30000)
+                try {
+                    val requestPacket = DatagramPacket(dnsQuery, dnsQuery.size, serverAddress, port)
+                    socket.send(requestPacket)
+
+                    val responseBuffer = ByteArray(4096)
+                    val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
+                    socket.receive(responsePacket)
+
+                    val len = responsePacket.length
+                    if (len >= 12) {
+                        // Check RCODE isn't FORMERR (1) — some resolvers reject unknown EDNS sizes
+                        val rcode = responseBuffer[3].toInt() and 0x0F
+                        if (rcode != 1 && hasOptRecord(responseBuffer, len)) {
+                            maxWorking = size
+                        }
+                    }
+                } finally {
+                    socket.close()
+                }
+            } catch (_: Exception) {
+                // This size failed; try next
+            }
+        }
+
+        maxWorking
+    }
+
+    /**
+     * Test NXDOMAIN correctness: query a guaranteed non-existent domain and check
+     * that the resolver returns RCODE=NXDOMAIN (3). Hijacking resolvers return
+     * NOERROR with spoofed answers, which breaks DNS tunnel protocols.
+     * Tests 3 times, passes if at least 2 return proper NXDOMAIN.
+     */
+    private suspend fun testNxdomainCorrect(
+        host: String,
+        port: Int,
+        timeoutMs: Long
+    ): Boolean = withContext(Dispatchers.IO) {
+        var nxdomainCount = 0
+        val attempts = 3
+
+        for (i in 0 until attempts) {
+            try {
+                // Query a domain under .invalid (RFC 6761 — guaranteed non-existent)
+                val randomLabel = generateRandomSubdomain()
+                val queryDomain = "nxd-$randomLabel.invalid"
+
+                val result = withTimeoutOrNull(timeoutMs) {
+                    performDnsQuery(host, port, queryDomain, DNS_TYPE_A, timeoutMs)
+                }
+
+                if (result != null && result.responseCode == 3) {
+                    // RCODE 3 = NXDOMAIN — correct behavior
+                    nxdomainCount++
+                }
+                // RCODE 0 with no answer = also acceptable (some resolvers)
+                // RCODE 0 with an answer IP = hijacking
+                if (result != null && result.responseCode == 0 && result.resolvedIp != null) {
+                    // Resolver returned a fake answer — hijacking detected
+                    // Don't increment nxdomainCount
+                }
+            } catch (_: Exception) {
+                // Timeout or error — don't count
+            }
+        }
+
+        // Pass if at least 2 out of 3 returned proper NXDOMAIN
+        nxdomainCount >= 2
+    }
+
+    /**
+     * Build a DNS query with EDNS0 OPT record in the additional section.
+     * The OPT record advertises the given UDP payload size to the resolver.
+     */
+    private fun buildDnsQueryWithEdns0(domain: String, recordType: Int, udpPayloadSize: Int): ByteArray {
+        val buffer = mutableListOf<Byte>()
+
+        // Transaction ID (random)
+        val transactionId = Random.nextInt(65536)
+        buffer.add((transactionId shr 8).toByte())
+        buffer.add((transactionId and 0xFF).toByte())
+
+        // Flags: Standard query, RD=1 (0x0100)
+        buffer.add(0x01.toByte())
+        buffer.add(0x00.toByte())
+
+        // Questions: 1
+        buffer.add(0x00.toByte())
+        buffer.add(0x01.toByte())
+
+        // Answer RRs: 0
+        buffer.add(0x00.toByte())
+        buffer.add(0x00.toByte())
+
+        // Authority RRs: 0
+        buffer.add(0x00.toByte())
+        buffer.add(0x00.toByte())
+
+        // Additional RRs: 1 (OPT record)
+        buffer.add(0x00.toByte())
+        buffer.add(0x01.toByte())
+
+        // Query name
+        domain.split(".").forEach { label ->
+            buffer.add(label.length.toByte())
+            label.forEach { buffer.add(it.code.toByte()) }
+        }
+        buffer.add(0x00.toByte()) // Null terminator
+
+        // Query type
+        buffer.add((recordType shr 8).toByte())
+        buffer.add((recordType and 0xFF).toByte())
+
+        // Query class: IN (0x0001)
+        buffer.add(0x00.toByte())
+        buffer.add(0x01.toByte())
+
+        // --- OPT pseudo-RR (RFC 6891) ---
+        buffer.add(0x00.toByte())                            // Name: root (empty)
+        buffer.add(0x00.toByte()); buffer.add(0x29.toByte()) // Type: OPT (41)
+        buffer.add((udpPayloadSize shr 8).toByte())          // Class = UDP payload size (high)
+        buffer.add((udpPayloadSize and 0xFF).toByte())       // Class = UDP payload size (low)
+        buffer.add(0x00.toByte())                            // Extended RCODE: 0
+        buffer.add(0x00.toByte())                            // EDNS version: 0
+        buffer.add(0x00.toByte()); buffer.add(0x00.toByte()) // Flags: 0 (no DO bit)
+        buffer.add(0x00.toByte()); buffer.add(0x00.toByte()) // RDATA length: 0
+
+        return buffer.toByteArray()
+    }
+
+    /**
+     * Check if the DNS response contains an OPT record (type 41) in the additional section.
+     */
+    private fun hasOptRecord(response: ByteArray, length: Int): Boolean {
+        if (length < 12) return false
+
+        val qdCount = ((response[4].toInt() and 0xFF) shl 8) or (response[5].toInt() and 0xFF)
+        val anCount = ((response[6].toInt() and 0xFF) shl 8) or (response[7].toInt() and 0xFF)
+        val nsCount = ((response[8].toInt() and 0xFF) shl 8) or (response[9].toInt() and 0xFF)
+        val arCount = ((response[10].toInt() and 0xFF) shl 8) or (response[11].toInt() and 0xFF)
+
+        if (arCount == 0) return false
+
+        // Skip past header
+        var offset = 12
+
+        // Skip question section
+        for (i in 0 until qdCount) {
+            offset = skipDnsName(response, offset, length) ?: return false
+            offset += 4 // QTYPE + QCLASS
+            if (offset > length) return false
+        }
+
+        // Skip answer + authority sections
+        for (i in 0 until (anCount + nsCount)) {
+            offset = skipDnsName(response, offset, length) ?: return false
+            if (offset + 10 > length) return false
+            val rdLength = ((response[offset + 8].toInt() and 0xFF) shl 8) or (response[offset + 9].toInt() and 0xFF)
+            offset += 10 + rdLength
+            if (offset > length) return false
+        }
+
+        // Parse additional section looking for OPT (type 41)
+        for (i in 0 until arCount) {
+            offset = skipDnsName(response, offset, length) ?: return false
+            if (offset + 10 > length) return false
+            val rrType = ((response[offset].toInt() and 0xFF) shl 8) or (response[offset + 1].toInt() and 0xFF)
+            if (rrType == 41) return true // Found OPT record
+            val rdLength = ((response[offset + 8].toInt() and 0xFF) shl 8) or (response[offset + 9].toInt() and 0xFF)
+            offset += 10 + rdLength
+            if (offset > length) return false
+        }
+
+        return false
+    }
+
+    /**
+     * Skip a DNS name (handles both labels and compression pointers).
+     * Returns the offset after the name, or null on error.
+     */
+    private fun skipDnsName(data: ByteArray, startOffset: Int, length: Int): Int? {
+        var offset = startOffset
+        while (offset < length) {
+            val labelLen = data[offset].toInt() and 0xFF
+            if (labelLen == 0) {
+                return offset + 1 // End of name
+            }
+            if ((labelLen and 0xC0) == 0xC0) {
+                return offset + 2 // Compression pointer (2 bytes)
+            }
+            offset += 1 + labelLen
+        }
+        return null // Ran past end
+    }
+
+    /**
+     * RFC 4648 base32 encode (A-Z 2-7, no padding) — matches dnstt/Slipstream alphabet.
+     */
+    private fun base32Encode(data: ByteArray): String {
+        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+        val sb = StringBuilder((data.size * 8 + 4) / 5)
+        var buffer = 0
+        var bitsLeft = 0
+        for (byte in data) {
+            buffer = (buffer shl 8) or (byte.toInt() and 0xFF)
+            bitsLeft += 8
+            while (bitsLeft >= 5) {
+                bitsLeft -= 5
+                sb.append(alphabet[(buffer shr bitsLeft) and 0x1F])
+            }
+        }
+        if (bitsLeft > 0) {
+            sb.append(alphabet[(buffer shl (5 - bitsLeft)) and 0x1F])
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Insert dots every 57 characters from the right so each DNS label stays ≤ 57 chars,
+     * matching the Slipstream dotify convention.
+     */
+    private fun dotifyBase32(encoded: String): String {
+        if (encoded.length <= 57) return encoded
+        val sb = StringBuilder(encoded.length + encoded.length / 57)
+        var remaining = encoded.length
+        var pos = 0
+        // First label gets the remainder length, subsequent labels are 57 chars
+        val firstLabelLen = remaining % 57
+        if (firstLabelLen > 0) {
+            sb.append(encoded, 0, firstLabelLen)
+            pos = firstLabelLen
+            remaining -= firstLabelLen
+            if (remaining > 0) sb.append('.')
+        }
+        while (remaining > 0) {
+            val end = pos + minOf(57, remaining)
+            sb.append(encoded, pos, end)
+            remaining -= (end - pos)
+            pos = end
+            if (remaining > 0) sb.append('.')
+        }
+        return sb.toString()
+    }
+
     override fun expandIpRanges(ranges: List<Pair<Long, Long>>): List<String> {
         val result = mutableListOf<String>()
         for ((start, end) in ranges) {
@@ -242,15 +591,16 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         return result
     }
 
-    override fun generateCountryRangeIps(
+    override fun loadCountryCidrRanges(
         context: android.content.Context,
-        countryCode: String,
-        count: Int
-    ): List<String> {
-        val ranges = loadCidrRanges(context, countryCode)
+        countryCode: String
+    ): List<Pair<Long, Long>> {
+        return loadCidrRanges(context, countryCode)
+    }
+
+    override fun generateFromRanges(ranges: List<Pair<Long, Long>>, count: Int): List<String> {
         if (ranges.isEmpty()) return emptyList()
 
-        // Precompute cumulative sizes for proportional sampling
         val cumulativeSizes = LongArray(ranges.size)
         var cumulative = 0L
         for (i in ranges.indices) {
@@ -261,15 +611,13 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         val totalIps = cumulative
 
         val result = mutableSetOf<String>()
-        val maxAttempts = count * 3 // avoid infinite loop on small ranges
+        val maxAttempts = count * 3
         var attempts = 0
 
         while (result.size < count && attempts < maxAttempts) {
             attempts++
-            // Pick a random position in the total IP space
             val pos = (Random.nextLong(totalIps) and 0x7FFFFFFFFFFFFFFFL) % totalIps
 
-            // Binary search for which range this falls into
             var lo = 0
             var hi = ranges.size - 1
             while (lo < hi) {
@@ -284,6 +632,15 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         }
 
         return result.toList()
+    }
+
+    override fun generateCountryRangeIps(
+        context: android.content.Context,
+        countryCode: String,
+        count: Int
+    ): List<String> {
+        val ranges = loadCidrRanges(context, countryCode)
+        return generateFromRanges(ranges, count)
     }
 
     private fun loadCidrRanges(context: android.content.Context, countryCode: String): List<Pair<Long, Long>> {
@@ -372,6 +729,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 testResolverSlipstream(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate)
             TunnelType.DNSTT, TunnelType.DNSTT_SSH ->
                 testResolverDnstt(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate)
+            TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH ->
+                testResolverDnstt(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate, noizMode = true)
             else ->
                 E2eTestResult(errorMessage = "Unsupported tunnel type: ${profile.tunnelType.displayName}")
         }
@@ -401,7 +760,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         onPhaseUpdate: (String) -> Unit
     ): E2eTestResult = withContext(Dispatchers.IO) {
         val totalStart = System.currentTimeMillis()
-        val tunnelPort = E2E_TUNNEL_PORT
+        val tunnelPort = findFreePort()
         try {
             // Phase 1: Start tunnel
             onPhaseUpdate("Starting tunnel...")
@@ -508,15 +867,17 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         profile: ServerProfile,
         testUrl: String,
         timeoutMs: Long,
-        onPhaseUpdate: (String) -> Unit
+        onPhaseUpdate: (String) -> Unit,
+        noizMode: Boolean = false
     ): E2eTestResult = withContext(Dispatchers.IO) {
         val totalStart = System.currentTimeMillis()
-        // Same two-layer stack as VPN: DnsttBridge on port+1, DnsttSocksBridge on port
-        val bridgePort = E2E_TUNNEL_PORT
-        val dnsttPort = E2E_TUNNEL_PORT + 1
+        val tunnelName = if (noizMode) "NoizDNS" else "DNSTT"
+        // Same two-layer stack as VPN: DnsttBridge on one port, DnsttSocksBridge on another
+        val dnsttPort = findFreePort()
+        val bridgePort = findFreePort()
         try {
-            // Phase 1: Start DNSTT raw tunnel
-            onPhaseUpdate("Starting DNSTT...")
+            // Phase 1: Start tunnel
+            onPhaseUpdate("Starting $tunnelName...")
 
             // Format resolver per DNS transport
             val dnsServer = when (profile.dnsTransport) {
@@ -535,13 +896,14 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 publicKey = profile.dnsttPublicKey,
                 listenPort = dnsttPort,
                 listenHost = "127.0.0.1",
-                authoritativeMode = profile.dnsttAuthoritative
+                authoritativeMode = profile.dnsttAuthoritative,
+                noizMode = noizMode
             )
 
             if (startResult.isFailure) {
                 return@withContext E2eTestResult(
                     totalMs = System.currentTimeMillis() - totalStart,
-                    errorMessage = "DNSTT start failed: ${startResult.exceptionOrNull()?.message}",
+                    errorMessage = "$tunnelName start failed: ${startResult.exceptionOrNull()?.message}",
                     phase = E2eTestPhase.TUNNEL_SETUP
                 )
             }
@@ -869,7 +1231,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             val statusCode = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: 0
 
             HttpThroughSocksResult(
-                success = statusCode in 200..499,
+                success = statusCode in 200..299,
                 statusCode = statusCode,
                 latencyMs = latencyMs
             )
@@ -939,10 +1301,14 @@ class ResolverScannerRepositoryImpl @Inject constructor(
     }
 
     companion object {
-        private const val E2E_TUNNEL_PORT = 10800
         private const val DNS_TYPE_A = 1      // A record (IPv4 address)
         private const val DNS_TYPE_NS = 2     // NS record (Name server)
         private const val DNS_TYPE_TXT = 16   // TXT record (Text)
+
+        /** Find a free port by binding to port 0 and immediately releasing it. */
+        fun findFreePort(): Int {
+            return java.net.ServerSocket(0).use { it.localPort }
+        }
     }
 
     private data class DnsQueryResult(

@@ -596,7 +596,11 @@ object DohBridge {
                 val dnsQuery = ByteArray(msgLen)
                 input.readFully(dnsQuery)
 
-                val response = forwardDnsViaDoH(dnsQuery)
+                val response = if (DnsUtils.isAAAAQuery(dnsQuery)) {
+                    DnsUtils.buildAAAANoDataResponse(dnsQuery)
+                } else {
+                    forwardDnsViaDoH(dnsQuery)
+                }
                 if (response != null && response.isNotEmpty()) {
                     synchronized(output) {
                         output.write((response.size shr 8) and 0xFF)
@@ -658,7 +662,11 @@ object DohBridge {
             }
 
             try {
-                val response = forwardUdpPacket(dest.first, dest.second, payload)
+                val response = if (dest.second == 53 && DnsUtils.isAAAAQuery(payload)) {
+                    DnsUtils.buildAAAANoDataResponse(payload)
+                } else {
+                    forwardUdpPacket(dest.first, dest.second, payload)
+                }
                 if (response != null && response.isNotEmpty()) {
                     val respHdr = ByteArray(3)
                     respHdr[0] = ((response.size shr 8) and 0xFF).toByte()

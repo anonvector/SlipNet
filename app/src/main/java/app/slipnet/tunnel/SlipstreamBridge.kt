@@ -84,13 +84,13 @@ object SlipstreamBridge {
         domain: String,
         resolvers: List<ResolverConfig>,
         congestionControl: String = "bbr",
-        keepAliveInterval: Int = 200,
+        keepAliveInterval: Int = 5000,
         tcpListenPort: Int = DEFAULT_SLIPSTREAM_PORT,
         tcpListenHost: String = DEFAULT_LISTEN_HOST,
         gsoEnabled: Boolean = false,
         debugPoll: Boolean = false,
         debugStreams: Boolean = false,
-        idlePollIntervalMs: Int = 2000,
+        idlePollIntervalMs: Int = 10000,
         idleTimeoutMs: Int = 120000
     ): Result<Unit> {
         if (!isLibraryLoaded) {

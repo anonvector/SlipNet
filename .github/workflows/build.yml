@@ -124,11 +124,19 @@ jobs:
       - name: Build Release APK
         run: ./gradlew assembleRelease --no-daemon
 
-      - name: Upload Release APK
+      - name: Collect release APKs
+        run: |
+          mkdir -p release-apks
+          # Full: all APKs (arm64, armeabi-v7a, universal)
+          cp app/build/outputs/apk/full/release/SlipNet-*-full-*.apk release-apks/ 2>/dev/null || true
+          # Lite: universal only (arm64-only build)
+          cp app/build/outputs/apk/lite/release/SlipNet-*-lite-*-universal.apk release-apks/ 2>/dev/null || true
+
+      - name: Upload Release APKs
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: app/build/outputs/apk/release/*.apk
+          path: release-apks/*.apk
 
   release:
     needs: build

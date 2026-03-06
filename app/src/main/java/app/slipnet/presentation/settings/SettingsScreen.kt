@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Help
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -104,6 +105,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -128,6 +130,7 @@ fun SettingsScreen(
     var showGeoBypassCountryDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showRemoteDnsDialog by remember { mutableStateOf(false) }
+    var showMtuDialog by remember { mutableStateOf(false) }
 
     // Proxy settings - local state for port text fields to avoid cursor jumps from async DataStore round-trip
     var proxyPort by remember { mutableStateOf(uiState.proxyListenPort.toString()) }
@@ -195,6 +198,9 @@ fun SettingsScreen(
                 ),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
+            // Donate Card
+            DonateCard()
+
             // Connection Settings
             SettingsSection(title = "Connection") {
                 SwitchSettingItem(
@@ -256,13 +262,18 @@ fun SettingsScreen(
                     description = if (isBatteryOptimized) "Not exempted — VPN may disconnect in background"
                                   else "Exempted — VPN will run reliably in background",
                     onClick = {
-                        try {
-                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                data = Uri.parse("package:${context.packageName}")
+                        if (isBatteryOptimized) {
+                            try {
+                                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                    data = Uri.parse("package:${context.packageName}")
+                                }
+                                context.startActivity(intent)
+                            } catch (_: Exception) {
+                                val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                                context.startActivity(intent)
                             }
-                            context.startActivity(intent)
-                        } catch (_: Exception) {
-                            // Fallback to battery optimization settings list
+                        } else {
+                            // Already exempted — open system battery settings so user can change it
                             val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
                             context.startActivity(intent)
                         }
@@ -341,6 +352,13 @@ fun SettingsScreen(
                         httpProxyEnabled = uiState.httpProxyEnabled,
                         httpProxyPort = uiState.httpProxyPort
                     )
+                } else {
+                    LocalProxyInfoCard(
+                        listenAddress = uiState.proxyListenAddress,
+                        socksPort = uiState.proxyListenPort,
+                        httpProxyEnabled = uiState.httpProxyEnabled,
+                        httpProxyPort = uiState.httpProxyPort
+                    )
                 }
             }
 
@@ -355,6 +373,15 @@ fun SettingsScreen(
                     description = "Block QUIC protocol to force TCP (faster page loads over tunnels)",
                     checked = uiState.disableQuic,
                     onCheckedChange = { viewModel.setDisableQuic(it) }
+                )
+
+                SettingsDivider()
+
+                ClickableSettingItem(
+                    icon = Icons.Default.SettingsEthernet,
+                    title = "MTU",
+                    description = "Packet size: ${uiState.vpnMtu}. Lower values improve compatibility on mobile networks.",
+                    onClick = { showMtuDialog = true }
                 )
 
                 SettingsDivider()
@@ -555,6 +582,38 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // Device ID
+            val deviceId = remember {
+                app.slipnet.util.DeviceIdUtil.getScrambledDeviceId(context)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "Device ID: $deviceId",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                IconButton(
+                    onClick = {
+                        val clipboardManager = context.getSystemService(android.content.ClipboardManager::class.java)
+                        clipboardManager?.setPrimaryClip(android.content.ClipData.newPlainText("Device ID", deviceId))
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Default.ContentCopy,
+                        contentDescription = "Copy device ID",
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             // App Info
             Text(
                 text = "SlipNet VPN v${BuildConfig.VERSION_NAME}",
@@ -568,6 +627,102 @@ fun SettingsScreen(
     }
 
     // Dark Mode Dialog
+    if (showMtuDialog) {
+        val mtuPresets = listOf(
+            1500 to "Best throughput on clean networks",
+            1400 to "Recommended for most mobile networks",
+            1350 to "Conservative, for double-NAT or PPPoE",
+            1280 to "Maximum compatibility"
+        )
+        val isCustom = mtuPresets.none { it.first == uiState.vpnMtu }
+        var customMtuText by remember { mutableStateOf(if (isCustom) uiState.vpnMtu.toString() else "") }
+        var useCustom by remember { mutableStateOf(isCustom) }
+        AlertDialog(
+            onDismissRequest = { showMtuDialog = false },
+            title = { Text("VPN MTU") },
+            text = {
+                Column {
+                    mtuPresets.forEach { (mtu, desc) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    useCustom = false
+                                    viewModel.setVpnMtu(mtu)
+                                    showMtuDialog = false
+                                }
+                                .padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = !useCustom && uiState.vpnMtu == mtu,
+                                onClick = {
+                                    useCustom = false
+                                    viewModel.setVpnMtu(mtu)
+                                    showMtuDialog = false
+                                }
+                            )
+                            Column(modifier = Modifier.padding(start = 8.dp)) {
+                                Text(text = "$mtu")
+                                Text(
+                                    text = desc,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { useCustom = true }
+                            .padding(vertical = 12.dp, horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = useCustom,
+                            onClick = { useCustom = true }
+                        )
+                        OutlinedTextField(
+                            value = customMtuText,
+                            onValueChange = { customMtuText = it.filter { c -> c.isDigit() }.take(5) },
+                            enabled = useCustom,
+                            label = { Text("Custom") },
+                            placeholder = { Text("512–1500") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier
+                                .padding(start = 8.dp)
+                                .fillMaxWidth()
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (useCustom) {
+                    TextButton(
+                        onClick = {
+                            val value = customMtuText.toIntOrNull()
+                            if (value != null && value in 512..1500) {
+                                viewModel.setVpnMtu(value)
+                                showMtuDialog = false
+                            }
+                        }
+                    ) {
+                        Text("Apply")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMtuDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     if (showDarkModeDialog) {
         AlertDialog(
             onDismissRequest = { showDarkModeDialog = false },
@@ -1350,7 +1505,8 @@ private fun getAddressOptions(): List<Pair<String, String>> {
 }
 
 /**
- * Detect the device's hotspot gateway IP, or fall back to the Wi-Fi IP.
+ * Detect the device's shareable IP address.
+ * Priority: hotspot interface > Wi-Fi > any non-loopback IPv4 interface.
  * Returns a pair of (ip, isHotspot) or null if no suitable interface is found.
  */
 private fun detectShareableIp(): Pair<String, Boolean>? {
@@ -1378,6 +1534,15 @@ private fun detectShareableIp(): Pair<String, Boolean>? {
                     ?.hostAddress
                 if (ip != null) return ip to false
             }
+        }
+
+        // Fall back to any non-loopback IPv4 interface (mobile data, USB, ethernet, etc.)
+        for (iface in interfaces) {
+            if (!iface.isUp || iface.isLoopback) continue
+            val ip = iface.inetAddresses.toList()
+                .firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+                ?.hostAddress
+            if (ip != null) return ip to false
         }
     } catch (_: Exception) { }
     return null
@@ -1481,6 +1646,80 @@ private fun HotspotInfoCard(
                         MaterialTheme.colorScheme.onPrimaryContainer
                     else
                         MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalProxyInfoCard(
+    listenAddress: String,
+    socksPort: Int,
+    httpProxyEnabled: Boolean = false,
+    httpProxyPort: Int = 8080
+) {
+    val socksAddress = "$listenAddress:$socksPort"
+    val httpAddress = "$listenAddress:$httpProxyPort"
+    val copyText = if (httpProxyEnabled) "SOCKS5: $socksAddress | HTTP: $httpAddress" else socksAddress
+    val clipboardManager = LocalClipboardManager.current
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.SettingsEthernet,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp)
+            ) {
+                Text(
+                    text = "Proxy address",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "SOCKS5: $socksAddress",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                if (httpProxyEnabled) {
+                    Text(
+                        text = "HTTP: $httpAddress",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                Text(
+                    text = "Configure this in your app's proxy settings",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(
+                onClick = { clipboardManager.setText(AnnotatedString(copyText)) },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ContentCopy,
+                    contentDescription = "Copy address",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
                 )
             }
@@ -1605,6 +1844,117 @@ private fun TextFieldSettingItem(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = 40.dp)
+        )
+    }
+}
+
+@Composable
+private fun DonateCard() {
+    val clipboardManager = LocalClipboardManager.current
+    val donationAddress = ""
+    var showDonateDialog by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { showDonateDialog = true },
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Favorite,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp)
+            ) {
+                Text(
+                    text = "Support SlipNet",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Help keep this project free and maintained",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                imageVector = Icons.Default.Favorite,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+
+    if (showDonateDialog) {
+        AlertDialog(
+            onDismissRequest = { showDonateDialog = false },
+            title = { Text("Support SlipNet") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "SlipNet is free, open-source, and built to fight internet censorship. No ads, no data collection, no subscriptions. Your donation helps keep this tool free and improving for everyone who needs it.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    Text(
+                        text = "USDT (BEP20 / ERC20)",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = donationAddress,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        IconButton(
+                            onClick = {
+                                clipboardManager.setText(AnnotatedString(donationAddress))
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.ContentCopy,
+                                contentDescription = "Copy address",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Even a small amount makes a difference. Thank you.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDonateDialog = false }) {
+                    Text("Close")
+                }
+            }
         )
     }
 }

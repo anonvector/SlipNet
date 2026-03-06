@@ -16,6 +16,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,6 +45,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PlayArrow
@@ -51,6 +53,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
@@ -70,6 +73,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -93,6 +97,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.tunnel.GeoBypassCountry
 
@@ -118,9 +124,15 @@ fun DnsScannerScreen(
     ) { uri: Uri? ->
         uri?.let {
             try {
+                val fileName = try {
+                    context.contentResolver.query(it, null, null, null, null)?.use { cursor ->
+                        val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (cursor.moveToFirst() && nameIndex >= 0) cursor.getString(nameIndex) else null
+                    }
+                } catch (_: Exception) { null }
                 context.contentResolver.openInputStream(it)?.use { inputStream ->
                     val content = inputStream.bufferedReader().readText()
-                    viewModel.importList(content)
+                    viewModel.importList(content, fileName)
                 }
             } catch (e: Exception) {
                 // Error handled in ViewModel
@@ -144,16 +156,26 @@ fun DnsScannerScreen(
     // Resume dialog
     if (uiState.showResumeDialog) {
         val ss = uiState.scannerState
+        val isSimple = uiState.scanMode == ScanMode.SIMPLE
+        val dialogText = if (isSimple) {
+            val e2e = uiState.simpleModeE2eState
+            buildString {
+                append("You scanned ${ss.scannedCount} of ${ss.totalCount} resolvers")
+                append(" and found ${ss.workingCount} working.")
+                if (e2e.testedCount > 0) {
+                    append(" E2E tested ${e2e.testedCount}, ${e2e.passedCount} passed.")
+                }
+                append(" Continue from where you left off?")
+            }
+        } else {
+            "You scanned ${ss.scannedCount} of ${ss.totalCount} resolvers" +
+                    " and found ${ss.workingCount} working." +
+                    " Continue from where you left off?"
+        }
         AlertDialog(
             onDismissRequest = { viewModel.dismissResumeDialog() },
             title = { Text("Continue Previous Scan?") },
-            text = {
-                Text(
-                    "You scanned ${ss.scannedCount} of ${ss.totalCount} resolvers" +
-                            " and found ${ss.workingCount} working." +
-                            " Continue from where you left off?"
-                )
-            },
+            text = { Text(dialogText) },
             confirmButton = {
                 Button(onClick = { viewModel.resumeScan() }) {
                     Text("Continue")
@@ -203,26 +225,44 @@ fun DnsScannerScreen(
             // Hero
             HeroCard()
 
+            // Scan Mode Toggle (only when profile supports E2E)
+            if (uiState.canUseSimpleMode) {
+                ScanModeToggle(
+                    scanMode = uiState.scanMode,
+                    enabled = !uiState.scannerState.isScanning && !uiState.simpleModeE2eState.isRunning,
+                    onModeChange = { viewModel.setScanMode(it) }
+                )
+            }
+
             // Start Scan + View Results
             ActionSection(
                 canStartScan = uiState.resolverList.isNotEmpty() && !uiState.scannerState.isScanning,
                 hasResults = uiState.scannerState.results.isNotEmpty(),
-                workingCount = uiState.scannerState.workingCount,
+                workingCount = if (uiState.scanMode == ScanMode.SIMPLE) {
+                    uiState.scannerState.results.count { it.e2eTestResult?.success == true }
+                } else {
+                    uiState.scannerState.workingCount
+                },
+                scanMode = uiState.scanMode,
                 onStartScan = { viewModel.startScan() },
                 onViewResults = onNavigateToResults
             )
 
             // Configuration
+            val isProfileLocked = uiState.profile?.isLocked == true
             ConfigurationSection(
                 testDomain = uiState.testDomain,
+                isProfileLocked = isProfileLocked,
                 timeoutMs = uiState.timeoutMs,
                 concurrency = uiState.concurrency,
+                shuffleList = uiState.shuffleList,
                 testUrl = uiState.testUrl,
                 e2eTimeoutMs = uiState.e2eTimeoutMs,
                 showTestUrl = uiState.profileId != null,
                 onTestDomainChange = { viewModel.updateTestDomain(it) },
                 onTimeoutChange = { viewModel.updateTimeout(it) },
                 onConcurrencyChange = { viewModel.updateConcurrency(it) },
+                onShuffleListChange = { viewModel.updateShuffleList(it) },
                 onTestUrlChange = { viewModel.updateTestUrl(it) },
                 onE2eTimeoutChange = { viewModel.updateE2eTimeout(it) }
             )
@@ -231,15 +271,30 @@ fun DnsScannerScreen(
             ResolverListSection(
                 resolverCount = uiState.resolverList.size,
                 listSource = uiState.listSource,
+                importedFileName = uiState.importedFileName,
                 isLoading = uiState.isLoadingList,
                 selectedCountry = uiState.selectedCountry,
                 sampleCount = uiState.sampleCount,
+                effectiveSampleCount = uiState.effectiveSampleCount,
+                useCustomSampleCount = uiState.useCustomSampleCount,
+                customSampleCountText = uiState.customSampleCountText,
+                cidrGroups = uiState.cidrGroups,
+                selectedOctets = uiState.selectedOctets,
+                countryTotalIps = uiState.countryTotalIps,
+                selectedTotalIps = uiState.selectedTotalIps,
                 customRangeInput = uiState.customRangeInput,
+                canStartScan = uiState.resolverList.isNotEmpty() && !uiState.scannerState.isScanning,
+                onStartScan = { viewModel.startScan() },
                 onLoadDefault = { viewModel.loadDefaultList() },
                 onImportFile = { filePickerLauncher.launch("text/*") },
                 onSelectCountry = { viewModel.updateSelectedCountry(it) },
                 onSelectSampleCount = { viewModel.updateSampleCount(it) },
+                onUseCustomSampleCount = { viewModel.setUseCustomSampleCount(it) },
+                onCustomSampleCountChange = { viewModel.updateCustomSampleCount(it) },
                 onGenerateCountryList = { viewModel.loadCountryRangeList() },
+                onToggleOctet = { viewModel.toggleOctetGroup(it) },
+                onSelectAllOctets = { viewModel.selectAllOctetGroups() },
+                onDeselectAllOctets = { viewModel.deselectAllOctetGroups() },
                 onCustomRangeInputChange = { viewModel.updateCustomRangeInput(it) },
                 onLoadCustomRange = { viewModel.loadCustomRangeList() }
             )
@@ -276,13 +331,13 @@ private fun HeroCard() {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(12.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(36.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary),
                 contentAlignment = Alignment.Center
@@ -291,7 +346,7 @@ private fun HeroCard() {
                     Icons.Default.NetworkCheck,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
 
@@ -318,9 +373,17 @@ private fun ActionSection(
     canStartScan: Boolean,
     hasResults: Boolean,
     workingCount: Int,
+    scanMode: ScanMode = ScanMode.ADVANCED,
     onStartScan: () -> Unit,
     onViewResults: () -> Unit
 ) {
+    val buttonLabel = if (scanMode == ScanMode.SIMPLE) "Start Simple Scan" else "Start Scan"
+    val resultsLabel = if (scanMode == ScanMode.SIMPLE) {
+        "View Results ($workingCount passed)"
+    } else {
+        "View Results ($workingCount working)"
+    }
+
     Column(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -342,7 +405,7 @@ private fun ActionSection(
             )
             Spacer(Modifier.width(10.dp))
             Text(
-                "Start Scan",
+                buttonLabel,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold
             )
@@ -365,23 +428,80 @@ private fun ActionSection(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("View Results ($workingCount working)")
+                Text(resultsLabel)
             }
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ScanModeToggle(
+    scanMode: ScanMode,
+    enabled: Boolean,
+    onModeChange: (ScanMode) -> Unit
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FilterChip(
+                selected = scanMode == ScanMode.SIMPLE,
+                onClick = { onModeChange(ScanMode.SIMPLE) },
+                enabled = enabled,
+                label = { Text("Simple") },
+                leadingIcon = if (scanMode == ScanMode.SIMPLE) {
+                    { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                } else null,
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.primary,
+                    selectedLeadingIconColor = MaterialTheme.colorScheme.primary
+                )
+            )
+            FilterChip(
+                selected = scanMode == ScanMode.ADVANCED,
+                onClick = { onModeChange(ScanMode.ADVANCED) },
+                enabled = enabled,
+                label = { Text("Advanced") },
+                leadingIcon = if (scanMode == ScanMode.ADVANCED) {
+                    { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                } else null,
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.primary,
+                    selectedLeadingIconColor = MaterialTheme.colorScheme.primary
+                )
+            )
+        }
+
+        Text(
+            text = if (scanMode == ScanMode.SIMPLE)
+                "Scans DNS resolvers and automatically tests each one through the tunnel. Only resolvers that pass the tunnel test are shown."
+            else
+                "Scan DNS resolvers first, then optionally run tunnel test separately.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+        )
     }
 }
 
 @Composable
 private fun ConfigurationSection(
     testDomain: String,
+    isProfileLocked: Boolean = false,
     timeoutMs: String,
     concurrency: String,
+    shuffleList: Boolean = false,
     testUrl: String = "",
     e2eTimeoutMs: String = "7000",
     showTestUrl: Boolean = false,
     onTestDomainChange: (String) -> Unit,
     onTimeoutChange: (String) -> Unit,
     onConcurrencyChange: (String) -> Unit,
+    onShuffleListChange: (Boolean) -> Unit = {},
     onTestUrlChange: (String) -> Unit = {},
     onE2eTimeoutChange: (String) -> Unit = {}
 ) {
@@ -406,7 +526,9 @@ private fun ConfigurationSection(
                 value = testDomain,
                 onValueChange = onTestDomainChange,
                 label = { Text("Test Domain") },
-                placeholder = { Text("google.com") },
+                placeholder = {
+                    Text(if (isProfileLocked) "Profile domain (default)" else "google.com")
+                },
                 leadingIcon = {
                     Icon(
                         Icons.Default.Search,
@@ -414,7 +536,12 @@ private fun ConfigurationSection(
                         modifier = Modifier.size(20.dp)
                     )
                 },
-                supportingText = { Text("Domain used to test if resolvers work") },
+                supportingText = {
+                    Text(
+                        if (isProfileLocked && testDomain.isBlank()) "Using profile domain — enter a domain to override"
+                        else "Domain used to test if resolvers work"
+                    )
+                },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp)
@@ -460,12 +587,38 @@ private fun ConfigurationSection(
                 )
             }
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Shuffle,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "Shuffle IP list",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                Switch(
+                    checked = shuffleList,
+                    onCheckedChange = onShuffleListChange
+                )
+            }
+
             if (showTestUrl) {
                 OutlinedTextField(
                     value = testUrl,
                     onValueChange = onTestUrlChange,
                     label = { Text("Test URL (E2E)") },
-                    placeholder = { Text("http://www.google.com/generate_204") },
+                    placeholder = { Text("http://www.gstatic.com/generate_204") },
                     leadingIcon = {
                         Icon(
                             Icons.Default.NetworkCheck,
@@ -505,15 +658,30 @@ private fun ConfigurationSection(
 private fun ResolverListSection(
     resolverCount: Int,
     listSource: ListSource,
+    importedFileName: String?,
     isLoading: Boolean,
     selectedCountry: GeoBypassCountry,
     sampleCount: Int,
+    effectiveSampleCount: Int,
+    useCustomSampleCount: Boolean,
+    customSampleCountText: String,
+    cidrGroups: List<CidrGroup>,
+    selectedOctets: Set<Int>,
+    countryTotalIps: Long,
+    selectedTotalIps: Long,
     customRangeInput: String,
+    canStartScan: Boolean,
+    onStartScan: () -> Unit,
     onLoadDefault: () -> Unit,
     onImportFile: () -> Unit,
     onSelectCountry: (GeoBypassCountry) -> Unit,
     onSelectSampleCount: (Int) -> Unit,
+    onUseCustomSampleCount: (Boolean) -> Unit,
+    onCustomSampleCountChange: (String) -> Unit,
     onGenerateCountryList: () -> Unit,
+    onToggleOctet: (Int) -> Unit,
+    onSelectAllOctets: () -> Unit,
+    onDeselectAllOctets: () -> Unit,
     onCustomRangeInputChange: (String) -> Unit,
     onLoadCustomRange: () -> Unit
 ) {
@@ -525,6 +693,18 @@ private fun ResolverListSection(
                 else -> ResolverPanel.NONE
             }
         )
+    }
+
+    // Sync panel when listSource changes after async restore
+    LaunchedEffect(listSource) {
+        val expected = when (listSource) {
+            ListSource.COUNTRY_RANGE -> ResolverPanel.COUNTRY
+            ListSource.CUSTOM_RANGE -> ResolverPanel.CUSTOM
+            else -> null
+        }
+        if (expected != null && activePanel == ResolverPanel.NONE) {
+            activePanel = expected
+        }
     }
 
     Card(
@@ -581,8 +761,8 @@ private fun ResolverListSection(
                     Text(
                         text = when (listSource) {
                             ListSource.DEFAULT -> "Built-in list"
-                            ListSource.IMPORTED -> "Imported from file"
-                            ListSource.COUNTRY_RANGE -> "${selectedCountry.displayName} IP range ($sampleCount random IPs)"
+                            ListSource.IMPORTED -> if (importedFileName != null) "Imported: $importedFileName" else "Imported from file"
+                            ListSource.COUNTRY_RANGE -> "${selectedCountry.displayName} IP range ($effectiveSampleCount random IPs)"
                             ListSource.CUSTOM_RANGE -> "Custom range ($resolverCount IPs)"
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -737,14 +917,23 @@ private fun ResolverListSection(
                             AnimatedVisibility(
                                 visible = listSource == ListSource.CUSTOM_RANGE && !isLoading && resolverCount > 0
                             ) {
-                                Text(
-                                    text = "Ready! Scroll up and tap Start Scan to begin.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Medium,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                Button(
+                                    onClick = onStartScan,
+                                    enabled = canStartScan,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Icon(
+                                        Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Start Scan", fontWeight = FontWeight.SemiBold)
+                                }
                             }
                         }
                     }
@@ -774,6 +963,45 @@ private fun ResolverListSection(
                                 }
                             }
 
+                            // Stats row
+                            if (cidrGroups.isNotEmpty()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                            RoundedCornerShape(8.dp)
+                                        )
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = "${cidrGroups.sumOf { it.rangeCount }} ranges",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "%,d total IPs".format(countryTotalIps),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            text = "${selectedOctets.size}/${cidrGroups.size} groups",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "%,d selected IPs".format(selectedTotalIps),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+
                             // Sample count selector
                             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(
@@ -787,10 +1015,127 @@ private fun ResolverListSection(
                                 ) {
                                     listOf(1000, 2000, 5000, 10000).forEach { count ->
                                         OptionChip(
-                                            selected = sampleCount == count,
+                                            selected = !useCustomSampleCount && sampleCount == count,
                                             onClick = { onSelectSampleCount(count) },
                                             label = count.toString()
                                         )
+                                    }
+                                    OptionChip(
+                                        selected = useCustomSampleCount,
+                                        onClick = { onUseCustomSampleCount(true) },
+                                        label = "Custom"
+                                    )
+                                }
+                                AnimatedVisibility(visible = useCustomSampleCount) {
+                                    OutlinedTextField(
+                                        value = customSampleCountText,
+                                        onValueChange = onCustomSampleCountChange,
+                                        label = { Text("Count") },
+                                        placeholder = { Text("e.g. 3000") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        supportingText = { Text("1 - %,d".format(DnsScannerUiState.MAX_SAMPLE_COUNT)) },
+                                        trailingIcon = if (selectedTotalIps > 0) {
+                                            {
+                                                Text(
+                                                    text = "Max",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier
+                                                        .clickable {
+                                                            onCustomSampleCountChange(
+                                                                selectedTotalIps.coerceAtMost(DnsScannerUiState.MAX_SAMPLE_COUNT.toLong()).toString()
+                                                            )
+                                                        }
+                                                        .padding(end = 12.dp)
+                                                )
+                                            }
+                                        } else null
+                                    )
+                                }
+                            }
+
+                            // Range browser
+                            if (cidrGroups.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "IP Range Groups",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Text(
+                                                text = "All",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.clickable { onSelectAllOctets() }
+                                            )
+                                            Text(
+                                                text = "None",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.clickable { onDeselectAllOctets() }
+                                            )
+                                        }
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(200.dp)
+                                            .border(
+                                                1.dp,
+                                                MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                                RoundedCornerShape(12.dp)
+                                            )
+                                            .clip(RoundedCornerShape(12.dp))
+                                    ) {
+                                        LazyColumn(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentPadding = PaddingValues(4.dp)
+                                        ) {
+                                            items(cidrGroups.size) { index ->
+                                                val group = cidrGroups[index]
+                                                val isSelected = group.firstOctet in selectedOctets
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clickable { onToggleOctet(group.firstOctet) }
+                                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Checkbox(
+                                                        checked = isSelected,
+                                                        onCheckedChange = { onToggleOctet(group.firstOctet) },
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                    Text(
+                                                        text = group.label,
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontWeight = FontWeight.Medium,
+                                                        modifier = Modifier.width(80.dp)
+                                                    )
+                                                    Text(
+                                                        text = "${group.rangeCount} ranges",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                    Text(
+                                                        text = "%,d".format(group.totalIps),
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -798,7 +1143,7 @@ private fun ResolverListSection(
                             // Generate button
                             FilledTonalButton(
                                 onClick = onGenerateCountryList,
-                                enabled = !isLoading,
+                                enabled = !isLoading && selectedOctets.isNotEmpty(),
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
@@ -815,21 +1160,30 @@ private fun ResolverListSection(
                                     )
                                 }
                                 Spacer(Modifier.width(8.dp))
-                                Text("Generate ${selectedCountry.displayName} IPs")
+                                Text("Generate $effectiveSampleCount ${selectedCountry.displayName} IPs")
                             }
 
-                            // Hint after generation
+                            // Start Scan button after generation
                             AnimatedVisibility(
                                 visible = listSource == ListSource.COUNTRY_RANGE && !isLoading && resolverCount > 0
                             ) {
-                                Text(
-                                    text = "Ready! Scroll up and tap Start Scan to begin.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Medium,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                Button(
+                                    onClick = onStartScan,
+                                    enabled = canStartScan,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Icon(
+                                        Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Start Scan", fontWeight = FontWeight.SemiBold)
+                                }
                             }
                         }
                     }

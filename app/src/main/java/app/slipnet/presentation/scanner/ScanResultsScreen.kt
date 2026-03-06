@@ -48,11 +48,13 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.Error
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -108,6 +110,7 @@ import app.slipnet.domain.model.E2eScannerState
 import app.slipnet.domain.model.E2eTestResult
 import app.slipnet.domain.model.ResolverScanResult
 import app.slipnet.domain.model.ResolverStatus
+import app.slipnet.domain.model.SimpleModeE2eState
 
 private val WorkingGreen = Color(0xFF4CAF50)
 private val CensoredOrange = Color(0xFFFF9800)
@@ -128,12 +131,22 @@ fun ScanResultsScreen(
     val canApply = fromProfile
     val snackbarHostState = remember { SnackbarHostState() }
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
-    var sortOption by remember { mutableStateOf(SortOption.NONE) }
-    var scoreFilter by remember { mutableStateOf(ScoreFilter.ALL) }
     var proxyWarningDismissed by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("scanner_ui", Context.MODE_PRIVATE) }
+    var sortOption by remember {
+        mutableStateOf(
+            SortOption.entries.find { it.name == prefs.getString("sort_option", null) } ?: SortOption.NONE
+        )
+    }
+    var scoreFilter by remember {
+        mutableStateOf(
+            ScoreFilter.entries.find { it.name == prefs.getString("score_filter", null) } ?: ScoreFilter.SCORE_2_PLUS
+        )
+    }
     var showSortFilter by remember { mutableStateOf(prefs.getBoolean("show_sort_filter", true)) }
+    // null = no dialog, "copy" or "export" = pending action
+    var pendingAction by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(uiState.error) {
@@ -141,6 +154,65 @@ fun ScanResultsScreen(
             snackbarHostState.showSnackbar(error)
             viewModel.clearError()
         }
+    }
+
+    // Dialog for choosing all working IPs vs selected only
+    if (pendingAction != null) {
+        val isSimple = uiState.scanMode == ScanMode.SIMPLE
+        val allIps = if (isSimple) {
+            uiState.scannerState.results
+                .filter { it.e2eTestResult?.success == true }
+                .map { it.host }
+        } else {
+            uiState.scannerState.results
+                .filter { it.status == ResolverStatus.WORKING }
+                .map { it.host }
+        }
+        val selectedIps = uiState.selectedResolvers.toList()
+        val action = pendingAction
+        AlertDialog(
+            onDismissRequest = { pendingAction = null },
+            title = { Text(if (action == "copy") "Copy IPs" else "Export IPs") },
+            text = { Text("Which IPs do you want to ${if (action == "copy") "copy" else "export"}?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingAction = null
+                    if (action == "copy") {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("DNS Resolvers", allIps.joinToString(", ")))
+                        scope.launch {
+                            snackbarHostState.currentSnackbarData?.dismiss()
+                            launch { snackbarHostState.showSnackbar("Copied ${allIps.size} IPs") }
+                            delay(1500)
+                            snackbarHostState.currentSnackbarData?.dismiss()
+                        }
+                    } else {
+                        performExport(context, allIps, scope, snackbarHostState)
+                    }
+                }) {
+                    Text("All working (${allIps.size})")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingAction = null
+                    if (action == "copy") {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("DNS Resolvers", selectedIps.joinToString(", ")))
+                        scope.launch {
+                            snackbarHostState.currentSnackbarData?.dismiss()
+                            launch { snackbarHostState.showSnackbar("Copied ${selectedIps.size} IPs") }
+                            delay(1500)
+                            snackbarHostState.currentSnackbarData?.dismiss()
+                        }
+                    } else {
+                        performExport(context, selectedIps, scope, snackbarHostState)
+                    }
+                }) {
+                    Text("Selected only (${selectedIps.size})")
+                }
+            }
+        )
     }
 
     Scaffold(
@@ -153,7 +225,23 @@ fun ScanResultsScreen(
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold
                         )
-                        if (uiState.scannerState.isScanning) {
+                        val isSimple = uiState.scanMode == ScanMode.SIMPLE
+                        if (isSimple) {
+                            val e2e = uiState.simpleModeE2eState
+                            val scanState = uiState.scannerState
+                            val subtitle = if (scanState.isScanning || e2e.isRunning) {
+                                "DNS: ${scanState.scannedCount}/${scanState.totalCount} — E2E: ${e2e.testedCount}/${e2e.queuedCount} (${e2e.passedCount} passed)"
+                            } else if (e2e.testedCount > 0) {
+                                "${e2e.passedCount} passed of ${e2e.testedCount} tested"
+                            } else null
+                            subtitle?.let {
+                                Text(
+                                    text = it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        } else if (uiState.scannerState.isScanning) {
                             Text(
                                 text = "Scanning ${uiState.scannerState.scannedCount} of ${uiState.scannerState.totalCount}...",
                                 style = MaterialTheme.typography.bodySmall,
@@ -173,6 +261,49 @@ fun ScanResultsScreen(
                     }
                 },
                 actions = {
+                    val isSimple = uiState.scanMode == ScanMode.SIMPLE
+                    val copyIps = if (isSimple) {
+                        uiState.scannerState.results
+                            .filter { it.e2eTestResult?.success == true }
+                            .map { it.host }
+                    } else {
+                        uiState.scannerState.results
+                            .filter { it.status == ResolverStatus.WORKING }
+                            .map { it.host }
+                    }
+                    val isIdle = !uiState.scannerState.isScanning &&
+                        (!isSimple || !uiState.simpleModeE2eState.isRunning)
+                    if (copyIps.isNotEmpty() && isIdle) {
+                        IconButton(
+                            onClick = {
+                                if (uiState.selectedResolvers.isNotEmpty()) {
+                                    pendingAction = "copy"
+                                } else {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("DNS Resolvers", copyIps.joinToString(", ")))
+                                    scope.launch {
+                                        snackbarHostState.currentSnackbarData?.dismiss()
+                                        launch { snackbarHostState.showSnackbar("Copied ${copyIps.size} IPs") }
+                                        delay(1500)
+                                        snackbarHostState.currentSnackbarData?.dismiss()
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy all working IPs")
+                        }
+                        IconButton(
+                            onClick = {
+                                if (uiState.selectedResolvers.isNotEmpty()) {
+                                    pendingAction = "export"
+                                } else {
+                                    performExport(context, copyIps, scope, snackbarHostState)
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = "Export DNS list")
+                        }
+                    }
                     if (canApply && uiState.selectedResolvers.isNotEmpty()) {
                         TextButton(
                             onClick = {
@@ -203,32 +334,46 @@ fun ScanResultsScreen(
                 .padding(paddingValues)
         ) {
             // Progress
-            if (uiState.scannerState.isScanning || uiState.scannerState.scannedCount > 0) {
-                ResultsProgressSection(
-                    isScanning = uiState.scannerState.isScanning,
-                    progress = uiState.scannerState.progress,
-                    totalCount = uiState.scannerState.totalCount,
-                    scannedCount = uiState.scannerState.scannedCount,
-                    workingCount = uiState.scannerState.workingCount,
-                    onStopScan = { viewModel.stopScan() },
-                    onResumeScan = { viewModel.resumeScan() },
-                    canRunE2e = uiState.canRunE2e,
-                    canResumeE2e = uiState.canResumeE2e,
-                    e2eComplete = uiState.e2eComplete,
-                    isE2eRunning = uiState.e2eScannerState.isRunning,
-                    onStartE2eFresh = { viewModel.startE2eTest(fresh = true) },
-                    onResumeE2e = { viewModel.startE2eTest(fresh = false) },
-                    onStopE2e = { viewModel.stopE2eTest() }
-                )
-            }
+            if (uiState.scanMode == ScanMode.SIMPLE) {
+                val showProgress = uiState.scannerState.isScanning ||
+                    uiState.simpleModeE2eState.isRunning ||
+                    uiState.scannerState.scannedCount > 0
+                if (showProgress) {
+                    SimpleModeProgressSection(
+                        scannerState = uiState.scannerState,
+                        simpleModeE2eState = uiState.simpleModeE2eState,
+                        onStopScan = { viewModel.stopScan() }
+                    )
+                }
+            } else {
+                if (uiState.scannerState.isScanning || uiState.scannerState.scannedCount > 0) {
+                    ResultsProgressSection(
+                        isScanning = uiState.scannerState.isScanning,
+                        progress = uiState.scannerState.progress,
+                        totalCount = uiState.scannerState.totalCount,
+                        scannedCount = uiState.scannerState.scannedCount,
+                        workingCount = uiState.scannerState.workingCount,
+                        onStopScan = { viewModel.stopScan() },
+                        onResumeScan = { viewModel.resumeScan() },
+                        e2eSupported = uiState.e2eSupported,
+                        canRunE2e = uiState.canRunE2e,
+                        canResumeE2e = uiState.canResumeE2e,
+                        e2eComplete = uiState.e2eComplete,
+                        isE2eRunning = uiState.e2eScannerState.isRunning,
+                        onStartE2eFresh = { viewModel.startE2eTest(fresh = true, minScore = scoreFilter.minScore) },
+                        onResumeE2e = { viewModel.startE2eTest(fresh = false, minScore = scoreFilter.minScore) },
+                        onStopE2e = { viewModel.stopE2eTest() }
+                    )
+                }
 
-            // E2E progress
-            AnimatedVisibility(
-                visible = uiState.e2eScannerState.isRunning || uiState.e2eScannerState.testedCount > 0,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                E2eProgressSection(e2eScannerState = uiState.e2eScannerState)
+                // E2E progress
+                AnimatedVisibility(
+                    visible = uiState.e2eScannerState.isRunning || uiState.e2eScannerState.testedCount > 0,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    E2eProgressSection(e2eScannerState = uiState.e2eScannerState)
+                }
             }
 
             // VPN active warning for E2E
@@ -326,9 +471,17 @@ fun ScanResultsScreen(
             }
 
             // Results
-            val filteredResults = uiState.scannerState.results.filter {
-                it.status == ResolverStatus.WORKING &&
-                    (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore
+            val isSimpleMode = uiState.scanMode == ScanMode.SIMPLE
+            val filteredResults = if (isSimpleMode) {
+                uiState.scannerState.results.filter {
+                    it.e2eTestResult?.success == true &&
+                        (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore
+                }
+            } else {
+                uiState.scannerState.results.filter {
+                    it.status == ResolverStatus.WORKING &&
+                        (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore
+                }
             }
 
             val displayResults = when (sortOption) {
@@ -343,11 +496,19 @@ fun ScanResultsScreen(
                 SortOption.E2E_SPEED -> filteredResults.sortedBy {
                     it.e2eTestResult?.totalMs ?: Long.MAX_VALUE
                 }
-                SortOption.NONE -> filteredResults
+                SortOption.NONE -> if (isSimpleMode) {
+                    filteredResults.sortedBy { it.e2eTestResult?.totalMs ?: Long.MAX_VALUE }
+                } else filteredResults
             }
 
-            if (displayResults.isEmpty() && !uiState.scannerState.isScanning) {
-                ResultsEmptyState()
+            if (displayResults.isEmpty()) {
+                Box(modifier = Modifier.weight(1f)) {
+                    ResultsEmptyState(
+                        isScanning = uiState.scannerState.isScanning,
+                        isSimpleMode = isSimpleMode,
+                        isSimpleModeRunning = uiState.simpleModeE2eState.isRunning
+                    )
+                }
             } else {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
@@ -359,7 +520,8 @@ fun ScanResultsScreen(
                     ),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    items(displayResults, key = { it.host }) { result ->
+                    items(displayResults.size, key = { index -> "${displayResults[index].host}_$index" }) { index ->
+                        val result = displayResults[index]
                         val isSelected = uiState.selectedResolvers.contains(result.host)
                         val dismissState = rememberSwipeToDismissBoxState(
                             confirmValueChange = { value ->
@@ -422,39 +584,48 @@ fun ScanResultsScreen(
                         }
                     }
                 }
+            }
 
-                if (displayResults.isNotEmpty() || scoreFilter != ScoreFilter.ALL) {
-                    Column(modifier = Modifier.padding(bottom = navBarPadding.calculateBottomPadding())) {
-                        // Toggle handle
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            // Sort & filter bar — always visible once scan has started
+            if (uiState.scannerState.scannedCount > 0) {
+                Column(modifier = Modifier.padding(bottom = navBarPadding.calculateBottomPadding())) {
+                    // Toggle handle
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showSortFilter = !showSortFilter
+                                prefs.edit().putBoolean("show_sort_filter", showSortFilter).apply()
+                            }
+                    ) {
+                        Icon(
+                            imageVector = if (showSortFilter) Icons.Default.KeyboardArrowDown
+                                          else Icons.Default.KeyboardArrowUp,
+                            contentDescription = if (showSortFilter) "Hide sort & filter" else "Show sort & filter",
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    showSortFilter = !showSortFilter
-                                    prefs.edit().putBoolean("show_sort_filter", showSortFilter).apply()
-                                }
-                        ) {
-                            Icon(
-                                imageVector = if (showSortFilter) Icons.Default.KeyboardArrowDown
-                                              else Icons.Default.KeyboardArrowUp,
-                                contentDescription = if (showSortFilter) "Hide sort & filter" else "Show sort & filter",
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp)
-                                    .size(20.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                                .padding(vertical = 4.dp)
+                                .size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
 
-                        AnimatedVisibility(visible = showSortFilter) {
-                            SortControlBar(
-                                sortOption = sortOption,
-                                onSortOptionChange = { sortOption = it },
-                                scoreFilter = scoreFilter,
-                                onScoreFilterChange = { scoreFilter = it }
-                            )
-                        }
+                    AnimatedVisibility(visible = showSortFilter) {
+                        SortControlBar(
+                            sortOption = sortOption,
+                            onSortOptionChange = {
+                                sortOption = it
+                                prefs.edit().putString("sort_option", it.name).apply()
+                            },
+                            scoreFilter = scoreFilter,
+                            onScoreFilterChange = {
+                                scoreFilter = it
+                                prefs.edit().putString("score_filter", it.name).apply()
+                                viewModel.updateE2eMinScore(it.minScore)
+                            },
+                            hideScoreFilter = false
+                        )
                     }
                 }
             }
@@ -462,10 +633,40 @@ fun ScanResultsScreen(
     }
 }
 
+private fun performExport(
+    context: Context,
+    ips: List<String>,
+    scope: kotlinx.coroutines.CoroutineScope,
+    snackbarHostState: SnackbarHostState
+) {
+    try {
+        val content = ips.joinToString("\n")
+        val cacheDir = java.io.File(context.cacheDir, "shared")
+        cacheDir.mkdirs()
+        val file = java.io.File(cacheDir, "dns-resolvers.txt")
+        file.writeText(content)
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", file
+        )
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(android.content.Intent.createChooser(intent, "Export DNS list"))
+    } catch (e: Exception) {
+        scope.launch {
+            snackbarHostState.showSnackbar("Export failed: ${e.message}")
+        }
+    }
+}
+
 private enum class ScoreFilter(val label: String, val minScore: Int) {
-    ALL("All", 0),
+    SCORE_1_PLUS("1+", 1),
+    SCORE_2_PLUS("2+", 2),
     SCORE_3_PLUS("3+", 3),
-    SCORE_4("4/4", 4)
+    SCORE_4_PLUS("4+", 4),
+    SCORE_5_PLUS("5+", 5)
 }
 
 private enum class SortOption {
@@ -479,6 +680,7 @@ private fun SortControlBar(
     onSortOptionChange: (SortOption) -> Unit,
     scoreFilter: ScoreFilter,
     onScoreFilterChange: (ScoreFilter) -> Unit,
+    hideScoreFilter: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -586,30 +788,32 @@ private fun SortControlBar(
                 )
             }
 
-            // Filter row
-            Row(
-                modifier = Modifier
-                    .horizontalScroll(rememberScrollState())
-                    .padding(start = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Filter:",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                ScoreFilter.entries.forEach { filter ->
-                    FilterChip(
-                        selected = scoreFilter == filter,
-                        onClick = { onScoreFilterChange(filter) },
-                        label = { Text(filter.label) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.secondary
-                        )
+            // Filter row (hidden in simple mode)
+            if (!hideScoreFilter) {
+                Row(
+                    modifier = Modifier
+                        .horizontalScroll(rememberScrollState())
+                        .padding(start = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Filter:",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    ScoreFilter.entries.forEach { filter ->
+                        FilterChip(
+                            selected = scoreFilter == filter,
+                            onClick = { onScoreFilterChange(filter) },
+                            label = { Text(filter.label) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.secondary
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -625,6 +829,7 @@ private fun ResultsProgressSection(
     workingCount: Int,
     onStopScan: () -> Unit,
     onResumeScan: () -> Unit,
+    e2eSupported: Boolean = false,
     canRunE2e: Boolean = false,
     canResumeE2e: Boolean = false,
     e2eComplete: Boolean = false,
@@ -644,8 +849,8 @@ private fun ResultsProgressSection(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -653,7 +858,7 @@ private fun ResultsProgressSection(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(20.dp)
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     ResultsStatChip(
                         icon = Icons.Default.Dns,
@@ -682,7 +887,7 @@ private fun ResultsProgressSection(
                             containerColor = ErrorRed
                         ),
                         shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                     ) {
                         Icon(
                             Icons.Default.Stop,
@@ -699,7 +904,7 @@ private fun ResultsProgressSection(
                             containerColor = MaterialTheme.colorScheme.primary
                         ),
                         shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                     ) {
                         Icon(
                             Icons.Default.PlayArrow,
@@ -712,86 +917,97 @@ private fun ResultsProgressSection(
                 }
             }
 
-            LinearProgressIndicator(
-                progress = { animatedProgress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(5.dp)
-                    .clip(RoundedCornerShape(3.dp)),
-                strokeCap = StrokeCap.Round
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                LinearProgressIndicator(
+                    progress = { animatedProgress },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    strokeCap = StrokeCap.Round
+                )
+                Text(
+                    text = "${(animatedProgress * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
 
-            // E2E Test Tunnel buttons
-            if (!isScanning) {
-                if (isE2eRunning) {
+            // E2E Test Tunnel buttons — compact row
+            if (isE2eRunning) {
+                Button(
+                    onClick = onStopE2e,
+                    colors = ButtonDefaults.buttonColors(containerColor = ErrorRed),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Stop Tunnel Test", style = MaterialTheme.typography.labelMedium)
+                }
+            } else if (canResumeE2e) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Button(
-                        onClick = onStopE2e,
-                        colors = ButtonDefaults.buttonColors(containerColor = ErrorRed),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                    ) {
-                        Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Stop Tunnel Test", style = MaterialTheme.typography.labelMedium)
-                    }
-                } else if (canResumeE2e) {
-                    // Paused mid-test: show Continue + Restart side by side
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = onResumeE2e,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.tertiary
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Continue", style = MaterialTheme.typography.labelMedium)
-                        }
-                        OutlinedButton(
-                            onClick = onStartE2eFresh,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Restart", style = MaterialTheme.typography.labelMedium)
-                        }
-                    }
-                } else if (e2eComplete) {
-                    // All tested: offer re-test
-                    OutlinedButton(
-                        onClick = onStartE2eFresh,
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Re-test Tunnel", style = MaterialTheme.typography.labelMedium)
-                    }
-                } else if (canRunE2e) {
-                    // Fresh start
-                    Button(
-                        onClick = onStartE2eFresh,
+                        onClick = onResumeE2e,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.tertiary
                         ),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                     ) {
-                        Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Test Tunnel", style = MaterialTheme.typography.labelMedium)
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Continue", style = MaterialTheme.typography.labelMedium)
                     }
+                    OutlinedButton(
+                        onClick = onStartE2eFresh,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Restart", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            } else if (e2eComplete) {
+                OutlinedButton(
+                    onClick = onStartE2eFresh,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Re-test Tunnel", style = MaterialTheme.typography.labelMedium)
+                }
+            } else if (e2eSupported) {
+                Button(
+                    onClick = onStartE2eFresh,
+                    enabled = canRunE2e,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (canRunE2e) "Test Tunnel" else "Test Tunnel (waiting for results…)",
+                        style = MaterialTheme.typography.labelMedium
+                    )
                 }
             }
         }
@@ -902,6 +1118,129 @@ private fun E2eProgressSection(e2eScannerState: E2eScannerState) {
 }
 
 @Composable
+private fun SimpleModeProgressSection(
+    scannerState: app.slipnet.domain.model.ScannerState,
+    simpleModeE2eState: SimpleModeE2eState,
+    onStopScan: () -> Unit
+) {
+    val dnsProgress = scannerState.progress
+    val e2eProgress = if (simpleModeE2eState.queuedCount > 0) {
+        simpleModeE2eState.testedCount.toFloat() / simpleModeE2eState.queuedCount
+    } else 0f
+    val animatedDnsProgress by animateFloatAsState(targetValue = dnsProgress, label = "dnsProgress")
+    val animatedE2eProgress by animateFloatAsState(targetValue = e2eProgress, label = "e2eProgress")
+    val isRunning = scannerState.isScanning || simpleModeE2eState.isRunning
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // DNS scan row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    ResultsStatChip(
+                        icon = Icons.Default.Search,
+                        label = "Scanned",
+                        value = "${scannerState.scannedCount}/${scannerState.totalCount}",
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    ResultsStatChip(
+                        icon = Icons.Default.CheckCircle,
+                        label = "Working",
+                        value = scannerState.workingCount.toString(),
+                        color = WorkingGreen
+                    )
+                }
+                if (isRunning) {
+                    Button(
+                        onClick = onStopScan,
+                        colors = ButtonDefaults.buttonColors(containerColor = ErrorRed),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Stop", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+
+            LinearProgressIndicator(
+                progress = { animatedDnsProgress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                strokeCap = StrokeCap.Round
+            )
+
+            // E2E row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (simpleModeE2eState.isRunning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                    Text(
+                        text = "E2E: ${simpleModeE2eState.testedCount}/${simpleModeE2eState.queuedCount}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                    if (simpleModeE2eState.passedCount > 0) {
+                        Text(
+                            text = "${simpleModeE2eState.passedCount} passed",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WorkingGreen
+                        )
+                    }
+                }
+            }
+
+            if (simpleModeE2eState.isRunning && simpleModeE2eState.currentResolver != null) {
+                Text(
+                    text = "${simpleModeE2eState.currentResolver} - ${simpleModeE2eState.currentPhase}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            LinearProgressIndicator(
+                progress = { animatedE2eProgress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                strokeCap = StrokeCap.Round,
+                color = MaterialTheme.colorScheme.tertiary
+            )
+        }
+    }
+}
+
+@Composable
 private fun ResultsSelectionControls(
     selectedCount: Int,
     maxCount: Int,
@@ -967,7 +1306,11 @@ private fun ResultsSelectionControls(
 }
 
 @Composable
-private fun ResultsEmptyState() {
+private fun ResultsEmptyState(
+    isScanning: Boolean = false,
+    isSimpleMode: Boolean = false,
+    isSimpleModeRunning: Boolean = false
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -978,31 +1321,56 @@ private fun ResultsEmptyState() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(64.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Default.SearchOff,
-                    contentDescription = null,
-                    modifier = Modifier.size(32.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+            if (isScanning || (isSimpleMode && isSimpleModeRunning)) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(48.dp),
+                    strokeWidth = 3.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = if (isSimpleMode) "Scanning for working resolvers\u2026" else "Scanning\u2026",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = if (isSimpleMode)
+                        "Resolvers that pass the tunnel test will appear here"
+                    else
+                        "Working resolvers will appear here",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    textAlign = TextAlign.Center
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.SearchOff,
+                        contentDescription = null,
+                        modifier = Modifier.size(32.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    text = if (isSimpleMode)
+                        "No resolvers passed the tunnel test"
+                    else
+                        "No working resolvers found",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Try running a new scan or importing a different list",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    textAlign = TextAlign.Center
                 )
             }
-            Text(
-                text = "No working resolvers found",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = "Try running a new scan or importing a different list",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                textAlign = TextAlign.Center
-            )
         }
     }
 }
@@ -1081,7 +1449,7 @@ private fun ResultsResolverItem(
                             fontWeight = FontWeight.SemiBold,
                             color = when {
                                 tunnelResult.score == tunnelResult.maxScore -> WorkingGreen
-                                tunnelResult.score >= 3 -> CensoredOrange
+                                tunnelResult.score >= tunnelResult.maxScore - 1 -> CensoredOrange
                                 else -> ErrorRed
                             }
                         )

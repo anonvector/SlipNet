@@ -52,7 +52,7 @@ struct Args {
     domain: Option<String>,
     #[arg(long = "cert", value_name = "PATH")]
     cert: Option<String>,
-    #[arg(long = "keep-alive-interval", short = 't', default_value_t = 400)]
+    #[arg(long = "keep-alive-interval", short = 't', default_value_t = 5000)]
     keep_alive_interval: u16,
     #[arg(long = "debug-poll")]
     debug_poll: bool,

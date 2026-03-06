@@ -4,8 +4,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -17,13 +16,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -38,15 +35,12 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import app.slipnet.util.AppLog
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DebugLogSheet(onDismiss: () -> Unit) {
-    val sheetState = rememberModalBottomSheetState(
-        skipPartiallyExpanded = false,
-        confirmValueChange = { true }
-    )
     // Register/unregister observer so AppLog only snapshots while sheet is open
     DisposableEffect(Unit) {
         AppLog.addObserver()
@@ -65,87 +59,91 @@ fun DebugLogSheet(onDismiss: () -> Unit) {
     val listState = rememberLazyListState()
     val clipboardManager = LocalClipboardManager.current
 
-    // Auto-scroll to bottom when new lines arrive
+    // Auto-scroll to bottom only when already near the bottom
     LaunchedEffect(lines.size) {
         if (lines.isNotEmpty()) {
-            listState.scrollToItem(lines.size - 1)
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val isNearBottom = lastVisible >= lines.size - 3
+            if (isNearBottom) {
+                listState.animateScrollToItem(lines.size - 1)
+            }
         }
     }
 
-    ModalBottomSheet(
+    Dialog(
         onDismissRequest = onDismiss,
-        sheetState = sheetState
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .defaultMinSize(minHeight = 500.dp)
-                .fillMaxHeight(0.95f)
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.surface
         ) {
-            // Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Debug Logs",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = "${lines.size} lines",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.width(8.dp))
-                IconButton(onClick = {
-                    val text = lines.joinToString("\n") { it.raw }
-                    clipboardManager.setText(AnnotatedString(text))
-                }) {
-                    Icon(
-                        Icons.Default.ContentCopy,
-                        contentDescription = "Copy logs",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = { AppLog.clear() }) {
-                    Icon(
-                        Icons.Default.DeleteSweep,
-                        contentDescription = "Clear logs",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "Close",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            // Log lines
-            val horizontalScrollState = rememberScrollState()
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(horizontal = 8.dp)
-                    .horizontalScroll(horizontalScrollState)
-            ) {
-                items(lines, key = { it.id }) { logEntry ->
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Header
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
-                        text = logEntry.raw,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp,
-                        color = levelColor(logEntry.level),
-                        softWrap = false,
-                        modifier = Modifier.padding(vertical = 1.dp)
+                        text = "Debug Logs",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f)
                     )
+                    Text(
+                        text = "${lines.size} lines",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = {
+                        val text = lines.joinToString("\n") { it.raw }
+                        clipboardManager.setText(AnnotatedString(text))
+                    }) {
+                        Icon(
+                            Icons.Default.ContentCopy,
+                            contentDescription = "Copy logs",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = { AppLog.clear() }) {
+                        Icon(
+                            Icons.Default.DeleteSweep,
+                            contentDescription = "Clear logs",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // Log lines
+                val horizontalScrollState = rememberScrollState()
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                        .horizontalScroll(horizontalScrollState)
+                ) {
+                    items(lines, key = { it.id }) { logEntry ->
+                        Text(
+                            text = logEntry.raw,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp,
+                            color = levelColor(logEntry.level),
+                            softWrap = false,
+                            modifier = Modifier.padding(vertical = 1.dp)
+                        )
+                    }
                 }
             }
         }

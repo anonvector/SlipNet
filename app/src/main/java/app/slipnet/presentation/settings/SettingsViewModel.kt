@@ -34,6 +34,7 @@ data class SettingsUiState(
     val appendHttpProxyToVpn: Boolean = false,
     // Network Settings
     val disableQuic: Boolean = true,
+    val vpnMtu: Int = 1280,
     // Split Tunneling Settings
     val splitTunnelingEnabled: Boolean = false,
     val splitTunnelingMode: SplitTunnelingMode = SplitTunnelingMode.DISALLOW,
@@ -76,9 +77,10 @@ class SettingsViewModel @Inject constructor(
                 preferencesDataStore.debugLogging,
                 preferencesDataStore.proxyListenAddress,
                 preferencesDataStore.proxyListenPort,
-                preferencesDataStore.disableQuic
+                preferencesDataStore.disableQuic,
+                preferencesDataStore.vpnMtu
             ) { values ->
-                arrayOf(values[0], values[1], values[2], values[3], values[4], values[5])
+                arrayOf(values[0], values[1], values[2], values[3], values[4], values[5], values[6])
             }
 
             data class SshSettings(val cipher: SshCipher, val compression: Boolean, val maxChannels: Int, val maxChannelsIsCustom: Boolean)
@@ -156,6 +158,7 @@ class SettingsViewModel @Inject constructor(
                     httpProxyPort = httpProxy.second,
                     appendHttpProxyToVpn = httpProxy.third,
                     disableQuic = main[5] as Boolean,
+                    vpnMtu = main[6] as Int,
                     splitTunnelingEnabled = split.first,
                     splitTunnelingMode = split.second,
                     splitTunnelingApps = split.third,
@@ -243,6 +246,12 @@ class SettingsViewModel @Inject constructor(
     fun setDisableQuic(enabled: Boolean) {
         viewModelScope.launch {
             preferencesDataStore.setDisableQuic(enabled)
+        }
+    }
+
+    fun setVpnMtu(mtu: Int) {
+        viewModelScope.launch {
+            preferencesDataStore.setVpnMtu(mtu)
         }
     }
 

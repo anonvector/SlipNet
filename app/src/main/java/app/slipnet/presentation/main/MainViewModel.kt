@@ -11,7 +11,10 @@ import app.slipnet.domain.model.PingResult
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
 import app.slipnet.domain.model.TunnelType
+import app.slipnet.domain.model.isAvailable
+import app.slipnet.domain.model.E2eTestResult
 import app.slipnet.domain.repository.ProfileRepository
+import app.slipnet.domain.repository.ResolverScannerRepository
 import app.slipnet.domain.usecase.ConnectVpnUseCase
 import app.slipnet.domain.usecase.DeleteProfileUseCase
 import app.slipnet.domain.usecase.DisconnectVpnUseCase
@@ -85,6 +88,7 @@ class MainViewModel @Inject constructor(
     private val deleteProfileUseCase: DeleteProfileUseCase,
     private val saveProfileUseCase: SaveProfileUseCase,
     private val profileRepository: ProfileRepository,
+    private val resolverScannerRepository: ResolverScannerRepository,
     private val configExporter: ConfigExporter,
     private val configImporter: ConfigImporter,
     private val preferencesDataStore: PreferencesDataStore
@@ -279,6 +283,16 @@ class MainViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(error = "No profile available to connect")
             return
         }
+        if (targetProfile.isExpired) {
+            _uiState.value = _uiState.value.copy(error = "This profile has expired")
+            return
+        }
+        if (!targetProfile.tunnelType.isAvailable()) {
+            _uiState.value = _uiState.value.copy(
+                error = "${targetProfile.tunnelType.displayName} is not available in this edition"
+            )
+            return
+        }
         connectionManager.connect(targetProfile)
     }
 
@@ -289,7 +303,8 @@ class MainViewModel @Inject constructor(
     fun toggleConnection() {
         when (_uiState.value.connectionState) {
             is ConnectionState.Connected,
-            is ConnectionState.Connecting -> disconnect()
+            is ConnectionState.Connecting,
+            is ConnectionState.Error -> disconnect()
             else -> connect()
         }
     }
@@ -365,8 +380,16 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(exportedJson = json)
     }
 
-    fun exportProfileLocked(profile: ServerProfile, password: String) {
-        val json = configExporter.exportSingleProfileLocked(profile, password)
+    fun exportProfileLocked(
+        profile: ServerProfile,
+        password: String,
+        expirationDate: Long = 0,
+        allowSharing: Boolean = false,
+        boundDeviceId: String = ""
+    ) {
+        val json = configExporter.exportSingleProfileLocked(
+            profile, password, expirationDate, allowSharing, boundDeviceId
+        )
         _uiState.value = _uiState.value.copy(exportedJson = json)
     }
 
@@ -385,7 +408,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun parseImportConfig(json: String) {
-        when (val result = configImporter.parseAndImport(json)) {
+        when (val result = configImporter.parseAndImport(json, connectionManager.getDeviceId())) {
             is ImportResult.Success -> {
                 _uiState.value = _uiState.value.copy(
                     importPreview = ImportPreview(result.profiles, result.warnings)
@@ -436,14 +459,55 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(qrCodeData = null)
     }
 
-    fun showQrCodeLocked(profile: ServerProfile, password: String) {
-        val configUri = configExporter.exportSingleProfileLocked(profile, password)
+    fun showQrCodeLocked(
+        profile: ServerProfile,
+        password: String,
+        expirationDate: Long = 0,
+        allowSharing: Boolean = false,
+        boundDeviceId: String = ""
+    ) {
+        val configUri = configExporter.exportSingleProfileLocked(
+            profile, password, expirationDate, allowSharing, boundDeviceId
+        )
         _uiState.value = _uiState.value.copy(
             qrCodeData = QrCodeData(profile.name, configUri)
         )
     }
 
+    fun reExportLockedProfile(profile: ServerProfile) {
+        try {
+            val json = configExporter.reExportLockedProfile(profile)
+            _uiState.value = _uiState.value.copy(exportedJson = json)
+        } catch (e: Exception) {
+            _uiState.value = _uiState.value.copy(error = e.message ?: "Re-export failed")
+        }
+    }
+
+    fun showQrCodeLockedReExport(profile: ServerProfile) {
+        try {
+            val configUri = configExporter.reExportLockedProfile(profile)
+            _uiState.value = _uiState.value.copy(
+                qrCodeData = QrCodeData(profile.name, configUri)
+            )
+        } catch (e: Exception) {
+            _uiState.value = _uiState.value.copy(error = e.message ?: "Re-export failed")
+        }
+    }
+
+    fun getDeviceId(): String = connectionManager.getDeviceId()
+
     // ── Test Server Reachability ────────────────────────────────────────
+
+    companion object {
+        /** Tunnel types that use DNS tunneling and support E2E testing */
+        private val E2E_TUNNEL_TYPES = setOf(
+            TunnelType.DNSTT, TunnelType.DNSTT_SSH,
+            TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
+            TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
+        )
+        private const val E2E_TEST_URL = "http://www.gstatic.com/generate_204"
+        private const val E2E_TIMEOUT_MS = 7000L
+    }
 
     fun pingAllProfiles() {
         if (_uiState.value.isPingRunning) {
@@ -454,7 +518,6 @@ class MainViewModel @Inject constructor(
         val profiles = _uiState.value.profiles
         if (profiles.isEmpty()) return
 
-        // Snowflake/Tor uses relays — direct ping is meaningless
         val skipped = setOf(TunnelType.SNOWFLAKE)
         val initial = profiles.associate { profile ->
             profile.id to if (profile.tunnelType in skipped) {
@@ -467,14 +530,35 @@ class MainViewModel @Inject constructor(
 
         pingJob = viewModelScope.launch {
             try {
-                for (profile in profiles) {
-                    if (profile.tunnelType in skipped) continue
-
-                    val result = pingProfile(profile)
-                    _uiState.value = _uiState.value.copy(
-                        pingResults = _uiState.value.pingResults + (profile.id to result)
-                    )
+                val tcpProfiles = profiles.filter {
+                    it.tunnelType !in skipped && it.tunnelType !in E2E_TUNNEL_TYPES
                 }
+                val e2eProfiles = profiles.filter {
+                    it.tunnelType in E2E_TUNNEL_TYPES
+                }
+
+                // Launch all TCP pings in parallel
+                val tcpJobs = tcpProfiles.map { profile ->
+                    launch {
+                        val result = pingProfileTcp(profile)
+                        _uiState.value = _uiState.value.copy(
+                            pingResults = _uiState.value.pingResults + (profile.id to result)
+                        )
+                    }
+                }
+
+                // E2E tests must be sequential (bridges are singletons)
+                val e2eJob = launch {
+                    for (profile in e2eProfiles) {
+                        val result = testProfileE2e(profile)
+                        _uiState.value = _uiState.value.copy(
+                            pingResults = _uiState.value.pingResults + (profile.id to result)
+                        )
+                    }
+                }
+
+                tcpJobs.forEach { it.join() }
+                e2eJob.join()
             } finally {
                 _uiState.value = _uiState.value.copy(isPingRunning = false)
             }
@@ -487,18 +571,52 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(isPingRunning = false)
     }
 
-    private sealed class PingTarget {
-        data class Tcp(val host: String, val port: Int) : PingTarget()
+    /**
+     * E2E test for DNS-tunneled profiles: starts a real tunnel with the first resolver,
+     * performs a handshake and HTTP/SSH verification, then reports total latency.
+     */
+    private suspend fun testProfileE2e(profile: ServerProfile): PingResult {
+        val resolver = profile.resolvers.firstOrNull()
+            ?: return PingResult.Error("No resolver")
+
+        return try {
+            val result: E2eTestResult = resolverScannerRepository.testResolverE2e(
+                resolverHost = resolver.host,
+                resolverPort = resolver.port,
+                profile = profile,
+                testUrl = E2E_TEST_URL,
+                timeoutMs = E2E_TIMEOUT_MS
+            ) { phase ->
+                // Update UI with current phase while test runs
+                _uiState.value = _uiState.value.copy(
+                    pingResults = _uiState.value.pingResults + (profile.id to PingResult.Testing(phase))
+                )
+            }
+
+            if (result.success) {
+                PingResult.Success(result.totalMs)
+            } else {
+                PingResult.Error(result.errorMessage?.take(25) ?: "Failed")
+            }
+        } catch (e: Exception) {
+            PingResult.Error(e.message?.take(25) ?: "Failed")
+        }
     }
 
-    private suspend fun pingProfile(profile: ServerProfile): PingResult {
-        val target = getPingTarget(profile) ?: return PingResult.Error("No target")
+    /**
+     * Simple TCP ping for non-tunnel profiles (SSH, Naive, DOH).
+     */
+    private suspend fun pingProfileTcp(profile: ServerProfile): PingResult {
+        val target = getTcpTarget(profile) ?: return PingResult.Error("No target")
 
         return withContext(Dispatchers.IO) {
             try {
-                when (target) {
-                    is PingTarget.Tcp -> pingTcp(target.host, target.port)
-                }
+                val socket = Socket()
+                val start = System.nanoTime()
+                socket.connect(InetSocketAddress(target.first, target.second), 5000)
+                val elapsed = (System.nanoTime() - start) / 1_000_000
+                socket.close()
+                PingResult.Success(elapsed)
             } catch (e: Exception) {
                 val msg = when (e) {
                     is java.net.SocketTimeoutException -> "Timeout"
@@ -511,36 +629,18 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private fun pingTcp(host: String, port: Int): PingResult {
-        val socket = Socket()
-        val start = System.nanoTime()
-        socket.connect(InetSocketAddress(host, port), 5000)
-        val elapsed = (System.nanoTime() - start) / 1_000_000
-        socket.close()
-        return PingResult.Success(elapsed)
-    }
-
-
-    private fun getPingTarget(profile: ServerProfile): PingTarget? {
+    private fun getTcpTarget(profile: ServerProfile): Pair<String, Int>? {
         return when (profile.tunnelType) {
-            TunnelType.SSH -> PingTarget.Tcp(profile.domain, profile.sshPort)
-            TunnelType.NAIVE_SSH -> PingTarget.Tcp(profile.domain, profile.naivePort)
-            TunnelType.NAIVE -> PingTarget.Tcp(profile.domain, profile.naivePort)
-            TunnelType.DNSTT, TunnelType.DNSTT_SSH,
-            TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH -> {
-                // DNS-tunneled: ping the first resolver
-                val resolver = profile.resolvers.firstOrNull()
-                    ?: return null
-                PingTarget.Tcp(resolver.host, resolver.port)
-            }
+            TunnelType.SSH -> profile.domain to profile.sshPort
+            TunnelType.NAIVE_SSH -> profile.domain to profile.naivePort
+            TunnelType.NAIVE -> profile.domain to profile.naivePort
             TunnelType.DOH -> {
-                // DoH: ping the DoH server on HTTPS port
                 val host = try {
                     java.net.URL(profile.dohUrl).host
                 } catch (_: Exception) { return null }
-                PingTarget.Tcp(host, 443)
+                host to 443
             }
-            TunnelType.SNOWFLAKE -> null
+            else -> null
         }
     }
 }

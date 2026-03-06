@@ -33,7 +33,7 @@ data class NativeConfig(
     val authoritativeMode: Boolean = false,
 
     /** Keep-alive interval in milliseconds */
-    val keepAliveInterval: Int = 200,
+    val keepAliveInterval: Int = 5000,
 
     /** Congestion control algorithm (bbr, dcubic) */
     val congestionControl: String = "bbr",
@@ -51,7 +51,7 @@ data class NativeConfig(
         fun create(
             domain: String,
             resolvers: List<ResolverConfig>,
-            keepAliveInterval: Int = 200,
+            keepAliveInterval: Int = 5000,
             congestionControl: String = "bbr"
         ) = NativeConfig(
             domain = domain,

@@ -771,7 +771,11 @@ object NaiveSocksBridge {
 
             try {
                 val response = if (dest.second == 53) {
-                    forwardDnsPooled(payload)
+                    if (DnsUtils.isAAAAQuery(payload)) {
+                        DnsUtils.buildAAAANoDataResponse(payload)
+                    } else {
+                        forwardDnsPooled(payload)
+                    }
                 } else {
                     // Non-DNS UDP: drop silently
                     null

@@ -45,8 +45,9 @@ object HevSocks5Tunnel {
         socksUsername: String? = null,
         socksPassword: String? = null,
         enableUdpTunneling: Boolean = false,
-        mtu: Int = 1500,
+        mtu: Int = 1280,
         ipv4Address: String = "10.255.255.1",
+        ipv6Address: String = "fd00::1",
         disableQuic: Boolean = true,
         rejectNonDnsUdp: Boolean = false
     ): Result<Unit> {
@@ -67,7 +68,8 @@ object HevSocks5Tunnel {
             socksPassword = socksPassword,
             enableUdpTunneling = enableUdpTunneling,
             mtu = mtu,
-            ipv4Address = ipv4Address
+            ipv4Address = ipv4Address,
+            ipv6Address = ipv6Address
         )
 
         Log.i(TAG, "========================================")
@@ -75,6 +77,7 @@ object HevSocks5Tunnel {
         Log.i(TAG, "  SOCKS5: $socksAddress:$socksPort")
         Log.i(TAG, "  MTU: $mtu")
         Log.i(TAG, "  IPv4: $ipv4Address")
+        Log.i(TAG, "  IPv6: $ipv6Address")
         Log.i(TAG, "========================================")
         Log.d(TAG, "Config:\n$config")
 
@@ -174,7 +177,8 @@ object HevSocks5Tunnel {
         socksPassword: String?,
         enableUdpTunneling: Boolean,
         mtu: Int,
-        ipv4Address: String
+        ipv4Address: String,
+        ipv6Address: String
     ): String {
         val sb = StringBuilder()
 

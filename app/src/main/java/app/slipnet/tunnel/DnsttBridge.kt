@@ -27,6 +27,12 @@ object DnsttBridge {
     }
 
     /**
+     * Get the port the DNSTT client is listening on.
+     * May differ from the requested port if a fallback was used.
+     */
+    fun getClientPort(): Int = currentPort
+
+    /**
      * Start the DNSTT client.
      *
      * @param dnsServer DNS resolver address (e.g., "8.8.8.8" or "1.1.1.1:53")
@@ -42,7 +48,9 @@ object DnsttBridge {
         publicKey: String,
         listenPort: Int,
         listenHost: String = "127.0.0.1",
-        authoritativeMode: Boolean = false
+        authoritativeMode: Boolean = false,
+        noizMode: Boolean = false,
+        stealthMode: Boolean = false
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting DNSTT client")
@@ -51,6 +59,8 @@ object DnsttBridge {
         Log.i(TAG, "  Public Key: ${publicKey.take(16)}...")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
         Log.i(TAG, "  Authoritative Mode: $authoritativeMode")
+        Log.i(TAG, "  NoizMode: $noizMode")
+        Log.i(TAG, "  StealthMode: $stealthMode")
         Log.i(TAG, "========================================")
 
         // Validate inputs
@@ -61,25 +71,29 @@ object DnsttBridge {
             return Result.failure(IllegalArgumentException("Public key is required"))
         }
 
-        // Stop any existing client
+        // Stop any existing client and wait for full cleanup
         stopClient()
 
-        // Wait for port to be available
-        if (!waitForPortAvailable(listenPort)) {
-            Log.e(TAG, "Port $listenPort is still in use after waiting")
-            return Result.failure(RuntimeException("Port $listenPort is in use"))
+        // Wait for the port to become free.  We give the Go runtime up to 5s to
+        // fully drain goroutines.  Do NOT silently fall back to alternative ports —
+        // a stuck port means the old instance is still alive and would leak traffic.
+        if (!waitForPortAvailable(listenPort, 5000)) {
+            Log.e(TAG, "Port $listenPort still in use after 5s — old DNSTT instance may be leaking")
+            return Result.failure(RuntimeException("Port $listenPort is still in use by a previous DNSTT instance"))
         }
+        val actualPort = listenPort
 
         return try {
-            val listenAddr = "$listenHost:$listenPort"
+            val listenAddr = "$listenHost:$actualPort"
 
-            // Format address(es): may be comma-separated for multi-resolver (UDP/DoT).
-            // DoH/DoT URLs pass through, UDP gets default port if missing.
+            // Format address(es): may be comma-separated for multi-resolver (UDP/DoT/TCP).
+            // DoH/DoT/TCP URLs pass through, UDP gets default port if missing.
             val dnsAddr = dnsServer.split(",").joinToString(",") { addr ->
                 val trimmed = addr.trim()
                 when {
                     trimmed.startsWith("https://") -> trimmed  // DoH URL (native Go HTTP/2 + uTLS)
                     trimmed.startsWith("tls://") -> trimmed    // DoT URL (native Go TLS + uTLS)
+                    trimmed.startsWith("tcp://") -> trimmed    // TCP DNS (plain TCP, 2-byte framing)
                     trimmed.contains(":") -> trimmed           // Already has port
                     else -> "$trimmed:53"                      // Default UDP port
                 }
@@ -88,8 +102,14 @@ object DnsttBridge {
             // Create the DNSTT client via Go mobile bindings
             val newClient = Mobile.newClient(dnsAddr, tunnelDomain, publicKey, listenAddr)
             newClient.setAuthoritativeMode(authoritativeMode)
+            if (noizMode) {
+                newClient.setNoizMode(true)
+                if (stealthMode) {
+                    newClient.setStealthMode(true)
+                }
+            }
             client = newClient
-            currentPort = listenPort
+            currentPort = actualPort
 
             // Start the client
             newClient.start()
@@ -98,11 +118,11 @@ object DnsttBridge {
             Thread.sleep(100)
 
             if (newClient.isRunning) {
-                Log.i(TAG, "DNSTT client started successfully")
+                Log.i(TAG, "DNSTT client started successfully on port $actualPort")
 
                 // Verify SOCKS5 proxy is listening
-                if (verifySocks5Listening(listenHost, listenPort)) {
-                    Log.d(TAG, "SOCKS5 proxy verified listening on $listenHost:$listenPort")
+                if (verifySocks5Listening(listenHost, actualPort)) {
+                    Log.d(TAG, "SOCKS5 proxy verified listening on $listenHost:$actualPort")
                 } else {
                     Log.w(TAG, "SOCKS5 proxy verification failed, but client reports running")
                 }
@@ -122,25 +142,40 @@ object DnsttBridge {
 
     /**
      * Stop the DNSTT client and wait for port to be released.
+     *
+     * NOTE: This blocks the calling thread for up to ~5s while waiting for the Go
+     * runtime to fully clean up (listener close + goroutine drain).  Prefer calling
+     * [stopClientBlocking] from a coroutine on [Dispatchers.IO].
      */
     fun stopClient() {
         val c = client ?: return
         client = null  // Clear reference immediately to prevent new operations
+        val port = currentPort
         try {
             Log.d(TAG, "Stopping DNSTT client...")
             c.stop()
-            // Verify port is actually released instead of blind sleep.
-            // Go's listener.Close() is synchronous, but give the OS a moment.
-            Thread.sleep(200)
-            val port = currentPort
+            // Give Go runtime time to close listener AND drain active goroutines.
+            // The listener.Close() is synchronous, but tunnel-session goroutines may
+            // still be sending DNS queries for a short while after the listener is gone.
+            Thread.sleep(500)
             if (port > 0 && isPortInUse(port)) {
                 Log.w(TAG, "Port $port still in use after DNSTT stop, waiting...")
-                waitForPortAvailable(port, 3000)
+                waitForPortAvailable(port, 5000)
             }
-            Log.d(TAG, "DNSTT client stopped")
+            Log.d(TAG, "DNSTT client stopped (port $port released)")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping DNSTT client", e)
         }
+        currentPort = 0
+    }
+
+    /**
+     * Stop the DNSTT client on the IO dispatcher and block the coroutine (not the
+     * thread) until the port is verified released.  This is the preferred way to
+     * stop during reconnection.
+     */
+    suspend fun stopClientBlocking() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        stopClient()
     }
 
     /**
@@ -177,8 +212,15 @@ object DnsttBridge {
 
     private fun isPortInUse(port: Int): Boolean {
         return try {
-            ServerSocket(port).use { false }
+            ServerSocket().use { serverSocket ->
+                serverSocket.reuseAddress = true
+                serverSocket.bind(java.net.InetSocketAddress("127.0.0.1", port))
+                false
+            }
+        } catch (e: java.net.BindException) {
+            true
         } catch (e: Exception) {
+            Log.w(TAG, "Error checking port $port: ${e.message}")
             true
         }
     }

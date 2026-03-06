@@ -11,6 +11,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -86,6 +87,52 @@ object SlipstreamSocksBridge {
     private val workerCreationLocks = Array(DNS_POOL_SIZE) { ReentrantLock() }
     private var dnsKeepaliveThread: Thread? = null
 
+    // Circuit breaker for DNS worker recreation
+    private val consecutiveFailures = AtomicInteger(0)
+    @Volatile private var circuitOpenUntil: Long = 0
+    private const val CIRCUIT_BREAKER_THRESHOLD = 5
+    private const val CIRCUIT_BREAKER_COOLDOWN_MS = 3000L
+
+    private fun isCircuitOpen(): Boolean {
+        if (System.currentTimeMillis() < circuitOpenUntil) return true
+        if (consecutiveFailures.get() >= CIRCUIT_BREAKER_THRESHOLD) {
+            consecutiveFailures.set(0)
+        }
+        return false
+    }
+
+    private fun recordDnsSuccess() { consecutiveFailures.set(0) }
+    private fun recordDnsFailure() {
+        if (consecutiveFailures.incrementAndGet() >= CIRCUIT_BREAKER_THRESHOLD) {
+            circuitOpenUntil = System.currentTimeMillis() + CIRCUIT_BREAKER_COOLDOWN_MS
+            logd("FWD_UDP: circuit breaker OPEN — cooling down ${CIRCUIT_BREAKER_COOLDOWN_MS}ms")
+        }
+    }
+
+    // CONNECT concurrency limit and circuit breaker
+    private const val MAX_CONCURRENT_CONNECTS = 8
+    private const val CONNECT_CIRCUIT_THRESHOLD = 3
+    private const val CONNECT_CIRCUIT_COOLDOWN_MS = 5000L
+    private val connectSemaphore = Semaphore(MAX_CONCURRENT_CONNECTS)
+    private val connectFailures = AtomicInteger(0)
+    @Volatile private var connectCircuitOpenUntil: Long = 0
+
+    private fun isConnectCircuitOpen(): Boolean {
+        if (System.currentTimeMillis() < connectCircuitOpenUntil) return true
+        if (connectFailures.get() >= CONNECT_CIRCUIT_THRESHOLD) {
+            connectFailures.set(0)
+        }
+        return false
+    }
+
+    private fun recordConnectSuccess() { connectFailures.set(0) }
+    private fun recordConnectFailure() {
+        if (connectFailures.incrementAndGet() >= CONNECT_CIRCUIT_THRESHOLD) {
+            connectCircuitOpenUntil = System.currentTimeMillis() + CONNECT_CIRCUIT_COOLDOWN_MS
+            logd("CONNECT: circuit breaker OPEN — cooling down ${CONNECT_CIRCUIT_COOLDOWN_MS}ms")
+        }
+    }
+
     fun start(
         slipstreamPort: Int,
         slipstreamHost: String = "127.0.0.1",
@@ -110,6 +157,11 @@ object SlipstreamSocksBridge {
         this.socksPassword = socksPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
         this.dnsFallbackHost = dnsFallback ?: FALLBACK_DNS_HOST
+        // Reset circuit breakers
+        consecutiveFailures.set(0)
+        circuitOpenUntil = 0
+        connectFailures.set(0)
+        connectCircuitOpenUntil = 0
 
         return try {
             val ss = bindServerSocket(listenHost, listenPort)
@@ -384,6 +436,10 @@ object SlipstreamSocksBridge {
      * Phase 4: DoH fallback if all TCP methods fail.
      */
     private fun forwardDnsPooled(payload: ByteArray): ByteArray? {
+        // Fail fast if Slipstream tunnel is dead
+        if (!SlipstreamBridge.isNativeRunning()) return null
+        if (isCircuitOpen()) return null
+
         val startIdx = (dnsRoundRobin.getAndIncrement() and 0x7FFFFFFF) % DNS_POOL_SIZE
 
         // Phase 1: Try all existing live workers (non-blocking lock to skip busy ones)
@@ -401,39 +457,49 @@ object SlipstreamSocksBridge {
                     continue
                 }
                 val result = sendDnsQuery(worker, payload)
-                if (result != null) return result
+                if (result != null) { recordDnsSuccess(); return result }
             } catch (e: Exception) {
                 logd("FWD_UDP: DNS worker $idx failed: ${e.message}")
                 dnsWorkers[idx] = null
+                recordDnsFailure()
             } finally {
                 worker.lock.unlock()
             }
         }
 
+        if (isCircuitOpen()) return null
+
         // Phase 2: All workers dead/busy — recreate one inline
         for (i in 0 until DNS_POOL_SIZE) {
             val idx = (startIdx + i) % DNS_POOL_SIZE
-            val newWorker = recreateDnsWorkerSync(idx) ?: continue
+            val newWorker = recreateDnsWorkerSync(idx)
+            if (newWorker == null) { recordDnsFailure(); continue }
             if (!newWorker.lock.tryLock(5, TimeUnit.SECONDS)) continue
             try {
                 val result = sendDnsQuery(newWorker, payload)
-                if (result != null) return result
+                if (result != null) { recordDnsSuccess(); return result }
             } catch (e: Exception) {
                 logd("FWD_UDP: recreated DNS worker $idx failed: ${e.message}")
                 dnsWorkers[idx] = null
+                recordDnsFailure()
             } finally {
                 newWorker.lock.unlock()
             }
             break
         }
 
+        if (isCircuitOpen()) return null
+
         // Phase 3: Per-query fallback (old behavior — new connection per query)
         logd("FWD_UDP: all workers failed, falling back to per-query connection")
         val tcpResult = forwardDnsTcpOneShot(payload)
-        if (tcpResult != null) return tcpResult
+        if (tcpResult != null) { recordDnsSuccess(); return tcpResult }
+        recordDnsFailure()
 
-        // Phase 4: DoH fallback
-        return forwardDnsDoH(payload)
+        // Phase 4: DoH fallback — always attempt, bypasses tunnel entirely
+        val dohResult = forwardDnsDoH(payload)
+        if (dohResult != null) recordDnsSuccess()
+        return dohResult
     }
 
     private fun bindServerSocket(host: String, port: Int): ServerSocket {
@@ -534,6 +600,15 @@ object SlipstreamSocksBridge {
                     if (cmd == 0x05) {
                         socket.soTimeout = 0
                         handleFwdUdp(input, output)
+                        return@Thread
+                    }
+
+                    // Reject IPv6 CONNECT early — remote SOCKS server typically
+                    // lacks IPv6, and forwarding wastes tunnel bandwidth.
+                    if (addrType == 0x04) {
+                        logd("CONNECT: rejected IPv6 $destHost:$destPort locally")
+                        output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                        output.flush()
                         return@Thread
                     }
 
@@ -655,6 +730,38 @@ object SlipstreamSocksBridge {
         clientOutput: OutputStream,
         sendReply: Boolean
     ) {
+        // Fail fast if Slipstream tunnel is dead
+        if (!SlipstreamBridge.isNativeRunning()) {
+            logd("CONNECT: Slipstream not running, rejecting $destHost:$destPort")
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
+            return
+        }
+
+        // CONNECT circuit breaker: tunnel is overwhelmed, reject immediately
+        if (isConnectCircuitOpen()) {
+            logd("CONNECT: circuit open, rejecting $destHost:$destPort")
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
+            return
+        }
+
+        // Limit concurrent CONNECT operations to avoid flooding the tunnel.
+        // Non-blocking: reject immediately if all slots are taken.
+        if (!connectSemaphore.tryAcquire()) {
+            logd("CONNECT: at capacity ($MAX_CONCURRENT_CONNECTS), rejecting $destHost:$destPort")
+            if (sendReply) {
+                clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                clientOutput.flush()
+            }
+            return
+        }
+
+        var semaphoreReleased = false
         val remoteSocket: Socket
         try {
             remoteSocket = Socket()
@@ -662,6 +769,7 @@ object SlipstreamSocksBridge {
             remoteSocket.tcpNoDelay = true
             remoteSockets.add(remoteSocket)
         } catch (e: Exception) {
+            connectSemaphore.release()
             logd("CONNECT: failed to connect to Slipstream: ${e.message}")
             if (sendReply) {
                 clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
@@ -688,6 +796,7 @@ object SlipstreamSocksBridge {
             val selectedMethod = greetResp[1].toInt() and 0xFF
             if (greetResp[0] != 0x05.toByte() || selectedMethod == 0xFF) {
                 Log.w(TAG, "CONNECT: Slipstream rejected greeting (${greetResp[0]}, ${greetResp[1]})")
+                connectSemaphore.release(); semaphoreReleased = true
                 if (sendReply) {
                     clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                     clientOutput.flush()
@@ -713,6 +822,7 @@ object SlipstreamSocksBridge {
                 remoteInput.readFully(authResp)
                 if (authResp[1] != 0x00.toByte()) {
                     Log.w(TAG, "CONNECT: Dante auth failed (status=${authResp[1]})")
+                    connectSemaphore.release(); semaphoreReleased = true
                     if (sendReply) {
                         clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                         clientOutput.flush()
@@ -733,6 +843,7 @@ object SlipstreamSocksBridge {
 
             if (connRespHeader[1] != 0x00.toByte()) {
                 logd("CONNECT: Slipstream rejected to $destHost:$destPort (rep=${connRespHeader[1]})")
+                connectSemaphore.release(); semaphoreReleased = true
                 if (sendReply) {
                     clientOutput.write(byteArrayOf(0x05, connRespHeader[1], 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                     clientOutput.flush()
@@ -748,6 +859,10 @@ object SlipstreamSocksBridge {
                 0x04 -> { val rest = ByteArray(18); remoteInput.readFully(rest) }
             }
 
+            recordConnectSuccess()
+            // Release semaphore after handshake — stream is established
+            connectSemaphore.release()
+            semaphoreReleased = true
             logd("CONNECT: $destHost:$destPort OK (via Slipstream)")
 
             // Send success to hev-socks5-tunnel (if not already sent)
@@ -781,6 +896,8 @@ object SlipstreamSocksBridge {
                 }
             }
         } catch (e: Exception) {
+            if (!semaphoreReleased) connectSemaphore.release()
+            recordConnectFailure()
             logd("CONNECT: chain error for $destHost:$destPort: ${e.message}")
             if (sendReply) {
                 try {
@@ -858,8 +975,15 @@ object SlipstreamSocksBridge {
 
             try {
                 val response = if (dest.second == 53) {
-                    // DNS: use persistent worker pool with multi-phase fallback
-                    forwardDnsPooled(payload)
+                    // Block AAAA queries locally — server lacks IPv6, and
+                    // forwarding wastes tunnel bandwidth. Return NODATA so
+                    // apps fall back to A records instantly.
+                    if (DnsUtils.isAAAAQuery(payload)) {
+                        DnsUtils.buildAAAANoDataResponse(payload)
+                    } else {
+                        // DNS: use persistent worker pool with multi-phase fallback
+                        forwardDnsPooled(payload)
+                    }
                 } else {
                     // Non-DNS UDP (QUIC, etc.): drop silently.
                     // Browser falls back to TCP → CONNECT through Slipstream.

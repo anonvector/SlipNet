@@ -23,7 +23,7 @@ data class KotlinTunnelConfig(
     val slipstreamHost: String = "127.0.0.1",
     val dnsServer: String = "8.8.8.8",
     val congestionControl: String = "bbr",
-    val keepAliveInterval: Int = 200,
+    val keepAliveInterval: Int = 5000,
     val gsoEnabled: Boolean = false,
     // Network Optimization Settings
     val dnsTimeout: Int = 5000,
@@ -310,7 +310,9 @@ class KotlinTunnelManager(
         // Forward DNS query - use TCP through SSH if dnsForwardPort is set, otherwise direct UDP
         scope.launch(Dispatchers.IO) {
             try {
-                val dnsResponse = if (config.dnsForwardPort > 0) {
+                val dnsResponse = if (DnsUtils.isAAAAQuery(udpPayload)) {
+                    DnsUtils.buildAAAANoDataResponse(udpPayload)
+                } else if (config.dnsForwardPort > 0) {
                     // Route DNS through SSH tunnel via TCP (DNS-over-TCP)
                     forwardDnsQueryViaTcp(udpPayload, "127.0.0.1", config.dnsForwardPort)
                 } else {

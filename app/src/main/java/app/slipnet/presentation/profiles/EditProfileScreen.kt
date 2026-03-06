@@ -3,9 +3,11 @@ package app.slipnet.presentation.profiles
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,6 +17,8 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -28,8 +32,13 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.OpenInNew
@@ -38,9 +47,12 @@ import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
@@ -65,6 +77,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
@@ -149,7 +163,7 @@ fun EditProfileScreen(
                 },
                 actions = {
                     val lockedCanEditDns = uiState.isLocked &&
-                            (uiState.isDnsttBased || uiState.isSlipstreamBased)
+                            (uiState.isDnsttOrNoizBased || uiState.isSlipstreamBased)
                     if (!uiState.isLocked || lockedCanEditDns) {
                         if (uiState.isSaving) {
                             CircularProgressIndicator(
@@ -177,154 +191,242 @@ fun EditProfileScreen(
                 CircularProgressIndicator()
             }
         } else if (uiState.isLocked) {
-            // Locked profile view — minimal info + unlock button
+            // Locked profile view
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
                     .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Lock,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .align(Alignment.CenterHorizontally),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Text(
-                    text = uiState.name,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                Text(
-                    text = uiState.tunnelType.displayName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Text(
-                    text = if (uiState.isDnsttBased || uiState.isSlipstreamBased)
-                        "This profile is locked. You can change DNS resolver settings below. Enter the admin password to unlock all settings."
-                    else
-                        "This profile is locked. Server details are hidden to prevent unauthorized access. Enter the admin password to unlock.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                // DNS settings for DNSTT/Slipstream locked profiles
-                if (uiState.isDnsttBased || uiState.isSlipstreamBased) {
-                    // DNS Transport selector (DNSTT-based profiles only)
-                    if (uiState.isDnsttBased) {
-                        Text(
-                            text = "DNS Transport",
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-
+                // Profile info card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            DnsTransport.entries.forEach { transport ->
-                                if (uiState.dnsTransport == transport) {
-                                    Button(
-                                        onClick = { },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text(transport.displayName)
-                                    }
-                                } else {
-                                    OutlinedButton(
-                                        onClick = { viewModel.updateDnsTransport(transport) },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text(transport.displayName)
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(22.dp),
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            Column {
+                                Text(
+                                    text = uiState.name,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = uiState.tunnelType.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        // Info rows
+                        if (uiState.expirationDate > 0) {
+                            val isExpired = System.currentTimeMillis() > uiState.expirationDate
+                            val dateStr = java.text.SimpleDateFormat("MMM dd, yyyy HH:mm", java.util.Locale.getDefault())
+                                .format(java.util.Date(uiState.expirationDate))
+                            LockedInfoRow(
+                                icon = if (isExpired) Icons.Default.Warning else Icons.Default.Schedule,
+                                label = if (isExpired) "Expired" else "Expires",
+                                value = dateStr,
+                                valueColor = if (isExpired) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        if (uiState.boundDeviceId.isNotEmpty()) {
+                            LockedInfoRow(
+                                icon = Icons.Default.PhoneAndroid,
+                                label = "Device",
+                                value = "Bound"
+                            )
+                        }
+                        LockedInfoRow(
+                            icon = Icons.Default.Share,
+                            label = "Re-sharing",
+                            value = if (uiState.allowSharing) "Allowed" else "Disabled"
+                        )
+                    }
+                }
+
+                // DNS settings card
+                if (uiState.isDnsttOrNoizBased || uiState.isSlipstreamBased) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Dns,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "DNS Settings",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+
+                            Text(
+                                text = "You can change DNS resolver settings. Other profile details are locked.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            // DNS Transport selector (DNSTT-based profiles only)
+                            if (uiState.isDnsttOrNoizBased) {
+                                Text(
+                                    text = "Transport",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    DnsTransport.entries.forEach { transport ->
+                                        if (uiState.dnsTransport == transport) {
+                                            Button(
+                                                onClick = { },
+                                                modifier = Modifier.weight(1f),
+                                                shape = RoundedCornerShape(10.dp),
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                                            ) {
+                                                Text(transport.displayName, style = MaterialTheme.typography.labelMedium)
+                                            }
+                                        } else {
+                                            OutlinedButton(
+                                                onClick = { viewModel.updateDnsTransport(transport) },
+                                                modifier = Modifier.weight(1f),
+                                                shape = RoundedCornerShape(10.dp),
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                                            ) {
+                                                Text(transport.displayName, style = MaterialTheme.typography.labelMedium)
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
-                    }
 
-                    // DoH URL for DNSTT with DoH transport
-                    if (uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOH) {
-                        DohServerSelector(
-                            dohUrl = uiState.dohUrl,
-                            dohUrlError = uiState.dohUrlError,
-                            onUrlChange = { viewModel.updateDohUrl(it) },
-                            onPresetSelected = { viewModel.selectDohPreset(it) },
-                            onTestServers = { viewModel.testDohServers() },
-                            customDohUrls = uiState.customDohUrls,
-                            onCustomDohUrlsChange = { viewModel.updateCustomDohUrls(it) }
-                        )
-                    }
+                            // DoH URL for DNSTT with DoH transport
+                            if (uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH) {
+                                DohServerSelector(
+                                    dohUrl = uiState.dohUrl,
+                                    dohUrlError = uiState.dohUrlError,
+                                    onUrlChange = { viewModel.updateDohUrl(it) },
+                                    onPresetSelected = { viewModel.selectDohPreset(it) },
+                                    onTestServers = { viewModel.testDohServers() },
+                                    customDohUrls = uiState.customDohUrls,
+                                    onCustomDohUrlsChange = { viewModel.updateCustomDohUrls(it) }
+                                )
+                            }
 
-                    // Resolver field (not shown when DNSTT with DoH transport)
-                    if (!(uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOH)) {
-                        val isDoT = uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOT
-                        OutlinedTextField(
-                            value = uiState.resolvers,
-                            onValueChange = { viewModel.updateResolvers(it) },
-                            label = { Text("DNS Resolver") },
-                            placeholder = { Text(if (isDoT) "e.g. 8.8.8.8:853" else "e.g. 8.8.8.8:53") },
-                            isError = uiState.resolversError != null,
-                            supportingText = {
-                                Text(uiState.resolversError ?: if (isDoT) "DNS-over-TLS server (IP:853)" else "DNS server address (IP:port)")
-                            },
-                            trailingIcon = {
-                                IconButton(
-                                    onClick = { viewModel.autoDetectResolver() },
-                                    enabled = !uiState.isAutoDetecting
-                                ) {
-                                    if (uiState.isAutoDetecting) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(18.dp),
-                                            strokeWidth = 2.dp
-                                        )
-                                    } else {
-                                        Text(
-                                            text = "Local",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
+                            // Resolver field (not shown when DNSTT with DoH transport)
+                            if (!(uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH)) {
+                                val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
+                                OutlinedTextField(
+                                    value = uiState.resolvers,
+                                    onValueChange = { viewModel.updateResolvers(it) },
+                                    label = { Text("DNS Resolver") },
+                                    placeholder = { Text(if (isDoT) "e.g. 8.8.8.8:853" else "e.g. 8.8.8.8:53") },
+                                    isError = uiState.resolversError != null,
+                                    supportingText = {
+                                        Text(uiState.resolversError ?: if (isDoT) "DNS-over-TLS server (IP:853)" else "DNS server address (IP:port)")
+                                    },
+                                    trailingIcon = {
+                                        IconButton(
+                                            onClick = { viewModel.autoDetectResolver() },
+                                            enabled = !uiState.isAutoDetecting
+                                        ) {
+                                            if (uiState.isAutoDetecting) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(18.dp),
+                                                    strokeWidth = 2.dp
+                                                )
+                                            } else {
+                                                Text(
+                                                    text = "Local",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        }
+                                    },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+
+                                if (onNavigateToScanner != null) {
+                                    OutlinedButton(
+                                        onClick = { viewModel.saveForScanner() },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Scan for Working Resolvers")
                                     }
                                 }
-                            },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        if (onNavigateToScanner != null) {
-                            OutlinedButton(
-                                onClick = { viewModel.saveForScanner() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Default.Search, contentDescription = null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Scan for Working Resolvers")
                             }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(24.dp))
 
-                Button(
+                // Unlock button
+                OutlinedButton(
                     onClick = {
                         unlockPassword = ""
                         unlockError = false
                         showUnlockDialog = true
                     },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Lock,
+                        imageVector = Icons.Default.LockOpen,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
@@ -416,7 +518,7 @@ fun EditProfileScreen(
                         placeholder = {
                             Text(
                                 when {
-                                    uiState.isDnsttBased -> "t.example.com"
+                                    uiState.isDnsttOrNoizBased -> "t.example.com"
                                     uiState.isSshOnly -> "ssh.example.com"
                                     uiState.isNaiveBased -> "proxy.example.com"
                                     else -> "vpn.example.com"
@@ -427,6 +529,7 @@ fun EditProfileScreen(
                         supportingText = {
                             Text(
                                 uiState.domainError ?: when {
+                                    uiState.isNoizdnsBased -> "NoizDNS tunnel domain"
                                     uiState.isDnsttBased -> "DNSTT tunnel domain"
                                     uiState.isSlipstreamBased -> "Slipstream tunnel domain"
                                     uiState.isNaiveBased -> "Caddy server hostname"
@@ -568,7 +671,7 @@ fun EditProfileScreen(
                 }
 
                 // DNSTT Public Key
-                if (uiState.isDnsttBased) {
+                if (uiState.isDnsttOrNoizBased) {
                     OutlinedTextField(
                         value = uiState.dnsttPublicKey,
                         onValueChange = { viewModel.updateDnsttPublicKey(it) },
@@ -584,7 +687,7 @@ fun EditProfileScreen(
                 }
 
                 // DNS Transport selector (DNSTT-based profiles only)
-                if (uiState.isDnsttBased) {
+                if (uiState.isDnsttOrNoizBased) {
                     Text(
                         text = "DNS Transport",
                         style = MaterialTheme.typography.titleMedium,
@@ -616,7 +719,7 @@ fun EditProfileScreen(
                 }
 
                 // Authoritative Mode toggle (DNSTT-based profiles only)
-                if (uiState.isDnsttBased) {
+                if (uiState.isDnsttOrNoizBased) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -650,8 +753,79 @@ fun EditProfileScreen(
                     }
                 }
 
+                // NoizDNS server setup guide
+                if (uiState.isNoizdnsBased) {
+                    Surface(
+                        onClick = {
+                            val intent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://github.com/anonvector/noizdns-deploy")
+                            )
+                            context.startActivity(intent)
+                        },
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp, horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Server setup guide",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+
+                // NoizDNS stealth mode toggle
+                if (uiState.isNoizdnsBased) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Stealth mode",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "Slower speed, harder to detect by DPI",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = uiState.noizdnsStealth,
+                            onCheckedChange = { viewModel.updateNoizdnsStealth(it) }
+                        )
+                    }
+                    if (uiState.noizdnsStealth) {
+                        Text(
+                            text = "Internet speed will be reduced. Use split tunneling to limit which apps use the tunnel for better performance.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                }
+
                 // DoH URL for DNSTT with DoH transport
-                if (uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOH) {
+                if (uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH) {
                     DohServerSelector(
                         dohUrl = uiState.dohUrl,
                         dohUrlError = uiState.dohUrlError,
@@ -665,9 +839,9 @@ fun EditProfileScreen(
 
                 // Resolvers (not shown for SSH-only, DOH, or DNSTT with DoH transport)
                 val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake && !uiState.isNaiveBased &&
-                        !(uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOH)
+                        !(uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH)
                 if (showResolvers) {
-                    val isDoT = uiState.isDnsttBased && uiState.dnsTransport == DnsTransport.DOT
+                    val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
                     OutlinedTextField(
                         value = uiState.resolvers,
                         onValueChange = { viewModel.updateResolvers(it) },
@@ -1573,5 +1747,37 @@ private fun DohTestDialog(
             }
         }
     )
+}
+
+@Composable
+private fun LockedInfoRow(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = valueColor
+        )
+    }
 }
 
