@@ -137,9 +137,9 @@ fun ScanResultsScreen(
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("scanner_ui", Context.MODE_PRIVATE) }
     var sortOption by remember {
-        mutableStateOf(
-            SortOption.entries.find { it.name == prefs.getString("sort_option", null) } ?: SortOption.NONE
-        )
+        val initial = SortOption.entries.find { it.name == prefs.getString("sort_option", null) } ?: SortOption.NONE
+        viewModel.updateE2eSortOption(E2eSortOption.valueOf(initial.name))
+        mutableStateOf(initial)
     }
     var scoreFilter by remember {
         mutableStateOf(
@@ -546,9 +546,10 @@ fun ScanResultsScreen(
                     SortOption.SCORE -> filtered.sortedByDescending {
                         it.tunnelTestResult?.score ?: 0
                     }
-                    SortOption.E2E_SPEED -> filtered.sortedBy {
-                        it.e2eTestResult?.totalMs ?: Long.MAX_VALUE
-                    }
+                    SortOption.E2E_SPEED -> filtered.sortedWith(
+                        compareByDescending<ResolverScanResult> { it.e2eTestResult?.success == true }
+                            .thenBy { it.e2eTestResult?.totalMs ?: Long.MAX_VALUE }
+                    )
                     SortOption.NONE -> if (isSimpleMode) {
                         filtered.sortedBy { it.e2eTestResult?.totalMs ?: Long.MAX_VALUE }
                     } else filtered
@@ -574,7 +575,7 @@ fun ScanResultsScreen(
                     ),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    items(displayResults.size, key = { index -> displayResults[index].host }) { index ->
+                    items(displayResults.size, key = { index -> "${index}_${displayResults[index].host}" }) { index ->
                         val result = displayResults[index]
                         val isSelected = uiState.selectedResolvers.contains(result.host)
                         val dismissState = rememberSwipeToDismissBoxState(
@@ -673,6 +674,7 @@ fun ScanResultsScreen(
                             onSortOptionChange = {
                                 sortOption = it
                                 prefs.edit().putString("sort_option", it.name).apply()
+                                viewModel.updateE2eSortOption(E2eSortOption.valueOf(it.name))
                             },
                             scoreFilter = scoreFilter,
                             onScoreFilterChange = {

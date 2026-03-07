@@ -28,7 +28,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -46,6 +45,10 @@ data class CidrGroup(
     val totalIps: Long,
     val ranges: List<Pair<Long, Long>>
 )
+
+enum class E2eSortOption {
+    NONE, SPEED, IP, SCORE, E2E_SPEED
+}
 
 data class DnsScannerUiState(
     val profileId: Long? = null,
@@ -80,7 +83,8 @@ data class DnsScannerUiState(
     // Simple scan mode
     val scanMode: ScanMode = ScanMode.SIMPLE,
     val simpleModeE2eState: SimpleModeE2eState = SimpleModeE2eState(),
-    val e2eMinScore: Int = 2
+    val e2eMinScore: Int = 2,
+    val e2eSortOption: E2eSortOption = E2eSortOption.NONE
 ) {
     companion object {
         const val MAX_SELECTED_RESOLVERS = 8
@@ -221,6 +225,80 @@ private data class SavedResult(
     val e2eErrorMessage: String? = null
 )
 
+/**
+ * Thread-safe queue that can be re-sorted mid-flight.
+ * Used to control E2E test order based on the user's sort selection.
+ */
+private class SortableQueue<T>(
+    initial: List<T> = emptyList(),
+    private var comparator: Comparator<T>? = null
+) {
+    private val lock = java.util.concurrent.locks.ReentrantLock()
+    private val notEmpty = lock.newCondition()
+    private val items = java.util.LinkedList<T>()
+    @Volatile private var closed = false
+
+    init {
+        if (initial.isNotEmpty()) {
+            items.addAll(if (comparator != null) initial.sortedWith(comparator!!) else initial)
+        }
+    }
+
+    fun add(item: T) {
+        lock.lock()
+        try {
+            if (comparator != null) {
+                // Insert in sorted position
+                val idx = items.indexOfFirst { comparator!!.compare(item, it) < 0 }
+                if (idx >= 0) items.add(idx, item) else items.addLast(item)
+            } else {
+                items.addLast(item)
+            }
+            notEmpty.signal()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    /** Blocks until an item is available. Returns null when closed and empty. */
+    fun take(): T? {
+        lock.lock()
+        try {
+            while (items.isEmpty()) {
+                if (closed) return null
+                notEmpty.await()
+            }
+            return items.removeFirst()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun resort(newComparator: Comparator<T>?) {
+        lock.lock()
+        try {
+            comparator = newComparator
+            if (newComparator != null && items.size > 1) {
+                val sorted = items.sortedWith(newComparator)
+                items.clear()
+                items.addAll(sorted)
+            }
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun close() {
+        lock.lock()
+        try {
+            closed = true
+            notEmpty.signalAll()
+        } finally {
+            lock.unlock()
+        }
+    }
+}
+
 @HiltViewModel
 class DnsScannerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -241,8 +319,8 @@ class DnsScannerViewModel @Inject constructor(
 
     private var scanJob: Job? = null
     private var e2eJob: Job? = null
-    private var simpleModeChannel: Channel<Pair<String, Int>>? = null
     private var simpleModeE2eJob: Job? = null
+    private var e2ePendingQueue: SortableQueue<Pair<String, Int>>? = null
     private val gson = Gson()
 
     // Wake lock to keep CPU alive during scanning when app is backgrounded
@@ -1045,8 +1123,8 @@ class DnsScannerViewModel @Inject constructor(
             it.e2eTestResult?.success == true
         }
 
-        val channel = Channel<Pair<String, Int>>(Channel.UNLIMITED)
-        simpleModeChannel = channel
+        val queue = SortableQueue(untestedE2e, buildE2eComparator(_uiState.value.e2eSortOption))
+        e2ePendingQueue = queue
 
         // Shared map for both coroutines
         val resultsMap = mutableMapOf<String, ResolverScanResult>()
@@ -1074,9 +1152,6 @@ class DnsScannerViewModel @Inject constructor(
             selectedResolvers = emptySet(),
             error = null
         )
-
-        // Seed channel with already-working but untested resolvers
-        untestedE2e.forEach { channel.trySend(it) }
 
         // Coroutine 1: DNS scan for remaining hosts
         if (hasDnsWork) {
@@ -1107,7 +1182,7 @@ class DnsScannerViewModel @Inject constructor(
                         resultsMap[result.host] = result
                         workingCount++
                         if ((result.tunnelTestResult?.score ?: 0) >= minScore) {
-                            channel.trySend(result.host to result.port)
+                            queue.add(result.host to result.port)
                             _uiState.value = _uiState.value.copy(
                                 simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
                                     queuedCount = _uiState.value.simpleModeE2eState.queuedCount + 1
@@ -1158,28 +1233,32 @@ class DnsScannerViewModel @Inject constructor(
                     ).collect { handleResult(it) }
                 }
 
-                channel.close()
+                queue.close()
                 emitState(false)
             }
         } else {
-            // DNS is already complete — close channel after seeding
-            channel.close()
+            // DNS is already complete — close queue after seeding
+            queue.close()
         }
 
         // Coroutine 2: E2E validation
-        simpleModeE2eJob = viewModelScope.launch {
+        simpleModeE2eJob = viewModelScope.launch(Dispatchers.IO) {
             var testedCount = startTestedCount
             var passedCount = startPassedCount
             val testUrl = _uiState.value.testUrl
             val e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 9000L
 
-            for ((host, port) in channel) {
-                _uiState.value = _uiState.value.copy(
-                    simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                        currentResolver = host,
-                        currentPhase = "Starting..."
+            while (true) {
+                val pair = queue.take() ?: break
+                val (host, port) = pair
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
+                            currentResolver = host,
+                            currentPhase = "Starting..."
+                        )
                     )
-                )
+                }
 
                 val e2eResult = scannerRepository.testResolverE2e(
                     resolverHost = host,
@@ -1201,15 +1280,17 @@ class DnsScannerViewModel @Inject constructor(
 
                 resultsMap[host]?.let { resultsMap[host] = it.copy(e2eTestResult = e2eResult) }
 
-                _uiState.value = _uiState.value.copy(
-                    scannerState = _uiState.value.scannerState.copy(results = rebuildResultsList()),
-                    simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                        testedCount = testedCount,
-                        passedCount = passedCount,
-                        currentResolver = null,
-                        currentPhase = ""
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        scannerState = _uiState.value.scannerState.copy(results = rebuildResultsList()),
+                        simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
+                            testedCount = testedCount,
+                            passedCount = passedCount,
+                            currentResolver = null,
+                            currentPhase = ""
+                        )
                     )
-                )
+                }
             }
 
             _uiState.value = _uiState.value.copy(
@@ -1353,8 +1434,8 @@ class DnsScannerViewModel @Inject constructor(
             return
         }
 
-        val channel = Channel<Pair<String, Int>>(Channel.UNLIMITED)
-        simpleModeChannel = channel
+        val queue2 = SortableQueue<Pair<String, Int>>(comparator = buildE2eComparator(_uiState.value.e2eSortOption))
+        e2ePendingQueue = queue2
 
         _uiState.value = _uiState.value.copy(
             simpleModeE2eState = SimpleModeE2eState(isRunning = true)
@@ -1413,7 +1494,7 @@ class DnsScannerViewModel @Inject constructor(
                         resultsMap[result.host] = result
                         workingCount++
                         if ((result.tunnelTestResult?.score ?: 0) >= minScore) {
-                            channel.trySend(result.host to result.port)
+                            queue2.add(result.host to result.port)
                             _uiState.value = _uiState.value.copy(
                                 simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
                                     queuedCount = _uiState.value.simpleModeE2eState.queuedCount + 1
@@ -1473,25 +1554,29 @@ class DnsScannerViewModel @Inject constructor(
                 ).collect { handleResult(it) }
             }
 
-            // DNS scan done — close channel so E2E coroutine finishes
-            channel.close()
+            // DNS scan done — close queue so E2E coroutine finishes
+            queue2.close()
             emitState(false)
         }
 
-        // Coroutine 2: E2E validation — consumes working resolvers from channel
-        simpleModeE2eJob = viewModelScope.launch {
+        // Coroutine 2: E2E validation — consumes working resolvers from sorted queue
+        simpleModeE2eJob = viewModelScope.launch(Dispatchers.IO) {
             var testedCount = 0
             var passedCount = 0
             val testUrl = _uiState.value.testUrl
             val e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 9000L
 
-            for ((host, port) in channel) {
-                _uiState.value = _uiState.value.copy(
-                    simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                        currentResolver = host,
-                        currentPhase = "Starting..."
+            while (true) {
+                val pair = queue2.take() ?: break
+                val (host, port) = pair
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
+                            currentResolver = host,
+                            currentPhase = "Starting..."
+                        )
                     )
-                )
+                }
 
                 val e2eResult = scannerRepository.testResolverE2e(
                     resolverHost = host,
@@ -1514,15 +1599,17 @@ class DnsScannerViewModel @Inject constructor(
                 // Merge E2E result into the shared map and rebuild
                 resultsMap[host]?.let { resultsMap[host] = it.copy(e2eTestResult = e2eResult) }
 
-                _uiState.value = _uiState.value.copy(
-                    scannerState = _uiState.value.scannerState.copy(results = rebuildResultsList()),
-                    simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                        testedCount = testedCount,
-                        passedCount = passedCount,
-                        currentResolver = null,
-                        currentPhase = ""
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        scannerState = _uiState.value.scannerState.copy(results = rebuildResultsList()),
+                        simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
+                            testedCount = testedCount,
+                            passedCount = passedCount,
+                            currentResolver = null,
+                            currentPhase = ""
+                        )
                     )
-                )
+                }
             }
 
             // E2E pipeline done
@@ -1542,7 +1629,7 @@ class DnsScannerViewModel @Inject constructor(
         val isSimpleMode = _uiState.value.scanMode == ScanMode.SIMPLE
         scanJob?.cancel()
         if (isSimpleMode) {
-            simpleModeChannel?.close()
+            e2ePendingQueue?.close()
             simpleModeE2eJob?.cancel()
             _uiState.value = _uiState.value.copy(
                 scannerState = _uiState.value.scannerState.copy(isScanning = false),
@@ -1577,6 +1664,36 @@ class DnsScannerViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(e2eMinScore = minScore)
     }
 
+    fun updateE2eSortOption(option: E2eSortOption) {
+        _uiState.value = _uiState.value.copy(e2eSortOption = option)
+        // Re-sort pending E2E queue mid-test
+        e2ePendingQueue?.resort(buildE2eComparator(option))
+    }
+
+    private fun buildE2eComparator(option: E2eSortOption): Comparator<Pair<String, Int>>? {
+        val results = _uiState.value.scannerState.results
+        val lookup = results.associateBy { it.host }
+        return when (option) {
+            E2eSortOption.NONE -> null
+            E2eSortOption.SPEED -> compareBy { lookup[it.first]?.responseTimeMs ?: Long.MAX_VALUE }
+            E2eSortOption.IP -> compareBy {
+                it.first.split(".").map { p -> p.toIntOrNull() ?: 0 }
+                    .fold(0L) { acc, i -> acc * 256 + i }
+            }
+            E2eSortOption.SCORE -> compareByDescending { lookup[it.first]?.tunnelTestResult?.score ?: 0 }
+            E2eSortOption.E2E_SPEED -> Comparator { a, b ->
+                val aResult = lookup[a.first]?.e2eTestResult
+                val bResult = lookup[b.first]?.e2eTestResult
+                val aSuccess = aResult?.success == true
+                val bSuccess = bResult?.success == true
+                if (aSuccess != bSuccess) return@Comparator if (bSuccess) 1 else -1
+                val aMs = aResult?.totalMs ?: Long.MAX_VALUE
+                val bMs = bResult?.totalMs ?: Long.MAX_VALUE
+                aMs.compareTo(bMs)
+            }
+        }
+    }
+
     fun startE2eTest(fresh: Boolean = false, minScore: Int = 0) {
         val state = _uiState.value
         val profile = state.profile ?: run {
@@ -1601,9 +1718,12 @@ class DnsScannerViewModel @Inject constructor(
         val alreadyTested = if (fresh) emptySet()
         else allWorking.filter { it.e2eTestResult != null }.map { it.host }.toSet()
 
-        val remaining = allWorking
+        val remainingUnsorted = allWorking
             .filter { it.host !in alreadyTested }
             .map { it.host to it.port }
+
+        val comparator = buildE2eComparator(state.e2eSortOption)
+        val remaining = if (comparator != null) remainingUnsorted.sortedWith(comparator) else remainingUnsorted
 
         if (remaining.isEmpty()) {
             _uiState.value = state.copy(error = "All working resolvers already tested")
@@ -1724,7 +1844,7 @@ class DnsScannerViewModel @Inject constructor(
         releaseWakeLock()
         scanJob?.cancel()
         e2eJob?.cancel()
-        simpleModeChannel?.close()
+        e2ePendingQueue?.close()
         simpleModeE2eJob?.cancel()
 
         // Save partial results so the user can resume after navigating away.

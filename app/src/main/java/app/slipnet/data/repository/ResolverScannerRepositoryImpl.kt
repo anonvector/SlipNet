@@ -557,11 +557,12 @@ class ResolverScannerRepositoryImpl @Inject constructor(
     }
 
     override fun expandIpRanges(ranges: List<Pair<Long, Long>>): List<String> {
+        val seen = mutableSetOf<Long>()
         val result = mutableListOf<String>()
         for ((start, end) in ranges) {
             var ip = start
             while (ip <= end) {
-                result.add(longToIp(ip))
+                if (seen.add(ip)) result.add(longToIp(ip))
                 ip++
             }
         }

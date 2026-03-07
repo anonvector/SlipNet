@@ -511,6 +511,12 @@ object SshTunnelBridge {
         return running.get() && s.isConnected && !ss.isClosed
     }
 
+    /** Returns true when all DNS workers in the pool are dead. */
+    fun isDnsPoolDead(): Boolean {
+        if (!running.get()) return false
+        return (0 until DNS_POOL_SIZE).none { dnsWorkers[it]?.isAlive == true }
+    }
+
     /**
      * Active liveness probe: sends an SSH keepalive and waits for a reply.
      * Returns true if the server responded, false if the session is dead or unresponsive.

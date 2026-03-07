@@ -242,6 +242,12 @@ object SlipstreamSocksBridge {
         return running.get() && !ss.isClosed
     }
 
+    /** Returns true when all DNS workers in the pool are dead. */
+    fun isDnsPoolDead(): Boolean {
+        if (!running.get()) return false
+        return (0 until DNS_POOL_SIZE).none { dnsWorkers[it]?.isAlive == true }
+    }
+
     // --- DNS Worker Pool Management ---
 
     /**

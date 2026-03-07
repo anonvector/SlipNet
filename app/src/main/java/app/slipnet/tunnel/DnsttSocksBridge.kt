@@ -252,6 +252,12 @@ object DnsttSocksBridge {
         return running.get() && !ss.isClosed
     }
 
+    /** Returns true when all DNS workers in the pool are dead. */
+    fun isDnsPoolDead(): Boolean {
+        if (!running.get()) return false
+        return (0 until dnsPoolSize).none { dnsWorkers.getOrNull(it)?.isAlive == true }
+    }
+
     // --- DNS Worker Pool Management ---
 
     /**

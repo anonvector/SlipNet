@@ -687,6 +687,7 @@ fun MainScreen(
                 totalDownload = uiState.trafficStats.bytesReceived,
                 sleepTimerRemainingSeconds = uiState.sleepTimerRemainingSeconds,
                 onCancelSleepTimer = { viewModel.userCancelSleepTimer() },
+                dnsWarning = uiState.dnsWarning,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = navBarPadding.calculateBottomPadding())
@@ -1238,6 +1239,7 @@ private fun ConnectionStatusStrip(
     totalDownload: Long = 0,
     sleepTimerRemainingSeconds: Int = 0,
     onCancelSleepTimer: () -> Unit = {},
+    dnsWarning: String? = null,
     modifier: Modifier = Modifier
 ) {
     val isConnected = connectionState is ConnectionState.Connected
@@ -1351,6 +1353,20 @@ private fun ConnectionStatusStrip(
                         )
                     }
                 }
+            }
+
+            // DNS warning
+            AnimatedVisibility(
+                visible = isConnected && dnsWarning != null,
+                enter = expandVertically(animationSpec = tween(300)) + fadeIn(animationSpec = tween(300)),
+                exit = shrinkVertically(animationSpec = tween(200)) + fadeOut(animationSpec = tween(200))
+            ) {
+                Text(
+                    text = dnsWarning ?: "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(start = 22.dp, top = 6.dp)
+                )
             }
 
             // Sleep timer countdown
