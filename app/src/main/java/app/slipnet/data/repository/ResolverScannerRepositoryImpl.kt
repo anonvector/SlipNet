@@ -931,7 +931,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 )
             }
 
-            val isSshVariant = profile.tunnelType == TunnelType.DNSTT_SSH
+            val isSshVariant = profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.NOIZDNS_SSH
 
             if (!isSshVariant) {
                 // Non-SSH: start DnsttSocksBridge (same as VPN flow) to handle
