@@ -4,7 +4,13 @@
   <img src="imgs/icon.png" alt="SlipNet Logo" width="200">
 </p>
 
-A fast, modern VPN client featuring DNS tunneling with support for multiple protocols. Available as an Android app (Jetpack Compose + Kotlin) and a cross-platform CLI client (Go).
+A fast, modern VPN client featuring DNS tunneling with support for multiple protocols. Available as an Android app (Jetpack Compose + Kotlin), a cross-platform CLI client (Go), and a desktop GUI for Mac, Windows, and Linux.
+
+## Desktop GUI (Mac, Windows, Linux)
+
+**Prefer a point-and-click interface?** [**SlipStreamGUI**](https://github.com/mirzaaghazadeh/SlipStreamGUI) is a modern, cross-platform GUI client — no terminal required. It uses this project's binaries (SlipNet CLI) under the hood. Download, install, and connect with a few clicks.
+
+[![SlipStreamGUI](https://img.shields.io/badge/Download-SlipStreamGUI-green?style=for-the-badge)](https://github.com/mirzaaghazadeh/SlipStreamGUI/releases/latest)
 
 ## Community
 
@@ -149,7 +155,7 @@ To use this client, you must have a compatible server. Please configure your ser
 
 ## CLI Client
 
-SlipNet includes a cross-platform CLI client for **macOS**, **Linux**, and **Windows**. It connects using a `slipnet://` config URI and starts a local SOCKS5 proxy.
+SlipNet includes a cross-platform CLI client for **macOS**, **Linux**, and **Windows**. It connects using a `slipnet://` config URI and starts a local SOCKS5 proxy. For a GUI alternative, see [SlipStreamGUI](https://github.com/mirzaaghazadeh/SlipStreamGUI).
 
 ### Download
 
