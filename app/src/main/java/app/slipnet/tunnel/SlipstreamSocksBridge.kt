@@ -612,8 +612,11 @@ object SlipstreamSocksBridge {
 
                     // Reject IPv6 CONNECT early — remote SOCKS server typically
                     // lacks IPv6, and forwarding wastes tunnel bandwidth.
+                    // Delay before replying so the app's TCP stack backs off
+                    // instead of retrying immediately and burning data.
                     if (addrType == 0x04) {
                         logd("CONNECT: rejected IPv6 $destHost:$destPort locally")
+                        try { Thread.sleep(2000) } catch (_: InterruptedException) {}
                         output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                         output.flush()
                         return@Thread
@@ -758,8 +761,9 @@ object SlipstreamSocksBridge {
         }
 
         // Limit concurrent CONNECT operations to avoid flooding the tunnel.
-        // Non-blocking: reject immediately if all slots are taken.
-        if (!connectSemaphore.tryAcquire()) {
+        // Wait briefly for a slot instead of rejecting immediately — instant
+        // rejection causes apps to retry in a tight loop, burning tunnel data.
+        if (!connectSemaphore.tryAcquire(2, java.util.concurrent.TimeUnit.SECONDS)) {
             logd("CONNECT: at capacity ($MAX_CONCURRENT_CONNECTS), rejecting $destHost:$destPort")
             if (sendReply) {
                 clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))

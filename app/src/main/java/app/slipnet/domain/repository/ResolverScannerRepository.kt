@@ -122,4 +122,25 @@ interface ResolverScannerRepository {
         timeoutMs: Long,
         onPhaseUpdate: (String, String) -> Unit
     ): Flow<Pair<String, E2eTestResult>>
+
+    /**
+     * Test a single resolver E2E using an isolated (ephemeral) tunnel instance.
+     * For DNSTT/NoizDNS: creates its own Go client on a unique port (safe for parallel use).
+     * For Slipstream: falls back to the singleton bridge (must be serialized externally).
+     */
+    suspend fun testResolverE2eIsolated(
+        resolverHost: String,
+        resolverPort: Int,
+        profile: ServerProfile,
+        testUrl: String,
+        timeoutMs: Long,
+        onPhaseUpdate: (String) -> Unit
+    ): E2eTestResult
+
+    /**
+     * Maximum parallel E2E concurrency supported for the given tunnel type.
+     * Slipstream uses a native singleton so only 1 is supported.
+     * DNSTT/NoizDNS create ephemeral Go clients, supporting higher concurrency.
+     */
+    fun maxE2eConcurrency(profile: ServerProfile): Int
 }

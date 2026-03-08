@@ -632,8 +632,8 @@ fun ScanResultsScreen(
                                 isSelected = isSelected,
                                 isLimitReached = uiState.isSelectionLimitReached,
                                 showSelection = canApply,
-                                isE2eTesting = uiState.e2eScannerState.isRunning && uiState.e2eScannerState.currentResolver == result.host,
-                                e2ePhase = if (uiState.e2eScannerState.currentResolver == result.host) uiState.e2eScannerState.currentPhase else null,
+                                isE2eTesting = uiState.e2eScannerState.isRunning && (result.host in uiState.e2eScannerState.activeResolvers || uiState.e2eScannerState.currentResolver == result.host),
+                                e2ePhase = uiState.e2eScannerState.activeResolvers[result.host] ?: if (uiState.e2eScannerState.currentResolver == result.host) uiState.e2eScannerState.currentPhase else null,
                                 onToggleSelection = if (canApply) {
                                     { viewModel.toggleResolverSelection(result.host) }
                                 } else null
@@ -1152,14 +1152,8 @@ private fun E2eProgressSection(e2eScannerState: E2eScannerState) {
                 }
             }
 
-            if (e2eScannerState.isRunning && e2eScannerState.currentResolver != null) {
-                Text(
-                    text = "${e2eScannerState.currentResolver} - ${e2eScannerState.currentPhase}",
-                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            if (e2eScannerState.isRunning && e2eScannerState.activeResolvers.isNotEmpty()) {
+                ActiveResolversList(e2eScannerState.activeResolvers)
             }
 
             LinearProgressIndicator(
@@ -1275,14 +1269,8 @@ private fun SimpleModeProgressSection(
                 }
             }
 
-            if (simpleModeE2eState.isRunning && simpleModeE2eState.currentResolver != null) {
-                Text(
-                    text = "${simpleModeE2eState.currentResolver} - ${simpleModeE2eState.currentPhase}",
-                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            if (simpleModeE2eState.isRunning && simpleModeE2eState.activeResolvers.isNotEmpty()) {
+                ActiveResolversList(simpleModeE2eState.activeResolvers)
             }
 
             LinearProgressIndicator(
@@ -1359,6 +1347,21 @@ private fun ResultsSelectionControls(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             }
+        }
+    }
+}
+
+@Composable
+private fun ActiveResolversList(activeResolvers: Map<String, String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        activeResolvers.forEach { (host, phase) ->
+            Text(
+                text = "$host - $phase",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

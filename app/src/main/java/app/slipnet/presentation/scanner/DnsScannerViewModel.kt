@@ -35,6 +35,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -84,7 +85,8 @@ data class DnsScannerUiState(
     val scanMode: ScanMode = ScanMode.SIMPLE,
     val simpleModeE2eState: SimpleModeE2eState = SimpleModeE2eState(),
     val e2eMinScore: Int = 2,
-    val e2eSortOption: E2eSortOption = E2eSortOption.NONE
+    val e2eSortOption: E2eSortOption = E2eSortOption.NONE,
+    val e2eConcurrency: String = "3"
 ) {
     companion object {
         const val MAX_SELECTED_RESOLVERS = 8
@@ -189,7 +191,8 @@ private data class ScannerSettings(
     val timeoutMs: String,
     val concurrency: String,
     val e2eTimeoutMs: String,
-    val testUrl: String
+    val testUrl: String,
+    val e2eConcurrency: String
 )
 
 // Lightweight models for JSON serialization of scan sessions.
@@ -260,13 +263,18 @@ private class SortableQueue<T>(
         }
     }
 
-    /** Blocks until an item is available. Returns null when closed and empty. */
+    /** Blocks until an item is available. Returns null when closed and empty
+     *  or when the thread is interrupted (coroutine cancellation). */
     fun take(): T? {
         lock.lock()
         try {
             while (items.isEmpty()) {
-                if (closed) return null
-                notEmpty.await()
+                if (closed || Thread.currentThread().isInterrupted) return null
+                try {
+                    notEmpty.await()
+                } catch (_: InterruptedException) {
+                    return null
+                }
             }
             return items.removeFirst()
         } finally {
@@ -274,8 +282,10 @@ private class SortableQueue<T>(
         }
     }
 
+    /** Re-sort pending items. Uses tryLock to avoid blocking the caller
+     *  (typically UI thread) when the consumer holds the lock in take(). */
     fun resort(newComparator: Comparator<T>?) {
-        lock.lock()
+        if (!lock.tryLock(50, java.util.concurrent.TimeUnit.MILLISECONDS)) return
         try {
             comparator = newComparator
             if (newComparator != null && items.size > 1) {
@@ -358,15 +368,17 @@ class DnsScannerViewModel @Inject constructor(
                 preferencesDataStore.scannerTimeoutMs,
                 preferencesDataStore.scannerConcurrency,
                 preferencesDataStore.scannerE2eTimeoutMs,
-                preferencesDataStore.scannerTestUrl
-            ) { timeout, concurrency, e2eTimeout, testUrl ->
-                ScannerSettings(timeout, concurrency, e2eTimeout, testUrl)
+                preferencesDataStore.scannerTestUrl,
+                preferencesDataStore.scannerE2eConcurrency
+            ) { timeout, concurrency, e2eTimeout, testUrl, e2eConcurrency ->
+                ScannerSettings(timeout, concurrency, e2eTimeout, testUrl, e2eConcurrency)
             }.first().let { s ->
                 _uiState.value = _uiState.value.copy(
                     timeoutMs = s.timeoutMs,
                     concurrency = s.concurrency,
                     e2eTimeoutMs = s.e2eTimeoutMs,
-                    testUrl = s.testUrl
+                    testUrl = s.testUrl,
+                    e2eConcurrency = s.e2eConcurrency
                 )
             }
         } catch (e: Exception) {
@@ -399,7 +411,8 @@ class DnsScannerViewModel @Inject constructor(
                     timeoutMs = state.timeoutMs,
                     concurrency = state.concurrency,
                     e2eTimeoutMs = state.e2eTimeoutMs,
-                    testUrl = state.testUrl
+                    testUrl = state.testUrl,
+                    e2eConcurrency = state.e2eConcurrency
                 )
             } catch (e: Exception) {
                 Log.w("DnsScanner", "Failed to save scanner settings", e)
@@ -1241,64 +1254,27 @@ class DnsScannerViewModel @Inject constructor(
             queue.close()
         }
 
-        // Coroutine 2: E2E validation
+        // Coroutine 2: E2E validation — N parallel consumers
         simpleModeE2eJob = viewModelScope.launch(Dispatchers.IO) {
-            var testedCount = startTestedCount
-            var passedCount = startPassedCount
-            val testUrl = _uiState.value.testUrl
-            val e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 9000L
-
-            while (true) {
-                val pair = queue.take() ?: break
-                val (host, port) = pair
-                withContext(Dispatchers.Main) {
+            launchE2eWorkers(
+                queue = queue, profile = profile,
+                testUrl = _uiState.value.testUrl,
+                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 9000L,
+                startTestedCount = startTestedCount, startPassedCount = startPassedCount,
+                onActiveChanged = { transform -> updateSimpleModeActive(transform) },
+                onResult = { host, result, tested, passed ->
+                    resultsMap[host]?.let { resultsMap[host] = it.copy(e2eTestResult = result) }
+                    updateSimpleModeResult(rebuildResultsList(), tested, passed)
+                },
+                onComplete = {
                     _uiState.value = _uiState.value.copy(
                         simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                            currentResolver = host,
-                            currentPhase = "Starting..."
+                            isRunning = false, currentResolver = null, currentPhase = "",
+                            activeResolvers = emptyMap()
                         )
                     )
+                    releaseWakeLock()
                 }
-
-                val e2eResult = scannerRepository.testResolverE2e(
-                    resolverHost = host,
-                    resolverPort = port,
-                    profile = profile,
-                    testUrl = testUrl,
-                    timeoutMs = e2eTimeout,
-                    onPhaseUpdate = { phase ->
-                        _uiState.value = _uiState.value.copy(
-                            simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                                currentPhase = phase
-                            )
-                        )
-                    }
-                )
-
-                testedCount++
-                if (e2eResult.success) passedCount++
-
-                resultsMap[host]?.let { resultsMap[host] = it.copy(e2eTestResult = e2eResult) }
-
-                withContext(Dispatchers.Main) {
-                    _uiState.value = _uiState.value.copy(
-                        scannerState = _uiState.value.scannerState.copy(results = rebuildResultsList()),
-                        simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                            testedCount = testedCount,
-                            passedCount = passedCount,
-                            currentResolver = null,
-                            currentPhase = ""
-                        )
-                    )
-                }
-            }
-
-            _uiState.value = _uiState.value.copy(
-                simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                    isRunning = false,
-                    currentResolver = null,
-                    currentPhase = ""
-                )
             )
         }
     }
@@ -1559,68 +1535,28 @@ class DnsScannerViewModel @Inject constructor(
             emitState(false)
         }
 
-        // Coroutine 2: E2E validation — consumes working resolvers from sorted queue
+        // Coroutine 2: E2E validation — N parallel consumers from sorted queue
         simpleModeE2eJob = viewModelScope.launch(Dispatchers.IO) {
-            var testedCount = 0
-            var passedCount = 0
-            val testUrl = _uiState.value.testUrl
-            val e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 9000L
-
-            while (true) {
-                val pair = queue2.take() ?: break
-                val (host, port) = pair
-                withContext(Dispatchers.Main) {
+            launchE2eWorkers(
+                queue = queue2, profile = profile,
+                testUrl = _uiState.value.testUrl,
+                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 9000L,
+                startTestedCount = 0, startPassedCount = 0,
+                onActiveChanged = { transform -> updateSimpleModeActive(transform) },
+                onResult = { host, result, tested, passed ->
+                    resultsMap[host]?.let { resultsMap[host] = it.copy(e2eTestResult = result) }
+                    updateSimpleModeResult(rebuildResultsList(), tested, passed)
+                },
+                onComplete = {
                     _uiState.value = _uiState.value.copy(
                         simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                            currentResolver = host,
-                            currentPhase = "Starting..."
+                            isRunning = false, currentResolver = null, currentPhase = "",
+                            activeResolvers = emptyMap()
                         )
                     )
+                    releaseWakeLock()
                 }
-
-                val e2eResult = scannerRepository.testResolverE2e(
-                    resolverHost = host,
-                    resolverPort = port,
-                    profile = profile,
-                    testUrl = testUrl,
-                    timeoutMs = e2eTimeout,
-                    onPhaseUpdate = { phase ->
-                        _uiState.value = _uiState.value.copy(
-                            simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                                currentPhase = phase
-                            )
-                        )
-                    }
-                )
-
-                testedCount++
-                if (e2eResult.success) passedCount++
-
-                // Merge E2E result into the shared map and rebuild
-                resultsMap[host]?.let { resultsMap[host] = it.copy(e2eTestResult = e2eResult) }
-
-                withContext(Dispatchers.Main) {
-                    _uiState.value = _uiState.value.copy(
-                        scannerState = _uiState.value.scannerState.copy(results = rebuildResultsList()),
-                        simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                            testedCount = testedCount,
-                            passedCount = passedCount,
-                            currentResolver = null,
-                            currentPhase = ""
-                        )
-                    )
-                }
-            }
-
-            // E2E pipeline done
-            _uiState.value = _uiState.value.copy(
-                simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                    isRunning = false,
-                    currentResolver = null,
-                    currentPhase = ""
-                )
             )
-            releaseWakeLock()
         }
     }
 
@@ -1636,7 +1572,8 @@ class DnsScannerViewModel @Inject constructor(
                 simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
                     isRunning = false,
                     currentResolver = null,
-                    currentPhase = ""
+                    currentPhase = "",
+                    activeResolvers = emptyMap()
                 )
             )
             cleanupBridge()
@@ -1662,6 +1599,135 @@ class DnsScannerViewModel @Inject constructor(
 
     fun updateE2eMinScore(minScore: Int) {
         _uiState.value = _uiState.value.copy(e2eMinScore = minScore)
+    }
+
+    fun updateE2eConcurrency(value: String) {
+        _uiState.value = _uiState.value.copy(e2eConcurrency = value)
+        saveScannerSettings()
+    }
+
+    /** Effective E2E concurrency, clamped by tunnel type limits. */
+    private fun effectiveE2eConcurrency(): Int {
+        val profile = _uiState.value.profile ?: return 1
+        val requested = _uiState.value.e2eConcurrency.toIntOrNull()?.coerceIn(1, 3) ?: 3
+        val max = scannerRepository.maxE2eConcurrency(profile)
+        return requested.coerceAtMost(max)
+    }
+
+    /**
+     * Shared E2E parallel worker launcher. Spawns N coroutines that consume
+     * from [queue], run E2E tests, and report results via callbacks.
+     * Fixes the race condition by using [_uiState.update] for thread-safe CAS.
+     *
+     * @param onActiveChanged   Called (on any thread) when a resolver starts/updates phase or finishes.
+     *                          The lambda receives a transform function to apply to activeResolvers.
+     * @param onResult          Called on Main to merge a single E2E result into UI state.
+     * @param onComplete        Called on Main when all workers are done.
+     */
+    private fun kotlinx.coroutines.CoroutineScope.launchE2eWorkers(
+        queue: SortableQueue<Pair<String, Int>>,
+        profile: ServerProfile,
+        testUrl: String,
+        e2eTimeout: Long,
+        startTestedCount: Int,
+        startPassedCount: Int,
+        onActiveChanged: (transform: (Map<String, String>) -> Map<String, String>) -> Unit,
+        onResult: suspend (host: String, result: E2eTestResult, testedCount: Int, passedCount: Int) -> Unit,
+        onComplete: suspend () -> Unit
+    ): List<Job> {
+        val e2eConcurrency = effectiveE2eConcurrency()
+        val testedCount = java.util.concurrent.atomic.AtomicInteger(startTestedCount)
+        val passedCount = java.util.concurrent.atomic.AtomicInteger(startPassedCount)
+        val useIsolated = e2eConcurrency > 1
+
+        return (1..e2eConcurrency).map {
+            launch {
+                while (true) {
+                    val (host, port) = queue.take() ?: break
+                    onActiveChanged { it + (host to "Starting...") }
+
+                    val e2eResult = if (useIsolated) {
+                        scannerRepository.testResolverE2eIsolated(
+                            resolverHost = host, resolverPort = port,
+                            profile = profile, testUrl = testUrl, timeoutMs = e2eTimeout,
+                            onPhaseUpdate = { phase -> onActiveChanged { it + (host to phase) } }
+                        )
+                    } else {
+                        scannerRepository.testResolverE2e(
+                            resolverHost = host, resolverPort = port,
+                            profile = profile, testUrl = testUrl, timeoutMs = e2eTimeout,
+                            onPhaseUpdate = { phase -> onActiveChanged { it + (host to phase) } }
+                        )
+                    }
+
+                    val newTested = testedCount.incrementAndGet()
+                    val newPassed = if (e2eResult.success) passedCount.incrementAndGet() else passedCount.get()
+                    onActiveChanged { it - host }
+                    withContext(Dispatchers.Main) {
+                        onResult(host, e2eResult, newTested, newPassed)
+                    }
+                }
+            }
+        }.also { workers ->
+            launch {
+                workers.forEach { it.join() }
+                withContext(Dispatchers.Main) { onComplete() }
+            }
+        }
+    }
+
+    // --- Thread-safe state update helpers for parallel E2E workers ---
+
+    /** Thread-safe CAS update of simpleModeE2eState.activeResolvers. */
+    private fun updateSimpleModeActive(transform: (Map<String, String>) -> Map<String, String>) {
+        _uiState.update { s ->
+            val active = transform(s.simpleModeE2eState.activeResolvers)
+            s.copy(simpleModeE2eState = s.simpleModeE2eState.copy(
+                activeResolvers = active,
+                currentResolver = active.keys.firstOrNull(),
+                currentPhase = active.values.firstOrNull() ?: ""
+            ))
+        }
+    }
+
+    /** Update simpleModeE2eState counters and results. Must be called on Main. */
+    private fun updateSimpleModeResult(results: List<ResolverScanResult>, tested: Int, passed: Int) {
+        val active = _uiState.value.simpleModeE2eState.activeResolvers
+        _uiState.value = _uiState.value.copy(
+            scannerState = _uiState.value.scannerState.copy(results = results),
+            simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
+                testedCount = tested, passedCount = passed,
+                currentResolver = active.keys.firstOrNull(),
+                currentPhase = active.values.firstOrNull() ?: "",
+                activeResolvers = active
+            )
+        )
+    }
+
+    /** Thread-safe CAS update of e2eScannerState.activeResolvers. */
+    private fun updateE2eActive(transform: (Map<String, String>) -> Map<String, String>) {
+        _uiState.update { s ->
+            val active = transform(s.e2eScannerState.activeResolvers)
+            s.copy(e2eScannerState = s.e2eScannerState.copy(
+                activeResolvers = active,
+                currentResolver = active.keys.firstOrNull(),
+                currentPhase = active.values.firstOrNull() ?: ""
+            ))
+        }
+    }
+
+    /** Update e2eScannerState counters and results. Must be called on Main. */
+    private fun updateE2eResult(results: List<ResolverScanResult>, tested: Int, passed: Int) {
+        val active = _uiState.value.e2eScannerState.activeResolvers
+        _uiState.value = _uiState.value.copy(
+            scannerState = _uiState.value.scannerState.copy(results = results),
+            e2eScannerState = _uiState.value.e2eScannerState.copy(
+                testedCount = tested, passedCount = passed,
+                currentResolver = active.keys.firstOrNull(),
+                currentPhase = active.values.firstOrNull() ?: "",
+                activeResolvers = active
+            )
+        )
     }
 
     fun updateE2eSortOption(option: E2eSortOption) {
@@ -1754,59 +1820,46 @@ class DnsScannerViewModel @Inject constructor(
             )
         )
 
-        e2eJob = viewModelScope.launch {
-            var testedCount = startTestedCount
-            var passedCount = startPassedCount
+        e2eJob = viewModelScope.launch(Dispatchers.IO) {
+            // Use SortableQueue for parallel consumption
+            val queue = SortableQueue(remaining, buildE2eComparator(state.e2eSortOption))
+            e2ePendingQueue = queue
+            queue.close() // Pre-close since all items are already seeded
 
-            scannerRepository.testResolversE2e(
-                resolvers = remaining,
-                profile = profile,
+            launchE2eWorkers(
+                queue = queue, profile = profile,
                 testUrl = _uiState.value.testUrl,
-                timeoutMs = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 5000L,
-                onPhaseUpdate = { resolver, phase ->
+                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 5000L,
+                startTestedCount = startTestedCount, startPassedCount = startPassedCount,
+                onActiveChanged = { transform -> updateE2eActive(transform) },
+                onResult = { host, result, tested, passed ->
+                    val updatedResults = _uiState.value.scannerState.results.map { r ->
+                        if (r.host == host) r.copy(e2eTestResult = result) else r
+                    }
+                    updateE2eResult(updatedResults, tested, passed)
+                },
+                onComplete = {
                     _uiState.value = _uiState.value.copy(
                         e2eScannerState = _uiState.value.e2eScannerState.copy(
-                            currentResolver = resolver,
-                            currentPhase = phase
+                            isRunning = false, activeResolvers = emptyMap()
                         )
                     )
+                    releaseWakeLock()
                 }
-            ).collect { (host, e2eResult) ->
-                testedCount++
-                if (e2eResult.success) passedCount++
-
-                // Update the scan result with the E2E result
-                val updatedResults = _uiState.value.scannerState.results.map { r ->
-                    if (r.host == host) r.copy(e2eTestResult = e2eResult) else r
-                }
-
-                _uiState.value = _uiState.value.copy(
-                    scannerState = _uiState.value.scannerState.copy(results = updatedResults),
-                    e2eScannerState = _uiState.value.e2eScannerState.copy(
-                        testedCount = testedCount,
-                        passedCount = passedCount,
-                        currentResolver = null,
-                        currentPhase = ""
-                    )
-                )
-            }
-
-            // Done
-            _uiState.value = _uiState.value.copy(
-                e2eScannerState = _uiState.value.e2eScannerState.copy(isRunning = false)
             )
-            releaseWakeLock()
         }
     }
 
     fun stopE2eTest() {
         releaseWakeLock()
         e2eJob?.cancel()
+        e2ePendingQueue?.close()
         _uiState.value = _uiState.value.copy(
             e2eScannerState = _uiState.value.e2eScannerState.copy(
                 isRunning = false,
                 currentResolver = null,
-                currentPhase = ""
+                currentPhase = "",
+                activeResolvers = emptyMap()
             )
         )
         cleanupBridge()

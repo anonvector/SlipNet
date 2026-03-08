@@ -260,6 +260,7 @@ fun DnsScannerScreen(
                 expandNeighbors = uiState.expandNeighbors,
                 testUrl = uiState.testUrl,
                 e2eTimeoutMs = uiState.e2eTimeoutMs,
+                e2eConcurrency = uiState.e2eConcurrency,
                 showTestUrl = uiState.profileId != null,
                 onTestDomainChange = { viewModel.updateTestDomain(it) },
                 onTimeoutChange = { viewModel.updateTimeout(it) },
@@ -267,7 +268,8 @@ fun DnsScannerScreen(
                 onShuffleListChange = { viewModel.updateShuffleList(it) },
                 onExpandNeighborsChange = { viewModel.updateExpandNeighbors(it) },
                 onTestUrlChange = { viewModel.updateTestUrl(it) },
-                onE2eTimeoutChange = { viewModel.updateE2eTimeout(it) }
+                onE2eTimeoutChange = { viewModel.updateE2eTimeout(it) },
+                onE2eConcurrencyChange = { viewModel.updateE2eConcurrency(it) }
             )
 
             // Resolver List
@@ -501,6 +503,7 @@ private fun ConfigurationSection(
     expandNeighbors: Boolean = true,
     testUrl: String = "",
     e2eTimeoutMs: String = "9000",
+    e2eConcurrency: String = "3",
     showTestUrl: Boolean = false,
     onTestDomainChange: (String) -> Unit,
     onTimeoutChange: (String) -> Unit,
@@ -508,7 +511,8 @@ private fun ConfigurationSection(
     onShuffleListChange: (Boolean) -> Unit = {},
     onExpandNeighborsChange: (Boolean) -> Unit = {},
     onTestUrlChange: (String) -> Unit = {},
-    onE2eTimeoutChange: (String) -> Unit = {}
+    onE2eTimeoutChange: (String) -> Unit = {},
+    onE2eConcurrencyChange: (String) -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -683,6 +687,23 @@ private fun ConfigurationSection(
                         )
                     },
                     supportingText = { Text("Timeout per resolver for tunnel test") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                OutlinedTextField(
+                    value = e2eConcurrency,
+                    onValueChange = { onE2eConcurrencyChange(it.filter { c -> c.isDigit() }.take(2)) },
+                    label = { Text("E2E Concurrency") },
+                    placeholder = { Text("3") },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Speed,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    supportingText = { Text("Parallel tunnel tests (1-3, Slipstream max 1)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)

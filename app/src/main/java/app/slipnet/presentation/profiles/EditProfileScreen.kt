@@ -754,6 +754,7 @@ fun EditProfileScreen(
                             modifier = Modifier.padding(bottom = 8.dp)
                         )
                     }
+
                 }
 
                 // DoH URL for DNSTT with DoH transport

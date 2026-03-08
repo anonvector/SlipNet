@@ -780,8 +780,11 @@ object SshTunnelBridge {
                     }
 
                     // Reject IPv6 CONNECT — remote server typically lacks IPv6.
+                    // Delay before replying so the app's TCP stack backs off
+                    // instead of retrying immediately and burning data.
                     if (addrType == 0x04) {
                         logd("CONNECT: rejected IPv6 $destHost:$destPort locally")
+                        try { Thread.sleep(2000) } catch (_: InterruptedException) {}
                         output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                         output.flush()
                         return@submit

@@ -87,6 +87,7 @@ class PreferencesDataStore @Inject constructor(
         val SCANNER_TIMEOUT_MS = stringPreferencesKey("scanner_timeout_ms")
         val SCANNER_CONCURRENCY = stringPreferencesKey("scanner_concurrency")
         val SCANNER_E2E_TIMEOUT_MS = stringPreferencesKey("scanner_e2e_timeout_ms")
+        val SCANNER_E2E_CONCURRENCY = stringPreferencesKey("scanner_e2e_concurrency")
         val SCANNER_TEST_URL = stringPreferencesKey("scanner_test_url")
         // DNS Scanner Resolver List Selection Keys
         val SCANNER_LIST_SOURCE = stringPreferencesKey("scanner_list_source")
@@ -605,6 +606,10 @@ class PreferencesDataStore @Inject constructor(
         prefs[Keys.SCANNER_E2E_TIMEOUT_MS] ?: "7000"
     }
 
+    val scannerE2eConcurrency: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_E2E_CONCURRENCY] ?: "3"
+    }
+
     val scannerTestUrl: Flow<String> = dataStore.data.map { prefs ->
         prefs[Keys.SCANNER_TEST_URL] ?: "http://www.gstatic.com/generate_204"
     }
@@ -613,13 +618,15 @@ class PreferencesDataStore @Inject constructor(
         timeoutMs: String,
         concurrency: String,
         e2eTimeoutMs: String,
-        testUrl: String
+        testUrl: String,
+        e2eConcurrency: String = "3"
     ) {
         dataStore.edit { prefs ->
             prefs[Keys.SCANNER_TIMEOUT_MS] = timeoutMs
             prefs[Keys.SCANNER_CONCURRENCY] = concurrency
             prefs[Keys.SCANNER_E2E_TIMEOUT_MS] = e2eTimeoutMs
             prefs[Keys.SCANNER_TEST_URL] = testUrl
+            prefs[Keys.SCANNER_E2E_CONCURRENCY] = e2eConcurrency
         }
     }
 

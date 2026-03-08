@@ -84,7 +84,9 @@ data class SimpleModeE2eState(
     val testedCount: Int = 0,
     val passedCount: Int = 0,
     val currentResolver: String? = null,
-    val currentPhase: String = ""
+    val currentPhase: String = "",
+    /** Active E2E tests: resolver host -> current phase. Used for parallel E2E display. */
+    val activeResolvers: Map<String, String> = emptyMap()
 )
 
 /**
@@ -96,7 +98,9 @@ data class E2eScannerState(
     val testedCount: Int = 0,
     val passedCount: Int = 0,
     val currentResolver: String? = null,
-    val currentPhase: String = ""
+    val currentPhase: String = "",
+    /** Active E2E tests: resolver host -> current phase. Used for parallel E2E display. */
+    val activeResolvers: Map<String, String> = emptyMap()
 )
 
 /**
