@@ -313,6 +313,9 @@ func main() {
 	fmt.Println("  Or use with curl:")
 	fmt.Printf("    curl --socks5-hostname %s https://ifconfig.me\n", listenAddr)
 	fmt.Println()
+	fmt.Println("  If the server requires SOCKS5 authentication:")
+	fmt.Printf("    curl --socks5-hostname user:pass@%s https://ifconfig.me\n", listenAddr)
+	fmt.Println()
 	fmt.Println("  Press Ctrl+C to disconnect.")
 
 	// Wait for interrupt signal

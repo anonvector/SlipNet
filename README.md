@@ -185,6 +185,9 @@ Once connected, configure your apps to use the SOCKS5 proxy:
 # Test with curl
 curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me
 
+# If the server requires SOCKS5 authentication (username:password)
+curl --socks5-hostname user:pass@127.0.0.1:1080 https://ifconfig.me
+
 # Firefox: Settings → Network → SOCKS5 proxy: 127.0.0.1:1080
 #          Check "Proxy DNS when using SOCKS v5"
 
