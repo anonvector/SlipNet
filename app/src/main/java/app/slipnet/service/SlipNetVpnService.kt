@@ -66,6 +66,7 @@ class SlipNetVpnService : VpnService() {
         private const val HEALTH_CHECK_INTERVAL_MS = 15000L
         private const val QUIC_DOWN_THRESHOLD = 2 // Reconnect after 2 checks (~30s) with QUIC down
         private const val SSH_PROBE_INTERVAL = 2 // Probe SSH session every 2 health checks (~30s)
+        private const val DNS_POOL_DEAD_THRESHOLD = 3 // Warn after 3 consecutive checks (~45s) with all workers dead
 
         // Persistence keys for auto-restart
         private const val PREFS_NAME = "vpn_service_state"
@@ -119,6 +120,8 @@ class SlipNetVpnService : VpnService() {
     // Health check state
     private var quicDownChecks = 0
     private var healthCheckCount = 0
+    private var dnsPoolDeadChecks = 0
+    private var dnsPoolDeadNotified = false
 
     // Persistence for service resilience
     private lateinit var prefs: SharedPreferences
@@ -306,7 +309,7 @@ class SlipNetVpnService : VpnService() {
                 currentTunnelType = profile.tunnelType
                 Log.i(TAG, "Starting VPN with tunnel type: $currentTunnelType")
 
-                val dnsServer = profile.resolvers.firstOrNull()?.host ?: DEFAULT_DNS
+                val dnsServer = resolveToIp(profile.resolvers.firstOrNull()?.host)
                 // Remote DNS: the DNS servers used on the remote side of the tunnel
                 var remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
                 var remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
@@ -2032,6 +2035,8 @@ class SlipNetVpnService : VpnService() {
         healthCheckJob?.cancel()
         quicDownChecks = 0
         healthCheckCount = 0
+        dnsPoolDeadChecks = 0
+        dnsPoolDeadNotified = false
         healthCheckJob = serviceScope.launch(Dispatchers.IO) {
             // Give the connection time to establish before monitoring
             delay(10_000L)
@@ -2088,6 +2093,31 @@ class SlipNetVpnService : VpnService() {
                         }
                         break
                     }
+                }
+
+                // For tunnels with DNS worker pools: warn when all workers are dead.
+                val dnsPoolDead = when (currentTunnelType) {
+                    TunnelType.DNSTT, TunnelType.NOIZDNS -> DnsttSocksBridge.isDnsPoolDead()
+                    TunnelType.SLIPSTREAM -> SlipstreamSocksBridge.isDnsPoolDead()
+                    TunnelType.NAIVE -> NaiveSocksBridge.isDnsPoolDead()
+                    TunnelType.SSH, TunnelType.DNSTT_SSH, TunnelType.NOIZDNS_SSH,
+                    TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH -> SshTunnelBridge.isDnsPoolDead()
+                    else -> false
+                }
+                if (dnsPoolDead) {
+                    dnsPoolDeadChecks++
+                    if (dnsPoolDeadChecks >= DNS_POOL_DEAD_THRESHOLD && !dnsPoolDeadNotified) {
+                        Log.w(TAG, "All DNS workers dead for ${dnsPoolDeadChecks * HEALTH_CHECK_INTERVAL_MS / 1000}s — DNS resolvers may be unreachable")
+                        dnsPoolDeadNotified = true
+                        connectionManager.setDnsWarning("DNS resolvers may be unreachable. Try a different profile or DNS server.")
+                    }
+                } else {
+                    if (dnsPoolDeadNotified) {
+                        Log.i(TAG, "DNS workers recovered")
+                        connectionManager.setDnsWarning(null)
+                    }
+                    dnsPoolDeadChecks = 0
+                    dnsPoolDeadNotified = false
                 }
 
             }
@@ -2829,6 +2859,16 @@ class SlipNetVpnService : VpnService() {
         }
     }
 
+
+    /**
+     * Resolve a resolver host to a numeric IP for [Builder.addDnsServer].
+     * Falls back to [DEFAULT_DNS] if resolution fails or host is null.
+     */
+    private fun resolveToIp(host: String?): String {
+        if (host.isNullOrBlank()) return DEFAULT_DNS
+        val resolved = VpnRepositoryImpl.resolveHost(host)
+        return if (DomainRouter.isIpAddress(resolved)) resolved else DEFAULT_DNS
+    }
 
     private suspend fun establishVpnInterface(dnsServer: String): ParcelFileDescriptor? {
         val mtu = try { preferencesDataStore.vpnMtu.first() } catch (_: Exception) { VPN_MTU }

@@ -36,6 +36,9 @@ class VpnConnectionManager @Inject constructor(
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
+    private val _dnsWarning = MutableStateFlow<String?>(null)
+    val dnsWarning: StateFlow<String?> = _dnsWarning.asStateFlow()
+
     val trafficStats: StateFlow<TrafficStats> = vpnRepository.trafficStats
 
     private var pendingProfile: ServerProfile? = null
@@ -78,6 +81,7 @@ class VpnConnectionManager @Inject constructor(
 
         pendingProfile = profile
         _connectionState.value = ConnectionState.Connecting
+        _dnsWarning.value = null
 
         // Set active profile immediately so it shows on the main screen
         scope.launch {
@@ -148,6 +152,7 @@ class VpnConnectionManager @Inject constructor(
         // can race with a new Connecting state if the user reconnects quickly).
         vpnRepository.updateConnectionState(ConnectionState.Disconnected)
         _connectionState.value = ConnectionState.Disconnected
+        _dnsWarning.value = null
         pendingProfile = null
     }
 
@@ -157,6 +162,9 @@ class VpnConnectionManager @Inject constructor(
         }
     }
 
+    fun setDnsWarning(message: String?) {
+        _dnsWarning.value = message
+    }
 
     fun refreshTrafficStats() {
         vpnRepository.refreshTrafficStats()

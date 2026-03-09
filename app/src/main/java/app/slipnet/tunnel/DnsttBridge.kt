@@ -16,6 +16,9 @@ object DnsttBridge {
 
     private var client: DnsttClient? = null
     private var currentPort: Int = 0
+    // Port that may still be held by a dying Go process even after client is nulled.
+    // stopClient() clears client immediately, but the Go listener may linger.
+    @Volatile private var pendingReleasePort: Int = 0
     private var vpnServiceRef: WeakReference<VpnService>? = null
 
     /**
@@ -50,7 +53,8 @@ object DnsttBridge {
         listenHost: String = "127.0.0.1",
         authoritativeMode: Boolean = false,
         noizMode: Boolean = false,
-        stealthMode: Boolean = false
+        stealthMode: Boolean = false,
+        maxPayload: Int = 0
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting DNSTT client")
@@ -74,11 +78,11 @@ object DnsttBridge {
         // Stop any existing client and wait for full cleanup
         stopClient()
 
-        // Wait for the port to become free.  We give the Go runtime up to 5s to
+        // Wait for the port to become free.  We give the Go runtime up to 10s to
         // fully drain goroutines.  Do NOT silently fall back to alternative ports —
         // a stuck port means the old instance is still alive and would leak traffic.
-        if (!waitForPortAvailable(listenPort, 5000)) {
-            Log.e(TAG, "Port $listenPort still in use after 5s — old DNSTT instance may be leaking")
+        if (!waitForPortAvailable(listenPort, 10_000)) {
+            Log.e(TAG, "Port $listenPort still in use after 10s — old DNSTT instance may be leaking")
             return Result.failure(RuntimeException("Port $listenPort is still in use by a previous DNSTT instance"))
         }
         val actualPort = listenPort
@@ -102,6 +106,9 @@ object DnsttBridge {
             // Create the DNSTT client via Go mobile bindings
             val newClient = Mobile.newClient(dnsAddr, tunnelDomain, publicKey, listenAddr)
             newClient.setAuthoritativeMode(authoritativeMode)
+            if (maxPayload > 0) {
+                newClient.setMaxPayload(maxPayload.toLong())
+            }
             if (noizMode) {
                 newClient.setNoizMode(true)
                 if (stealthMode) {
@@ -148,25 +155,43 @@ object DnsttBridge {
      * [stopClientBlocking] from a coroutine on [Dispatchers.IO].
      */
     fun stopClient() {
-        val c = client ?: return
-        client = null  // Clear reference immediately to prevent new operations
-        val port = currentPort
-        try {
-            Log.d(TAG, "Stopping DNSTT client...")
-            c.stop()
-            // Give Go runtime time to close listener AND drain active goroutines.
-            // The listener.Close() is synchronous, but tunnel-session goroutines may
-            // still be sending DNS queries for a short while after the listener is gone.
-            Thread.sleep(500)
-            if (port > 0 && isPortInUse(port)) {
+        val c = client
+        val port = if (c != null) currentPort else pendingReleasePort
+
+        if (c != null) {
+            client = null  // Clear reference immediately to prevent new operations
+            pendingReleasePort = port
+            try {
+                Log.d(TAG, "Stopping DNSTT client...")
+                c.stop()
+                // Give Go runtime time to close listener AND drain active goroutines.
+                // The listener.Close() is synchronous, but tunnel-session goroutines may
+                // still be sending DNS queries for a short while after the listener is gone.
+                Thread.sleep(500)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping DNSTT client", e)
+            }
+            currentPort = 0
+        }
+
+        // Wait for port release even when client is already null — a previous
+        // stopClient() may have cleared the reference while Go is still dying.
+        if (port > 0) {
+            val portFree = if (isPortInUse(port)) {
                 Log.w(TAG, "Port $port still in use after DNSTT stop, waiting...")
                 waitForPortAvailable(port, 5000)
+            } else {
+                true
             }
-            Log.d(TAG, "DNSTT client stopped (port $port released)")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping DNSTT client", e)
+            // Only clear pendingReleasePort if the port is actually free.
+            // If still held, keep it so the next stopClient() or startClient() retries.
+            if (portFree) {
+                pendingReleasePort = 0
+                Log.d(TAG, "DNSTT client stopped (port $port released)")
+            } else {
+                Log.w(TAG, "DNSTT client stopped but port $port still held by Go runtime")
+            }
         }
-        currentPort = 0
     }
 
     /**

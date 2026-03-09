@@ -63,7 +63,8 @@ class ProfileMapper @Inject constructor(
             expirationDate = entity.expirationDate,
             allowSharing = entity.allowSharing,
             boundDeviceId = entity.boundDeviceId,
-            noizdnsStealth = entity.noizdnsStealth
+            noizdnsStealth = entity.noizdnsStealth,
+            dnsPayloadSize = entity.dnsPayloadSize
         )
     }
 
@@ -111,7 +112,8 @@ class ProfileMapper @Inject constructor(
             expirationDate = profile.expirationDate,
             allowSharing = profile.allowSharing,
             boundDeviceId = profile.boundDeviceId,
-            noizdnsStealth = profile.noizdnsStealth
+            noizdnsStealth = profile.noizdnsStealth,
+            dnsPayloadSize = profile.dnsPayloadSize
         )
     }
 

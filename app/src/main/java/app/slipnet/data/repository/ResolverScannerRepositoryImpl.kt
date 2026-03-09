@@ -56,6 +56,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         // - Between consecutive markers: independent tiers (each shuffled separately)
         // - After last marker: remaining resolvers (shuffled, scanned last)
         val resolvers = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
         val boundaries = mutableListOf<Int>()
         try {
             context.resources.openRawResource(R.raw.resolvers).bufferedReader().useLines { lines ->
@@ -65,7 +66,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                         boundaries.add(resolvers.size)
                         continue
                     }
-                    if (trimmed.isNotBlank() && !trimmed.startsWith("#") && isValidIpAddress(trimmed)) {
+                    if (trimmed.isNotBlank() && !trimmed.startsWith("#") && isValidIpAddress(trimmed) && seen.add(trimmed)) {
                         resolvers.add(trimmed)
                     }
                 }
@@ -85,12 +86,19 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         return cachedTierBoundaries
     }
 
+    private val ipv4Regex = Regex("""\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b""")
+
     override fun parseResolverList(content: String): List<String> {
-        return content.lines()
-            .map { it.trim() }
-            .filter { it.isNotBlank() && !it.startsWith("#") }
-            .filter { isValidIpAddress(it) }
-            .distinct()
+        // Extract all valid IPv4 addresses from any text format
+        val seen = mutableSetOf<String>()
+        val result = mutableListOf<String>()
+        for (match in ipv4Regex.findAll(content)) {
+            val ip = match.groupValues[1]
+            if (isValidIpAddress(ip) && seen.add(ip)) {
+                result.add(ip)
+            }
+        }
+        return result
     }
 
     private fun isValidIpAddress(ip: String): Boolean {
@@ -557,11 +565,12 @@ class ResolverScannerRepositoryImpl @Inject constructor(
     }
 
     override fun expandIpRanges(ranges: List<Pair<Long, Long>>): List<String> {
+        val seen = mutableSetOf<Long>()
         val result = mutableListOf<String>()
         for ((start, end) in ranges) {
             var ip = start
             while (ip <= end) {
-                result.add(longToIp(ip))
+                if (seen.add(ip)) result.add(longToIp(ip))
                 ip++
             }
         }
@@ -728,6 +737,176 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun testResolverE2eIsolated(
+        resolverHost: String,
+        resolverPort: Int,
+        profile: ServerProfile,
+        testUrl: String,
+        timeoutMs: Long,
+        onPhaseUpdate: (String) -> Unit
+    ): E2eTestResult = withContext(Dispatchers.IO) {
+        when (profile.tunnelType) {
+            TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH ->
+                // Slipstream native lib is singleton — fall back to shared bridge
+                testResolverSlipstream(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate)
+            TunnelType.DNSTT, TunnelType.DNSTT_SSH ->
+                testResolverDnsttIsolated(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate)
+            TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH ->
+                testResolverDnsttIsolated(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate, noizMode = true)
+            else ->
+                E2eTestResult(errorMessage = "Unsupported tunnel type: ${profile.tunnelType.displayName}")
+        }
+    }
+
+    override fun maxE2eConcurrency(profile: ServerProfile): Int = when (profile.tunnelType) {
+        TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH -> 1
+        else -> 3
+    }
+
+    /** Format resolver address for DNSTT/NoizDNS based on DNS transport. Returns null for DoH.
+     *  Resolves domain names to IPs since Go on Android cannot resolve hostnames. */
+    private fun formatDnsServer(host: String, port: Int, transport: DnsTransport): String? {
+        val resolvedHost = VpnRepositoryImpl.resolveHost(host)
+        return when (transport) {
+            DnsTransport.UDP -> "$resolvedHost:$port"
+            DnsTransport.TCP -> "tcp://$resolvedHost:$port"
+            DnsTransport.DOT -> "tls://$resolvedHost:$port"
+            DnsTransport.DOH -> null
+        }
+    }
+
+    /**
+     * Test a single resolver using an ephemeral DNSTT/NoizDNS Go client.
+     * Creates its own DnsttClient on a unique port — safe for concurrent use.
+     * Does NOT touch the singleton DnsttBridge or DnsttSocksBridge.
+     */
+    private suspend fun testResolverDnsttIsolated(
+        resolverHost: String,
+        resolverPort: Int,
+        profile: ServerProfile,
+        testUrl: String,
+        timeoutMs: Long,
+        onPhaseUpdate: (String) -> Unit,
+        noizMode: Boolean = false
+    ): E2eTestResult = withContext(Dispatchers.IO) {
+        val totalStart = System.currentTimeMillis()
+        val tunnelName = if (noizMode) "NoizDNS" else "DNSTT"
+        val dnsttPort = findFreePort()
+        var client: mobile.DnsttClient? = null
+        try {
+            // Phase 1: Start tunnel
+            onPhaseUpdate("Starting $tunnelName...")
+
+            val dnsServer = formatDnsServer(resolverHost, resolverPort, profile.dnsTransport)
+                ?: return@withContext E2eTestResult(
+                    errorMessage = "DoH transport uses URL, not per-resolver IP",
+                    phase = E2eTestPhase.TUNNEL_SETUP
+                )
+
+            val listenAddr = "127.0.0.1:$dnsttPort"
+            val newClient = mobile.Mobile.newClient(dnsServer, profile.domain, profile.dnsttPublicKey, listenAddr)
+            newClient.setAuthoritativeMode(profile.dnsttAuthoritative)
+            if (profile.dnsPayloadSize > 0) {
+                newClient.setMaxPayload(profile.dnsPayloadSize.toLong())
+            }
+            if (noizMode) {
+                newClient.setNoizMode(true)
+            }
+            client = newClient
+            newClient.start()
+
+            // Phase 2: Wait for DNSTT running
+            onPhaseUpdate("Waiting for $tunnelName...")
+            var remaining = timeoutMs - (System.currentTimeMillis() - totalStart)
+            val readyTimeout = minOf(remaining, 10000L)
+            val readyStart = System.currentTimeMillis()
+            var running = false
+            while (System.currentTimeMillis() - readyStart < readyTimeout) {
+                if (newClient.isRunning) {
+                    running = true
+                    break
+                }
+                Thread.sleep(100)
+            }
+
+            if (!running) {
+                return@withContext E2eTestResult(
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "$tunnelName startup timeout",
+                    phase = E2eTestPhase.TUNNEL_SETUP
+                )
+            }
+
+            // Phase 2b: Warm up tunnel (Noise/KCP/smux handshake)
+            onPhaseUpdate("Tunnel handshake...")
+            remaining = timeoutMs - (System.currentTimeMillis() - totalStart)
+            if (remaining <= 0) {
+                return@withContext E2eTestResult(
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "Timeout before tunnel handshake",
+                    phase = E2eTestPhase.TUNNEL_SETUP
+                )
+            }
+            val warmupOk = warmupDnsttTunnel(dnsttPort, remaining)
+            if (!warmupOk) {
+                return@withContext E2eTestResult(
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "$tunnelName tunnel handshake timeout (resolver may not work)",
+                    phase = E2eTestPhase.TUNNEL_SETUP
+                )
+            }
+
+            val isSshVariant = profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.NOIZDNS_SSH
+            val tunnelSetupMs = System.currentTimeMillis() - totalStart
+
+            // Phase 3: Verify connectivity
+            remaining = timeoutMs - (System.currentTimeMillis() - totalStart)
+            if (remaining <= 0) {
+                return@withContext E2eTestResult(
+                    tunnelSetupMs = tunnelSetupMs,
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    errorMessage = "Timeout after tunnel setup",
+                    phase = E2eTestPhase.HTTP_REQUEST
+                )
+            }
+
+            if (isSshVariant) {
+                onPhaseUpdate("SSH connect...")
+                val bannerResult = verifySshConnection(dnsttPort, profile, remaining)
+                E2eTestResult(
+                    tunnelSetupMs = tunnelSetupMs,
+                    httpLatencyMs = bannerResult.latencyMs,
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    httpStatusCode = if (bannerResult.success) 200 else 0,
+                    success = bannerResult.success,
+                    errorMessage = bannerResult.errorMessage,
+                    phase = E2eTestPhase.COMPLETED
+                )
+            } else {
+                // Non-SSH: connect directly to the DNSTT port (Dante SOCKS5 on remote side)
+                onPhaseUpdate("HTTP request...")
+                val httpResult = performHttpThroughSocks(dnsttPort, profile, testUrl, remaining)
+                E2eTestResult(
+                    tunnelSetupMs = tunnelSetupMs,
+                    httpLatencyMs = httpResult.latencyMs,
+                    totalMs = System.currentTimeMillis() - totalStart,
+                    httpStatusCode = httpResult.statusCode,
+                    success = httpResult.success,
+                    errorMessage = httpResult.errorMessage,
+                    phase = E2eTestPhase.COMPLETED
+                )
+            }
+        } catch (e: Exception) {
+            E2eTestResult(
+                totalMs = System.currentTimeMillis() - totalStart,
+                errorMessage = e.message ?: "Unknown error",
+                phase = E2eTestPhase.TUNNEL_SETUP
+            )
+        } finally {
+            try { client?.stop() } catch (_: Exception) {}
+        }
+    }
+
     private suspend fun testResolverSlipstream(
         resolverHost: String,
         resolverPort: Int,
@@ -856,16 +1035,11 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             // Phase 1: Start tunnel
             onPhaseUpdate("Starting $tunnelName...")
 
-            // Format resolver per DNS transport
-            val dnsServer = when (profile.dnsTransport) {
-                DnsTransport.UDP -> "$resolverHost:$resolverPort"
-                DnsTransport.TCP -> "tcp://$resolverHost:$resolverPort"
-                DnsTransport.DOT -> "tls://$resolverHost:853"
-                DnsTransport.DOH -> return@withContext E2eTestResult(
+            val dnsServer = formatDnsServer(resolverHost, resolverPort, profile.dnsTransport)
+                ?: return@withContext E2eTestResult(
                     errorMessage = "DoH transport uses URL, not per-resolver IP",
                     phase = E2eTestPhase.TUNNEL_SETUP
                 )
-            }
 
             val startResult = DnsttBridge.startClient(
                 dnsServer = dnsServer,

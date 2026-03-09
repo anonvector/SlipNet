@@ -76,7 +76,9 @@ data class MainUiState(
     val isPingRunning: Boolean = false,
     val sleepTimerRemainingSeconds: Int = 0,
     // Update checker
-    val availableUpdate: app.slipnet.util.AppUpdate? = null
+    val availableUpdate: app.slipnet.util.AppUpdate? = null,
+    // DNS warning
+    val dnsWarning: String? = null
 )
 
 @HiltViewModel
@@ -106,6 +108,7 @@ class MainViewModel @Inject constructor(
 
     init {
         observeConnectionState()
+        observeDnsWarning()
         observeProfiles()
         observeProxyOnlyMode()
         observeDebugLogging()
@@ -139,6 +142,14 @@ class MainViewModel @Inject constructor(
                     stopTrafficPolling()
                     cancelSleepTimer()
                 }
+            }
+        }
+    }
+
+    private fun observeDnsWarning() {
+        viewModelScope.launch {
+            connectionManager.dnsWarning.collect { warning ->
+                _uiState.value = _uiState.value.copy(dnsWarning = warning)
             }
         }
     }

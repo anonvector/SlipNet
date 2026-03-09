@@ -43,6 +43,24 @@ class VpnRepositoryImpl @Inject constructor(
 ) : VpnRepository {
     companion object {
         private const val TAG = "VpnRepositoryImpl"
+
+        /**
+         * Resolve a hostname to a numeric IP. Go on Android cannot resolve
+         * hostnames internally, so we must do it on the JVM side before
+         * passing addresses to the Go bridge.
+         * Returns the original [host] if it's already a numeric IP.
+         */
+        fun resolveHost(host: String): String {
+            if (host.isBlank()) return host
+            // Already numeric IPv4/IPv6 — pass through
+            if (app.slipnet.tunnel.DomainRouter.isIpAddress(host)) return host
+            return try {
+                java.net.InetAddress.getByName(host).hostAddress ?: host
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to resolve '$host' to IP, passing through", e)
+                host
+            }
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -129,29 +147,8 @@ class VpnRepositoryImpl @Inject constructor(
         connectedProfile = profile
 
         // Format DNS server address based on transport type.
-        // The Go library supports DoH (https://...) and DoT (tls://...) natively.
-        val dnsServer = when (profile.dnsTransport) {
-            DnsTransport.UDP -> {
-                // Pass all resolvers comma-separated for multi-resolver load balancing
-                profile.resolvers.joinToString(",") { "${it.host}:${it.port}" }
-                    .ifBlank { "8.8.8.8:53" }
-            }
-            DnsTransport.DOH -> {
-                // Go library handles DoH natively via https:// prefix (HTTP/2 + uTLS)
-                // DoH stays single URL — no multi-resolver
-                profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
-            }
-            DnsTransport.TCP -> {
-                // Pass all resolvers comma-separated with tcp:// prefix for multi-resolver
-                profile.resolvers.joinToString(",") { "tcp://${it.host}:${it.port}" }
-                    .ifBlank { "tcp://8.8.8.8:53" }
-            }
-            DnsTransport.DOT -> {
-                // Pass all resolvers comma-separated with tls:// prefix for multi-resolver
-                profile.resolvers.joinToString(",") { "tls://${it.host}:${it.port}" }
-                    .ifBlank { "tls://8.8.8.8:853" }
-            }
-        }
+        // Resolve domain names to IPs — Go on Android cannot resolve hostnames.
+        val dnsServer = formatDnsServerAddress(profile)
 
         val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
         val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
@@ -162,7 +159,8 @@ class VpnRepositoryImpl @Inject constructor(
             publicKey = profile.dnsttPublicKey,
             listenPort = proxyPort,
             listenHost = proxyHost,
-            authoritativeMode = profile.dnsttAuthoritative
+            authoritativeMode = profile.dnsttAuthoritative,
+            maxPayload = profile.dnsPayloadSize
         )
 
         if (result.isSuccess) {
@@ -189,23 +187,8 @@ class VpnRepositoryImpl @Inject constructor(
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
-        val dnsServer = when (profile.dnsTransport) {
-            DnsTransport.UDP -> {
-                profile.resolvers.joinToString(",") { "${it.host}:${it.port}" }
-                    .ifBlank { "8.8.8.8:53" }
-            }
-            DnsTransport.DOH -> {
-                profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
-            }
-            DnsTransport.TCP -> {
-                profile.resolvers.joinToString(",") { "tcp://${it.host}:${it.port}" }
-                    .ifBlank { "tcp://8.8.8.8:53" }
-            }
-            DnsTransport.DOT -> {
-                profile.resolvers.joinToString(",") { "tls://${it.host}:${it.port}" }
-                    .ifBlank { "tls://8.8.8.8:853" }
-            }
-        }
+        // Resolve domain names to IPs — Go on Android cannot resolve hostnames.
+        val dnsServer = formatDnsServerAddress(profile)
 
         val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
         val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
@@ -218,7 +201,8 @@ class VpnRepositoryImpl @Inject constructor(
             listenHost = proxyHost,
             authoritativeMode = profile.dnsttAuthoritative,
             noizMode = true,
-            stealthMode = profile.noizdnsStealth
+            stealthMode = profile.noizdnsStealth,
+            maxPayload = profile.dnsPayloadSize
         )
 
         if (result.isSuccess) {
@@ -237,6 +221,28 @@ class VpnRepositoryImpl @Inject constructor(
      * Start the DoH SOCKS5 proxy. Call this AFTER establishing the VPN interface.
      * DNS queries are encrypted via HTTPS; all other traffic flows directly.
      */
+    /**
+     * Format the DNS server address string for the Go bridge, resolving any
+     * domain names to numeric IPs (Go on Android cannot resolve hostnames).
+     */
+    private fun formatDnsServerAddress(profile: ServerProfile): String = when (profile.dnsTransport) {
+        DnsTransport.UDP -> {
+            profile.resolvers.joinToString(",") { "${resolveHost(it.host)}:${it.port}" }
+                .ifBlank { "8.8.8.8:53" }
+        }
+        DnsTransport.DOH -> {
+            profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
+        }
+        DnsTransport.TCP -> {
+            profile.resolvers.joinToString(",") { "tcp://${resolveHost(it.host)}:${it.port}" }
+                .ifBlank { "tcp://8.8.8.8:53" }
+        }
+        DnsTransport.DOT -> {
+            profile.resolvers.joinToString(",") { "tls://${resolveHost(it.host)}:${it.port}" }
+                .ifBlank { "tls://8.8.8.8:853" }
+        }
+    }
+
     suspend fun startDohProxy(profile: ServerProfile): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 

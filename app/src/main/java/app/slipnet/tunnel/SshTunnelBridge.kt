@@ -511,6 +511,12 @@ object SshTunnelBridge {
         return running.get() && s.isConnected && !ss.isClosed
     }
 
+    /** Returns true when all DNS workers in the pool are dead. */
+    fun isDnsPoolDead(): Boolean {
+        if (!running.get()) return false
+        return (0 until DNS_POOL_SIZE).none { dnsWorkers[it]?.isAlive == true }
+    }
+
     /**
      * Active liveness probe: sends an SSH keepalive and waits for a reply.
      * Returns true if the server responded, false if the session is dead or unresponsive.
@@ -774,8 +780,11 @@ object SshTunnelBridge {
                     }
 
                     // Reject IPv6 CONNECT — remote server typically lacks IPv6.
+                    // Delay before replying so the app's TCP stack backs off
+                    // instead of retrying immediately and burning data.
                     if (addrType == 0x04) {
                         logd("CONNECT: rejected IPv6 $destHost:$destPort locally")
+                        try { Thread.sleep(2000) } catch (_: InterruptedException) {}
                         output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                         output.flush()
                         return@submit

@@ -49,6 +49,8 @@ object DnsttSocksBridge {
     @Volatile var authoritativeMode = false
     private val dnsPoolSize: Int get() = if (authoritativeMode) DNS_POOL_SIZE_AUTHORITATIVE else DNS_POOL_SIZE_DEFAULT
     private const val DNS_WORKER_TIMEOUT_MS = 15_000
+    private val effectiveDnsWorkerTimeout: Int get() = DNS_WORKER_TIMEOUT_MS
+    private val effectiveConnectTimeout: Int get() = TCP_CONNECT_TIMEOUT_MS
     // Clean DNS resolved at the REMOTE server (through Dante SOCKS5 CONNECT).
     // Dante may block CONNECT to localhost (127.0.0.53). Use public DNS instead.
     private const val PRIMARY_DNS_HOST = "8.8.8.8"
@@ -93,11 +95,13 @@ object DnsttSocksBridge {
     @Volatile private var circuitOpenUntil: Long = 0
     private const val CIRCUIT_BREAKER_THRESHOLD = 5
     private const val CIRCUIT_BREAKER_COOLDOWN_MS = 3000L
+    private val effectiveCircuitThreshold: Int get() = CIRCUIT_BREAKER_THRESHOLD
+    private val effectiveCircuitCooldown: Long get() = CIRCUIT_BREAKER_COOLDOWN_MS
 
     private fun isCircuitOpen(): Boolean {
         if (System.currentTimeMillis() < circuitOpenUntil) return true
         // Reset if cooldown has passed
-        if (consecutiveFailures.get() >= CIRCUIT_BREAKER_THRESHOLD) {
+        if (consecutiveFailures.get() >= effectiveCircuitThreshold) {
             consecutiveFailures.set(0)
         }
         return false
@@ -109,7 +113,7 @@ object DnsttSocksBridge {
 
     private fun recordDnsFailure() {
         if (consecutiveFailures.incrementAndGet() >= CIRCUIT_BREAKER_THRESHOLD) {
-            circuitOpenUntil = System.currentTimeMillis() + CIRCUIT_BREAKER_COOLDOWN_MS
+            circuitOpenUntil = System.currentTimeMillis() + effectiveCircuitCooldown
             logd("FWD_UDP: circuit breaker OPEN — cooling down ${CIRCUIT_BREAKER_COOLDOWN_MS}ms")
         }
     }
@@ -140,6 +144,41 @@ object DnsttSocksBridge {
         }
     }
 
+    // Rate-limited logging: suppress repeated rejection messages.
+    // Logs the first occurrence, then a summary count every LOG_RATE_LIMIT_MS.
+    private const val LOG_RATE_LIMIT_MS = 2000L
+
+    private class RateLimitedLog {
+        @Volatile var lastLogTime = 0L
+        val count = AtomicInteger(0)
+        fun reset() { count.set(0); lastLogTime = 0 }
+    }
+
+    private val circuitRejectLog = RateLimitedLog()
+    private val ipv6RejectLog = RateLimitedLog()
+
+    private fun logRateLimited(rl: RateLimitedLog, msg: String) {
+        rl.count.incrementAndGet()
+        val now = System.currentTimeMillis()
+        if (now - rl.lastLogTime >= LOG_RATE_LIMIT_MS) {
+            rl.lastLogTime = now
+            val suppressed = rl.count.getAndSet(0)
+            if (suppressed > 1) {
+                logd("$msg (and ${suppressed - 1} more)")
+            } else {
+                logd(msg)
+            }
+        }
+    }
+
+    private fun logCircuitReject(destHost: String, destPort: Int) {
+        logRateLimited(circuitRejectLog, "CONNECT: circuit open, rejecting $destHost:$destPort")
+    }
+
+    private fun logIpv6Reject(destHost: String, destPort: Int) {
+        logRateLimited(ipv6RejectLog, "CONNECT: rejected IPv6 $destHost:$destPort locally")
+    }
+
     fun start(
         dnsttPort: Int,
         dnsttHost: String = "127.0.0.1",
@@ -164,11 +203,13 @@ object DnsttSocksBridge {
         this.socksPassword = socksPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
         this.dnsFallbackHost = dnsFallback ?: FALLBACK_DNS_HOST
-        // Reset circuit breakers
+        // Reset circuit breakers and rate-limit counters
         consecutiveFailures.set(0)
         circuitOpenUntil = 0
         connectFailures.set(0)
         connectCircuitOpenUntil = 0
+        circuitRejectLog.reset()
+        ipv6RejectLog.reset()
         // Resize worker pool based on authoritative mode
         val poolSize = dnsPoolSize
         dnsWorkers = arrayOfNulls(poolSize)
@@ -252,6 +293,12 @@ object DnsttSocksBridge {
         return running.get() && !ss.isClosed
     }
 
+    /** Returns true when all DNS workers in the pool are dead. */
+    fun isDnsPoolDead(): Boolean {
+        if (!running.get()) return false
+        return (0 until dnsPoolSize).none { dnsWorkers.getOrNull(it)?.isAlive == true }
+    }
+
     // --- DNS Worker Pool Management ---
 
     /**
@@ -308,8 +355,8 @@ object DnsttSocksBridge {
     private fun createDnsWorker(): DnsWorker? {
         val sock = Socket()
         try {
-            sock.connect(InetSocketAddress(dnsttHost, dnsttPort), TCP_CONNECT_TIMEOUT_MS)
-            sock.soTimeout = DNS_WORKER_TIMEOUT_MS
+            sock.connect(InetSocketAddress(dnsttHost, dnsttPort), effectiveConnectTimeout)
+            sock.soTimeout = effectiveDnsWorkerTimeout
             sock.tcpNoDelay = true
 
             val sockIn = sock.getInputStream()
@@ -633,7 +680,8 @@ object DnsttSocksBridge {
                     // generates suspicious burst patterns visible to DPI.
                     // Reply 0x05 = "Connection refused" so apps fall back to IPv4.
                     if (addrType == 0x04) {
-                        logd("CONNECT: rejected IPv6 $destHost:$destPort locally")
+                        logIpv6Reject(destHost, destPort)
+                        try { Thread.sleep(2000) } catch (_: InterruptedException) {}
                         output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                         output.flush()
                         return@Thread
@@ -677,15 +725,16 @@ object DnsttSocksBridge {
 
         // CONNECT circuit breaker: tunnel is overwhelmed, reject immediately
         if (isConnectCircuitOpen()) {
-            logd("CONNECT: circuit open, rejecting $destHost:$destPort")
+            logCircuitReject(destHost, destPort)
             clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
             clientOutput.flush()
             return
         }
 
         // Limit concurrent CONNECT operations to avoid flooding the tunnel.
-        // Non-blocking: reject immediately if all slots are taken.
-        if (!connectSemaphore.tryAcquire()) {
+        // Wait briefly for a slot instead of rejecting immediately — instant
+        // rejection causes apps to retry in a tight loop, burning tunnel data.
+        if (!connectSemaphore.tryAcquire(2, java.util.concurrent.TimeUnit.SECONDS)) {
             logd("CONNECT: at capacity ($MAX_CONCURRENT_CONNECTS), rejecting $destHost:$destPort")
             clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
             clientOutput.flush()
@@ -696,7 +745,7 @@ object DnsttSocksBridge {
         val remoteSocket: Socket
         try {
             remoteSocket = Socket()
-            remoteSocket.connect(InetSocketAddress(dnsttHost, dnsttPort), TCP_CONNECT_TIMEOUT_MS)
+            remoteSocket.connect(InetSocketAddress(dnsttHost, dnsttPort), effectiveConnectTimeout)
             remoteSocket.tcpNoDelay = true
             remoteSockets.add(remoteSocket)
         } catch (e: Exception) {
@@ -879,8 +928,8 @@ object DnsttSocksBridge {
         var sock: Socket? = null
         try {
             sock = Socket()
-            sock.connect(InetSocketAddress(dnsttHost, dnsttPort), TCP_CONNECT_TIMEOUT_MS)
-            sock.soTimeout = DNS_WORKER_TIMEOUT_MS
+            sock.connect(InetSocketAddress(dnsttHost, dnsttPort), effectiveConnectTimeout)
+            sock.soTimeout = effectiveDnsWorkerTimeout
             sock.tcpNoDelay = true
 
             val sockIn = sock.getInputStream()
@@ -938,8 +987,8 @@ object DnsttSocksBridge {
         try {
             // Step 1: Connect to DNSTT (loopback)
             rawSocket = Socket()
-            rawSocket.connect(InetSocketAddress(dnsttHost, dnsttPort), TCP_CONNECT_TIMEOUT_MS)
-            rawSocket.soTimeout = DNS_WORKER_TIMEOUT_MS
+            rawSocket.connect(InetSocketAddress(dnsttHost, dnsttPort), effectiveConnectTimeout)
+            rawSocket.soTimeout = effectiveDnsWorkerTimeout
             rawSocket.tcpNoDelay = true
 
             val rawIn = rawSocket.getInputStream()

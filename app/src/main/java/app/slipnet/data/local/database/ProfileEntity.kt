@@ -130,5 +130,8 @@ data class ProfileEntity(
     val boundDeviceId: String = "",
 
     @ColumnInfo(name = "noizdns_stealth", defaultValue = "0")
-    val noizdnsStealth: Boolean = false
+    val noizdnsStealth: Boolean = false,
+
+    @ColumnInfo(name = "dns_payload_size", defaultValue = "0")
+    val dnsPayloadSize: Int = 0
 )
