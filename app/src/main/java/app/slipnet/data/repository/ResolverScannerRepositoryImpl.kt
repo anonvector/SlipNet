@@ -56,6 +56,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         // - Between consecutive markers: independent tiers (each shuffled separately)
         // - After last marker: remaining resolvers (shuffled, scanned last)
         val resolvers = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
         val boundaries = mutableListOf<Int>()
         try {
             context.resources.openRawResource(R.raw.resolvers).bufferedReader().useLines { lines ->
@@ -65,7 +66,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                         boundaries.add(resolvers.size)
                         continue
                     }
-                    if (trimmed.isNotBlank() && !trimmed.startsWith("#") && isValidIpAddress(trimmed)) {
+                    if (trimmed.isNotBlank() && !trimmed.startsWith("#") && isValidIpAddress(trimmed) && seen.add(trimmed)) {
                         resolvers.add(trimmed)
                     }
                 }
@@ -85,12 +86,19 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         return cachedTierBoundaries
     }
 
+    private val ipv4Regex = Regex("""\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b""")
+
     override fun parseResolverList(content: String): List<String> {
-        return content.lines()
-            .map { it.trim() }
-            .filter { it.isNotBlank() && !it.startsWith("#") }
-            .filter { isValidIpAddress(it) }
-            .distinct()
+        // Extract all valid IPv4 addresses from any text format
+        val seen = mutableSetOf<String>()
+        val result = mutableListOf<String>()
+        for (match in ipv4Regex.findAll(content)) {
+            val ip = match.groupValues[1]
+            if (isValidIpAddress(ip) && seen.add(ip)) {
+                result.add(ip)
+            }
+        }
+        return result
     }
 
     private fun isValidIpAddress(ip: String): Boolean {
@@ -755,12 +763,16 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         else -> 3
     }
 
-    /** Format resolver address for DNSTT/NoizDNS based on DNS transport. Returns null for DoH. */
-    private fun formatDnsServer(host: String, port: Int, transport: DnsTransport): String? = when (transport) {
-        DnsTransport.UDP -> "$host:$port"
-        DnsTransport.TCP -> "tcp://$host:$port"
-        DnsTransport.DOT -> "tls://$host:853"
-        DnsTransport.DOH -> null
+    /** Format resolver address for DNSTT/NoizDNS based on DNS transport. Returns null for DoH.
+     *  Resolves domain names to IPs since Go on Android cannot resolve hostnames. */
+    private fun formatDnsServer(host: String, port: Int, transport: DnsTransport): String? {
+        val resolvedHost = VpnRepositoryImpl.resolveHost(host)
+        return when (transport) {
+            DnsTransport.UDP -> "$resolvedHost:$port"
+            DnsTransport.TCP -> "tcp://$resolvedHost:$port"
+            DnsTransport.DOT -> "tls://$resolvedHost:$port"
+            DnsTransport.DOH -> null
+        }
     }
 
     /**
@@ -794,6 +806,9 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             val listenAddr = "127.0.0.1:$dnsttPort"
             val newClient = mobile.Mobile.newClient(dnsServer, profile.domain, profile.dnsttPublicKey, listenAddr)
             newClient.setAuthoritativeMode(profile.dnsttAuthoritative)
+            if (profile.dnsPayloadSize > 0) {
+                newClient.setMaxPayload(profile.dnsPayloadSize.toLong())
+            }
             if (noizMode) {
                 newClient.setNoizMode(true)
             }

@@ -44,6 +44,9 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -365,10 +368,10 @@ fun EditProfileScreen(
                                     value = uiState.resolvers,
                                     onValueChange = { viewModel.updateResolvers(it) },
                                     label = { Text("DNS Resolver") },
-                                    placeholder = { Text(if (isDoT) "e.g. 8.8.8.8:853" else "e.g. 8.8.8.8:53") },
+                                    placeholder = { Text(if (isDoT) "e.g. dns.google:853" else "e.g. 8.8.8.8:53") },
                                     isError = uiState.resolversError != null,
                                     supportingText = {
-                                        Text(uiState.resolversError ?: if (isDoT) "DNS-over-TLS server (IP:853)" else "DNS server address (IP:port)")
+                                        Text(uiState.resolversError ?: if (isDoT) "IP or domain (host:853)" else "IP or domain (host:port)")
                                     },
                                     trailingIcon = {
                                         IconButton(
@@ -721,6 +724,141 @@ fun EditProfileScreen(
                     }
                 }
 
+                // DNS MTU selector (DNSTT/NoizDNS only)
+                if (uiState.isDnsttOrNoizBased) {
+                    var showMtuDialog by remember { mutableStateOf(false) }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showMtuDialog = true }
+                            .padding(vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "DNS MTU",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = if (uiState.dnsPayloadSize == 0) "Full capacity (fastest)"
+                                       else "${uiState.dnsPayloadSize} bytes per query",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Icon(
+                            Icons.Default.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    if (showMtuDialog) {
+                        val mtuPresets = listOf(
+                            0 to "Full capacity — fastest, largest queries",
+                            100 to "Large — good balance",
+                            80 to "Medium — less conspicuous",
+                            60 to "Small — stealthier, slower",
+                            50 to "Minimum — most stealthy, slowest"
+                        )
+                        val isCustom = mtuPresets.none { it.first == uiState.dnsPayloadSize }
+                        var customMtuText by remember { mutableStateOf(if (isCustom) uiState.dnsPayloadSize.toString() else "") }
+                        var useCustom by remember { mutableStateOf(isCustom) }
+                        AlertDialog(
+                            onDismissRequest = { showMtuDialog = false },
+                            title = { Text("DNS MTU") },
+                            text = {
+                                Column {
+                                    Text(
+                                        text = "Bytes of data per DNS query. Smaller values produce shorter, less suspicious queries at the cost of speed.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(bottom = 12.dp)
+                                    )
+                                    mtuPresets.forEach { (size, desc) ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    useCustom = false
+                                                    viewModel.updateDnsPayloadSize(size)
+                                                    showMtuDialog = false
+                                                }
+                                                .padding(vertical = 10.dp, horizontal = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            RadioButton(
+                                                selected = !useCustom && uiState.dnsPayloadSize == size,
+                                                onClick = {
+                                                    useCustom = false
+                                                    viewModel.updateDnsPayloadSize(size)
+                                                    showMtuDialog = false
+                                                }
+                                            )
+                                            Column(modifier = Modifier.padding(start = 8.dp)) {
+                                                Text(text = if (size == 0) "Full" else "$size")
+                                                Text(
+                                                    text = desc,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { useCustom = true }
+                                            .padding(vertical = 10.dp, horizontal = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = useCustom,
+                                            onClick = { useCustom = true }
+                                        )
+                                        OutlinedTextField(
+                                            value = customMtuText,
+                                            onValueChange = { customMtuText = it.filter { c -> c.isDigit() }.take(3) },
+                                            enabled = useCustom,
+                                            label = { Text("Custom") },
+                                            placeholder = { Text("50–120") },
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            singleLine = true,
+                                            modifier = Modifier
+                                                .padding(start = 8.dp)
+                                                .fillMaxWidth()
+                                        )
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                if (useCustom) {
+                                    TextButton(
+                                        onClick = {
+                                            val value = customMtuText.toIntOrNull()
+                                            if (value != null && value in 50..120) {
+                                                viewModel.updateDnsPayloadSize(value)
+                                                showMtuDialog = false
+                                            }
+                                        }
+                                    ) {
+                                        Text("Apply")
+                                    }
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showMtuDialog = false }) {
+                                    Text("Cancel")
+                                }
+                            }
+                        )
+                    }
+                }
+
                 // NoizDNS stealth mode toggle
                 if (uiState.isNoizdnsBased) {
                     Row(
@@ -779,10 +917,10 @@ fun EditProfileScreen(
                         value = uiState.resolvers,
                         onValueChange = { viewModel.updateResolvers(it) },
                         label = { Text("DNS Resolver") },
-                        placeholder = { Text(if (isDoT) "e.g. 8.8.8.8:853" else "e.g. 8.8.8.8:53") },
+                        placeholder = { Text(if (isDoT) "e.g. dns.google:853" else "e.g. 8.8.8.8:53") },
                         isError = uiState.resolversError != null,
                         supportingText = {
-                            Text(uiState.resolversError ?: if (isDoT) "DNS-over-TLS server (IP:853)" else "DNS server address (IP:port)")
+                            Text(uiState.resolversError ?: if (isDoT) "IP or domain (host:853)" else "IP or domain (host:port)")
                         },
                         trailingIcon = {
                             IconButton(

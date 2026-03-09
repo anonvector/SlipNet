@@ -44,6 +44,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.FileUpload
@@ -288,6 +290,7 @@ fun DnsScannerScreen(
                 countryTotalIps = uiState.countryTotalIps,
                 selectedTotalIps = uiState.selectedTotalIps,
                 customRangeInput = uiState.customRangeInput,
+                customRangePreviewCount = uiState.customRangePreviewCount,
                 canStartScan = uiState.resolverList.isNotEmpty() && !uiState.scannerState.isScanning,
                 onStartScan = { viewModel.startScan() },
                 onLoadDefault = { viewModel.loadDefaultList() },
@@ -640,7 +643,7 @@ private fun ConfigurationSection(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Scan neighboring IPs",
+                            text = "Test nearby IPs (/24 subnet)",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
@@ -650,7 +653,7 @@ private fun ConfigurationSection(
                     )
                 }
                 Text(
-                    text = "Expands /24 subnets of working IPs. Only applies to country and custom range scans.",
+                    text = "When a working IP is found, also tests all 256 IPs in its /24 subnet. Only applies to country and custom range scans.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -730,6 +733,7 @@ private fun ResolverListSection(
     countryTotalIps: Long,
     selectedTotalIps: Long,
     customRangeInput: String,
+    customRangePreviewCount: Long = 0,
     canStartScan: Boolean,
     onStartScan: () -> Unit,
     onLoadDefault: () -> Unit,
@@ -944,7 +948,12 @@ private fun ResolverListSection(
                                 onValueChange = onCustomRangeInputChange,
                                 label = { Text("IP Ranges") },
                                 placeholder = { Text("8.8.8.0/24\n1.1.1.1-1.1.1.10\n9.9.9.9") },
-                                supportingText = { Text("One per line: CIDR, range, or single IP") },
+                                supportingText = {
+                                    Text(
+                                        if (customRangePreviewCount > 0) "~%,d IPs \u2022 CIDR, range, or single IP".format(customRangePreviewCount)
+                                        else "One per line: CIDR, range, or single IP"
+                                    )
+                                },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(140.dp),
@@ -1116,19 +1125,35 @@ private fun ResolverListSection(
                                 }
                             }
 
-                            // Range browser
+                            // Range browser (collapsed by default)
                             if (cidrGroups.isNotEmpty()) {
+                                var showRangeGroups by remember { mutableStateOf(false) }
                                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Row(
-                                        modifier = Modifier.fillMaxWidth(),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { showRangeGroups = !showRangeGroups }
+                                            .padding(vertical = 4.dp),
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(
-                                            text = "IP Range Groups",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                if (showRangeGroups) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = "IP Range Groups (${selectedOctets.size}/${cidrGroups.size} selected)",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             Text(
                                                 text = "All",
@@ -1145,54 +1170,56 @@ private fun ResolverListSection(
                                         }
                                     }
 
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(200.dp)
-                                            .border(
-                                                1.dp,
-                                                MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                                RoundedCornerShape(12.dp)
-                                            )
-                                            .clip(RoundedCornerShape(12.dp))
-                                    ) {
-                                        LazyColumn(
-                                            modifier = Modifier.fillMaxSize(),
-                                            contentPadding = PaddingValues(4.dp)
+                                    AnimatedVisibility(visible = showRangeGroups) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(200.dp)
+                                                .border(
+                                                    1.dp,
+                                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                                    RoundedCornerShape(12.dp)
+                                                )
+                                                .clip(RoundedCornerShape(12.dp))
                                         ) {
-                                            items(cidrGroups.size) { index ->
-                                                val group = cidrGroups[index]
-                                                val isSelected = group.firstOctet in selectedOctets
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .clickable { onToggleOctet(group.firstOctet) }
-                                                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                ) {
-                                                    Checkbox(
-                                                        checked = isSelected,
-                                                        onCheckedChange = { onToggleOctet(group.firstOctet) },
-                                                        modifier = Modifier.size(20.dp)
-                                                    )
-                                                    Text(
-                                                        text = group.label,
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        fontWeight = FontWeight.Medium,
-                                                        modifier = Modifier.width(80.dp)
-                                                    )
-                                                    Text(
-                                                        text = "${group.rangeCount} ranges",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        modifier = Modifier.weight(1f)
-                                                    )
-                                                    Text(
-                                                        text = "%,d".format(group.totalIps),
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
+                                            LazyColumn(
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentPadding = PaddingValues(4.dp)
+                                            ) {
+                                                items(cidrGroups.size) { index ->
+                                                    val group = cidrGroups[index]
+                                                    val isSelected = group.firstOctet in selectedOctets
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clickable { onToggleOctet(group.firstOctet) }
+                                                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        Checkbox(
+                                                            checked = isSelected,
+                                                            onCheckedChange = { onToggleOctet(group.firstOctet) },
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                        Text(
+                                                            text = group.label,
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            fontWeight = FontWeight.Medium,
+                                                            modifier = Modifier.width(80.dp)
+                                                        )
+                                                        Text(
+                                                            text = "${group.rangeCount} ranges",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                        Text(
+                                                            text = "%,d".format(group.totalIps),
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }

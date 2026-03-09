@@ -309,7 +309,7 @@ class SlipNetVpnService : VpnService() {
                 currentTunnelType = profile.tunnelType
                 Log.i(TAG, "Starting VPN with tunnel type: $currentTunnelType")
 
-                val dnsServer = profile.resolvers.firstOrNull()?.host ?: DEFAULT_DNS
+                val dnsServer = resolveToIp(profile.resolvers.firstOrNull()?.host)
                 // Remote DNS: the DNS servers used on the remote side of the tunnel
                 var remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
                 var remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
@@ -2859,6 +2859,16 @@ class SlipNetVpnService : VpnService() {
         }
     }
 
+
+    /**
+     * Resolve a resolver host to a numeric IP for [Builder.addDnsServer].
+     * Falls back to [DEFAULT_DNS] if resolution fails or host is null.
+     */
+    private fun resolveToIp(host: String?): String {
+        if (host.isNullOrBlank()) return DEFAULT_DNS
+        val resolved = VpnRepositoryImpl.resolveHost(host)
+        return if (DomainRouter.isIpAddress(resolved)) resolved else DEFAULT_DNS
+    }
 
     private suspend fun establishVpnInterface(dnsServer: String): ParcelFileDescriptor? {
         val mtu = try { preferencesDataStore.vpnMtu.first() } catch (_: Exception) { VPN_MTU }

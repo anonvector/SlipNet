@@ -140,6 +140,8 @@ data class EditProfileUiState(
     val boundDeviceId: String = "",
     // NoizDNS stealth mode
     val noizdnsStealth: Boolean = false,
+    // DNS query payload size (0 = max/full capacity)
+    val dnsPayloadSize: Int = 0,
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NOIZDNS_SSH
@@ -234,6 +236,7 @@ class EditProfileViewModel @Inject constructor(
                     torBridgeLines = profile.torBridgeLines,
                     dnsttAuthoritative = profile.dnsttAuthoritative,
                     noizdnsStealth = profile.noizdnsStealth,
+                    dnsPayloadSize = profile.dnsPayloadSize,
                     naivePort = profile.naivePort.toString(),
                     naiveUsername = profile.naiveUsername,
                     naivePassword = profile.naivePassword,
@@ -283,6 +286,10 @@ class EditProfileViewModel @Inject constructor(
 
     fun updateNoizdnsStealth(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(noizdnsStealth = enabled)
+    }
+
+    fun updateDnsPayloadSize(size: Int) {
+        _uiState.value = _uiState.value.copy(dnsPayloadSize = size)
     }
 
     fun updateKeepAliveInterval(interval: String) {
@@ -1075,6 +1082,7 @@ class EditProfileViewModel @Inject constructor(
                     torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else "",
                     dnsttAuthoritative = if (state.isDnsttOrNoizBased) state.dnsttAuthoritative else false,
                     noizdnsStealth = if (state.isNoizdnsBased) state.noizdnsStealth else false,
+                    dnsPayloadSize = if (state.isDnsttOrNoizBased) state.dnsPayloadSize else 0,
                     naivePort = if (state.isNaiveBased) (state.naivePort.toIntOrNull() ?: 443) else 443,
                     naiveUsername = if (state.isNaiveBased) state.naiveUsername.trim() else "",
                     naivePassword = if (state.isNaiveBased) state.naivePassword else "",

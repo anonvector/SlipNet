@@ -67,6 +67,7 @@ data class DnsScannerUiState(
     val selectedCountry: GeoBypassCountry = GeoBypassCountry.IR,
     val sampleCount: Int = 2000,
     val customRangeInput: String = "",
+    val customRangePreviewCount: Long = 0,
     val useCustomSampleCount: Boolean = false,
     val customSampleCountText: String = "",
     val cidrGroups: List<CidrGroup> = emptyList(),
@@ -78,7 +79,7 @@ data class DnsScannerUiState(
     // E2E tunnel test state
     val e2eScannerState: E2eScannerState = E2eScannerState(),
     val testUrl: String = "http://www.gstatic.com/generate_204",
-    val e2eTimeoutMs: String = "9000",
+    val e2eTimeoutMs: String = "10000",
     val isVpnActive: Boolean = false,
     val profile: ServerProfile? = null,
     // Simple scan mode
@@ -180,6 +181,32 @@ private fun expandSlash24(ip: String): List<String> {
     if (parts.size != 4) return emptyList()
     val prefix = "${parts[0]}.${parts[1]}.${parts[2]}"
     return (1..254).map { "$prefix.$it" }.filter { it != ip }
+}
+
+/**
+ * Expand the /24 subnet of [host] if it hasn't been expanded yet,
+ * adding up to [maxFocusRange] - current queue size neighbor IPs.
+ */
+private fun tryExpandSubnet(
+    host: String,
+    focusRangeQueue: MutableList<String>,
+    expandedSubnets: MutableSet<String>,
+    scannedSet: MutableSet<String>,
+    maxFocusRange: Int = 5000
+) {
+    if (focusRangeQueue.size >= maxFocusRange) return
+    val parts = host.split(".")
+    if (parts.size != 4) return
+    val subnet = "${parts[0]}.${parts[1]}.${parts[2]}"
+    if (subnet in expandedSubnets) return
+    expandedSubnets.add(subnet)
+    val neighbors = expandSlash24(host).filter { it !in scannedSet }
+    if (neighbors.isNotEmpty()) {
+        val capped = neighbors.take(maxFocusRange - focusRangeQueue.size)
+        focusRangeQueue.addAll(capped)
+        scannedSet.addAll(capped)
+        Log.d("DnsScanner", "Focus range: expanding $subnet.0/24 (+${capped.size} IPs)")
+    }
 }
 
 enum class ScanMode {
@@ -516,9 +543,9 @@ class DnsScannerViewModel @Inject constructor(
                     }
                     if (isResumable && session != null) {
                         // Restore the previous scan state.
+                        val savedByHost = session.results.associateBy { it.host }
                         val results = session.resolverList.map { host ->
-                            val saved = session.results.find { it.host == host }
-                            saved?.toScanResult() ?: ResolverScanResult(host = host)
+                            savedByHost[host]?.toScanResult() ?: ResolverScanResult(host = host)
                         }
                         // Rebuild simpleModeE2eState from restored results
                         val simpleModeE2e = if (isSimple) {
@@ -797,7 +824,17 @@ class DnsScannerViewModel @Inject constructor(
     }
 
     fun updateCustomRangeInput(text: String) {
-        _uiState.value = _uiState.value.copy(customRangeInput = text)
+        var count = 0L
+        for (line in text.lines()) {
+            val trimmed = line.trim()
+            if (trimmed.isBlank() || trimmed.startsWith("#")) continue
+            val range = parseIpRange(trimmed)
+            if (range != null) count += (range.second - range.first + 1)
+        }
+        _uiState.value = _uiState.value.copy(
+            customRangeInput = text,
+            customRangePreviewCount = count
+        )
         saveListSelection()
     }
 
@@ -821,7 +858,7 @@ class DnsScannerViewModel @Inject constructor(
 
         for (line in input.lines()) {
             val trimmed = line.trim()
-            if (trimmed.isBlank()) continue
+            if (trimmed.isBlank() || trimmed.startsWith("#")) continue
             val range = parseIpRange(trimmed)
             if (range != null) {
                 ranges.add(range)
@@ -871,25 +908,30 @@ class DnsScannerViewModel @Inject constructor(
         }
     }
 
+    private val cidrRegex = Regex("""\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})\b""")
+    private val rangeRegex = Regex("""\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*-\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b""")
+    private val singleIpRegex = Regex("""\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b""")
+
     private fun parseIpRange(line: String): Pair<Long, Long>? {
         // Try CIDR first (e.g. 8.8.8.0/24)
-        DomainRouter.parseCidr(line)?.let { return it }
+        cidrRegex.find(line)?.let { match ->
+            DomainRouter.parseCidr(match.groupValues[1])?.let { return it }
+        }
 
         // Try range format (e.g. 8.8.8.1-8.8.8.254)
-        if ('-' in line) {
-            val parts = line.split('-', limit = 2)
-            if (parts.size == 2) {
-                val start = DomainRouter.ipToLong(parts[0].trim())
-                val end = DomainRouter.ipToLong(parts[1].trim())
-                if (start != null && end != null && start <= end) {
-                    return Pair(start, end)
-                }
+        rangeRegex.find(line)?.let { match ->
+            val start = DomainRouter.ipToLong(match.groupValues[1])
+            val end = DomainRouter.ipToLong(match.groupValues[2])
+            if (start != null && end != null && start <= end) {
+                return Pair(start, end)
             }
         }
 
         // Try single IP (e.g. 8.8.8.8)
-        DomainRouter.ipToLong(line)?.let { ip ->
-            return Pair(ip, ip)
+        singleIpRegex.find(line)?.let { match ->
+            DomainRouter.ipToLong(match.groupValues[1])?.let { ip ->
+                return Pair(ip, ip)
+            }
         }
 
         return null
@@ -974,11 +1016,7 @@ class DnsScannerViewModel @Inject constructor(
         }
         Log.d("DnsScanner", "Scan order first10=${resolvers.take(10)}")
 
-        // Initialize scanner state
-        val initialResults = resolvers.map { host ->
-            ResolverScanResult(host = host, status = ResolverStatus.PENDING)
-        }
-
+        // Initialize scanner state — don't pre-allocate PENDING results to avoid OOM on large lists
         _uiState.value = _uiState.value.copy(
             resolverList = resolvers,
             scannerState = ScannerState(
@@ -986,7 +1024,7 @@ class DnsScannerViewModel @Inject constructor(
                 totalCount = resolvers.size,
                 scannedCount = 0,
                 workingCount = 0,
-                results = initialResults
+                results = emptyList()
             ),
             selectedResolvers = emptySet(),
             error = null,
@@ -1139,8 +1177,8 @@ class DnsScannerViewModel @Inject constructor(
         val queue = SortableQueue(untestedE2e, buildE2eComparator(_uiState.value.e2eSortOption))
         e2ePendingQueue = queue
 
-        // Shared map for both coroutines
-        val resultsMap = mutableMapOf<String, ResolverScanResult>()
+        // Thread-safe map — DNS scan (Main) and E2E workers (IO→Main) both access this.
+        val resultsMap = java.util.concurrent.ConcurrentHashMap<String, ResolverScanResult>()
         resultsMap.putAll(existingResults)
         var scannedCount = existingResults.size
         var workingCount = startWorkingCount
@@ -1175,18 +1213,26 @@ class DnsScannerViewModel @Inject constructor(
                 val expandedSubnets = mutableSetOf<String>()
                 val maxFocusRange = 5000
                 var uiUpdateCounter = 0
+                var lastEmitTimeMs = 0L
 
-                fun emitState(scanning: Boolean) {
-                    _uiState.value = _uiState.value.copy(
-                        scannerState = ScannerState(
-                            isScanning = scanning,
-                            totalCount = state.resolverList.size,
-                            focusRangeCount = focusRangeQueue.size,
-                            scannedCount = scannedCount,
-                            workingCount = workingCount,
-                            results = rebuildResultsList()
+                fun emitState(scanning: Boolean, force: Boolean = false) {
+                    if (!force) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastEmitTimeMs < 150L) return
+                        lastEmitTimeMs = now
+                    }
+                    _uiState.update { s ->
+                        s.copy(
+                            scannerState = ScannerState(
+                                isScanning = scanning,
+                                totalCount = state.resolverList.size,
+                                focusRangeCount = focusRangeQueue.size,
+                                scannedCount = scannedCount,
+                                workingCount = workingCount,
+                                results = rebuildResultsList()
+                            )
                         )
-                    )
+                    }
                 }
 
                 fun handleResult(result: ResolverScanResult) {
@@ -1196,30 +1242,18 @@ class DnsScannerViewModel @Inject constructor(
                         workingCount++
                         if ((result.tunnelTestResult?.score ?: 0) >= minScore) {
                             queue.add(result.host to result.port)
-                            _uiState.value = _uiState.value.copy(
-                                simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                                    queuedCount = _uiState.value.simpleModeE2eState.queuedCount + 1
-                                )
-                            )
-                        }
-                        if (useFocusRange && focusRangeQueue.size < maxFocusRange) {
-                            val parts = result.host.split(".")
-                            if (parts.size == 4) {
-                                val subnet = "${parts[0]}.${parts[1]}.${parts[2]}"
-                                if (subnet !in expandedSubnets) {
-                                    expandedSubnets.add(subnet)
-                                    val neighbors = expandSlash24(result.host).filter { it !in scannedSet }
-                                    if (neighbors.isNotEmpty()) {
-                                        val capped = neighbors.take(maxFocusRange - focusRangeQueue.size)
-                                        focusRangeQueue.addAll(capped)
-                                        scannedSet.addAll(capped)
-                                    }
-                                }
+                            _uiState.update { s ->
+                                s.copy(simpleModeE2eState = s.simpleModeE2eState.copy(
+                                    queuedCount = s.simpleModeE2eState.queuedCount + 1
+                                ))
                             }
+                        }
+                        if (useFocusRange) {
+                            tryExpandSubnet(result.host, focusRangeQueue, expandedSubnets, scannedSet, maxFocusRange)
                         }
                     }
                     uiUpdateCounter++
-                    if (result.status == ResolverStatus.WORKING || uiUpdateCounter >= 10) {
+                    if (result.status == ResolverStatus.WORKING || uiUpdateCounter >= 20) {
                         uiUpdateCounter = 0
                         emitState(true)
                     }
@@ -1231,13 +1265,11 @@ class DnsScannerViewModel @Inject constructor(
                     timeoutMs = timeout,
                     concurrency = concurrency
                 ).collect { handleResult(it) }
-                emitState(true)
+                emitState(true, force = true)
 
                 if (focusRangeQueue.isNotEmpty()) {
                     val neighborIps = focusRangeQueue.toList()
-                    _uiState.value = _uiState.value.copy(
-                        resolverList = _uiState.value.resolverList + neighborIps
-                    )
+                    _uiState.update { s -> s.copy(resolverList = s.resolverList + neighborIps) }
                     scannerRepository.scanResolvers(
                         hosts = neighborIps,
                         testDomain = state.effectiveTestDomain,
@@ -1247,7 +1279,7 @@ class DnsScannerViewModel @Inject constructor(
                 }
 
                 queue.close()
-                emitState(false)
+                emitState(false, force = true)
             }
         } else {
             // DNS is already complete — close queue after seeding
@@ -1259,20 +1291,20 @@ class DnsScannerViewModel @Inject constructor(
             launchE2eWorkers(
                 queue = queue, profile = profile,
                 testUrl = _uiState.value.testUrl,
-                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 9000L,
+                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 10000L,
                 startTestedCount = startTestedCount, startPassedCount = startPassedCount,
                 onActiveChanged = { transform -> updateSimpleModeActive(transform) },
                 onResult = { host, result, tested, passed ->
-                    resultsMap[host]?.let { resultsMap[host] = it.copy(e2eTestResult = result) }
+                    resultsMap.compute(host) { _, existing -> existing?.copy(e2eTestResult = result) }
                     updateSimpleModeResult(rebuildResultsList(), tested, passed)
                 },
                 onComplete = {
-                    _uiState.value = _uiState.value.copy(
-                        simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
+                    _uiState.update { s ->
+                        s.copy(simpleModeE2eState = s.simpleModeE2eState.copy(
                             isRunning = false, currentResolver = null, currentPhase = "",
                             activeResolvers = emptyMap()
-                        )
-                    )
+                        ))
+                    }
                     releaseWakeLock()
                 }
             )
@@ -1294,7 +1326,7 @@ class DnsScannerViewModel @Inject constructor(
             try {
                 val detected = scannerRepository.detectTransparentProxy(testDomain)
                 if (detected) {
-                    _uiState.value = _uiState.value.copy(transparentProxyDetected = true)
+                    _uiState.update { s -> s.copy(transparentProxyDetected = true) }
                 }
             } catch (_: Exception) { }
         }
@@ -1309,6 +1341,7 @@ class DnsScannerViewModel @Inject constructor(
             var errorCount = 0
             val scannedSet = allHosts.toMutableSet()
             var uiUpdateCounter = 0
+            var lastEmitTimeMs = 0L
 
             // Focus range: collect /24 neighbors of working resolvers (capped at 5000)
             val useFocusRange = _uiState.value.expandNeighbors && _uiState.value.listSource in listOf(ListSource.COUNTRY_RANGE, ListSource.CUSTOM_RANGE)
@@ -1316,19 +1349,26 @@ class DnsScannerViewModel @Inject constructor(
             val expandedSubnets = mutableSetOf<String>()
             val maxFocusRange = 5000
 
-            fun emitState(scanning: Boolean) {
-                _uiState.value = _uiState.value.copy(
-                    scannerState = ScannerState(
-                        isScanning = scanning,
-                        totalCount = allHosts.size,
-                        focusRangeCount = focusRangeQueue.size,
-                        scannedCount = scannedCount,
-                        workingCount = workingCount,
-                        timeoutCount = timeoutCount,
-                        errorCount = errorCount,
-                        results = workingResults.toList()
+            fun emitState(scanning: Boolean, force: Boolean = false) {
+                if (!force) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastEmitTimeMs < 150L) return
+                    lastEmitTimeMs = now
+                }
+                _uiState.update { s ->
+                    s.copy(
+                        scannerState = ScannerState(
+                            isScanning = scanning,
+                            totalCount = allHosts.size,
+                            focusRangeCount = focusRangeQueue.size,
+                            scannedCount = scannedCount,
+                            workingCount = workingCount,
+                            timeoutCount = timeoutCount,
+                            errorCount = errorCount,
+                            results = workingResults.toList()
+                        )
                     )
-                )
+                }
             }
 
             fun handleResult(result: ResolverScanResult) {
@@ -1337,31 +1377,17 @@ class DnsScannerViewModel @Inject constructor(
                     ResolverStatus.WORKING -> {
                         workingCount++
                         workingResults.add(result)
-                        // Focus range: expand /24 subnet
-                        if (useFocusRange && focusRangeQueue.size < maxFocusRange) {
-                            val parts = result.host.split(".")
-                            if (parts.size == 4) {
-                                val subnet = "${parts[0]}.${parts[1]}.${parts[2]}"
-                                if (subnet !in expandedSubnets) {
-                                    expandedSubnets.add(subnet)
-                                    val neighbors = expandSlash24(result.host).filter { it !in scannedSet }
-                                    if (neighbors.isNotEmpty()) {
-                                        val capped = neighbors.take(maxFocusRange - focusRangeQueue.size)
-                                        focusRangeQueue.addAll(capped)
-                                        scannedSet.addAll(capped)
-                                        Log.d("DnsScanner", "Focus range: expanding $subnet.0/24 (+${capped.size} IPs)")
-                                    }
-                                }
-                            }
+                        if (useFocusRange) {
+                            tryExpandSubnet(result.host, focusRangeQueue, expandedSubnets, scannedSet, maxFocusRange)
                         }
                     }
                     ResolverStatus.TIMEOUT -> timeoutCount++
                     ResolverStatus.ERROR, ResolverStatus.CENSORED -> errorCount++
                     else -> {}
                 }
-                // Batch UI updates: every 10 results or on working result
+                // Batch UI updates: every 20 results or on working result (throttled to max ~7 fps)
                 uiUpdateCounter++
-                if (result.status == ResolverStatus.WORKING || uiUpdateCounter >= 10) {
+                if (result.status == ResolverStatus.WORKING || uiUpdateCounter >= 20) {
                     uiUpdateCounter = 0
                     emitState(true)
                 }
@@ -1373,16 +1399,14 @@ class DnsScannerViewModel @Inject constructor(
                 timeoutMs = timeout,
                 concurrency = concurrency
             ).collect { handleResult(it) }
-            emitState(true)
+            emitState(true, force = true)
 
             // Phase 2: scan focus range neighbors
             if (focusRangeQueue.isNotEmpty()) {
                 val neighborIps = focusRangeQueue.toList()
                 Log.d("DnsScanner", "Focus range: scanning ${neighborIps.size} neighbor IPs from ${expandedSubnets.size} subnets")
                 // Persist neighbors in resolverList so resume works
-                _uiState.value = _uiState.value.copy(
-                    resolverList = _uiState.value.resolverList + neighborIps
-                )
+                _uiState.update { s -> s.copy(resolverList = s.resolverList + neighborIps) }
                 scannerRepository.scanResolvers(
                     hosts = neighborIps,
                     testDomain = testDomain,
@@ -1391,7 +1415,7 @@ class DnsScannerViewModel @Inject constructor(
                 ).collect { handleResult(it) }
             }
 
-            emitState(false)
+            emitState(false, force = true)
             clearSavedSession()
             releaseWakeLock()
         }
@@ -1417,9 +1441,8 @@ class DnsScannerViewModel @Inject constructor(
             simpleModeE2eState = SimpleModeE2eState(isRunning = true)
         )
 
-        // Shared mutable map — both coroutines run on Main so no concurrent writes.
-        // DNS scan writes scan results; E2E coroutine merges e2eTestResult onto existing entries.
-        val resultsMap = mutableMapOf<String, ResolverScanResult>()
+        // Thread-safe map — DNS scan (Main) and E2E workers (IO→Main) both access this.
+        val resultsMap = java.util.concurrent.ConcurrentHashMap<String, ResolverScanResult>()
         var scannedCount = 0
         var workingCount = 0
         val allHostsMutable = allHosts.toMutableList()
@@ -1432,7 +1455,7 @@ class DnsScannerViewModel @Inject constructor(
             try {
                 val detected = scannerRepository.detectTransparentProxy(testDomain)
                 if (detected) {
-                    _uiState.value = _uiState.value.copy(transparentProxyDetected = true)
+                    _uiState.update { s -> s.copy(transparentProxyDetected = true) }
                 }
             } catch (_: Exception) { }
         }
@@ -1447,20 +1470,28 @@ class DnsScannerViewModel @Inject constructor(
             var timeoutCount = 0
             var errorCount = 0
             var uiUpdateCounter = 0
+            var lastEmitTimeMs = 0L
 
-            fun emitState(scanning: Boolean) {
-                _uiState.value = _uiState.value.copy(
-                    scannerState = ScannerState(
-                        isScanning = scanning,
-                        totalCount = allHosts.size,
-                        focusRangeCount = focusRangeQueue.size,
-                        scannedCount = scannedCount,
-                        workingCount = workingCount,
-                        timeoutCount = timeoutCount,
-                        errorCount = errorCount,
-                        results = resultsMap.values.filter { it.status == ResolverStatus.WORKING }.toList()
+            fun emitState(scanning: Boolean, force: Boolean = false) {
+                if (!force) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastEmitTimeMs < 150L) return
+                    lastEmitTimeMs = now
+                }
+                _uiState.update { s ->
+                    s.copy(
+                        scannerState = ScannerState(
+                            isScanning = scanning,
+                            totalCount = allHosts.size,
+                            focusRangeCount = focusRangeQueue.size,
+                            scannedCount = scannedCount,
+                            workingCount = workingCount,
+                            timeoutCount = timeoutCount,
+                            errorCount = errorCount,
+                            results = rebuildResultsList()
+                        )
                     )
-                )
+                }
             }
 
             fun handleResult(result: ResolverScanResult) {
@@ -1471,28 +1502,14 @@ class DnsScannerViewModel @Inject constructor(
                         workingCount++
                         if ((result.tunnelTestResult?.score ?: 0) >= minScore) {
                             queue2.add(result.host to result.port)
-                            _uiState.value = _uiState.value.copy(
-                                simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                                    queuedCount = _uiState.value.simpleModeE2eState.queuedCount + 1
-                                )
-                            )
-                        }
-                        // Focus range: expand /24 subnet
-                        if (useFocusRange && focusRangeQueue.size < maxFocusRange) {
-                            val parts = result.host.split(".")
-                            if (parts.size == 4) {
-                                val subnet = "${parts[0]}.${parts[1]}.${parts[2]}"
-                                if (subnet !in expandedSubnets) {
-                                    expandedSubnets.add(subnet)
-                                    val neighbors = expandSlash24(result.host).filter { it !in scannedSet }
-                                    if (neighbors.isNotEmpty()) {
-                                        val capped = neighbors.take(maxFocusRange - focusRangeQueue.size)
-                                        focusRangeQueue.addAll(capped)
-                                        scannedSet.addAll(capped)
-                                        Log.d("DnsScanner", "Focus range: expanding $subnet.0/24 (+${capped.size} IPs)")
-                                    }
-                                }
+                            _uiState.update { s ->
+                                s.copy(simpleModeE2eState = s.simpleModeE2eState.copy(
+                                    queuedCount = s.simpleModeE2eState.queuedCount + 1
+                                ))
                             }
+                        }
+                        if (useFocusRange) {
+                            tryExpandSubnet(result.host, focusRangeQueue, expandedSubnets, scannedSet, maxFocusRange)
                         }
                     }
                     ResolverStatus.TIMEOUT -> timeoutCount++
@@ -1500,7 +1517,7 @@ class DnsScannerViewModel @Inject constructor(
                     else -> {}
                 }
                 uiUpdateCounter++
-                if (result.status == ResolverStatus.WORKING || uiUpdateCounter >= 10) {
+                if (result.status == ResolverStatus.WORKING || uiUpdateCounter >= 20) {
                     uiUpdateCounter = 0
                     emitState(true)
                 }
@@ -1512,16 +1529,14 @@ class DnsScannerViewModel @Inject constructor(
                 timeoutMs = timeout,
                 concurrency = concurrency
             ).collect { handleResult(it) }
-            emitState(true)
+            emitState(true, force = true)
 
             // Phase 2: scan focus range neighbors
             if (focusRangeQueue.isNotEmpty()) {
                 val neighborIps = focusRangeQueue.toList()
                 Log.d("DnsScanner", "Focus range: scanning ${neighborIps.size} neighbor IPs")
                 // Persist neighbors in resolverList so resume works
-                _uiState.value = _uiState.value.copy(
-                    resolverList = _uiState.value.resolverList + neighborIps
-                )
+                _uiState.update { s -> s.copy(resolverList = s.resolverList + neighborIps) }
                 scannerRepository.scanResolvers(
                     hosts = neighborIps,
                     testDomain = testDomain,
@@ -1532,7 +1547,7 @@ class DnsScannerViewModel @Inject constructor(
 
             // DNS scan done — close queue so E2E coroutine finishes
             queue2.close()
-            emitState(false)
+            emitState(false, force = true)
         }
 
         // Coroutine 2: E2E validation — N parallel consumers from sorted queue
@@ -1540,20 +1555,20 @@ class DnsScannerViewModel @Inject constructor(
             launchE2eWorkers(
                 queue = queue2, profile = profile,
                 testUrl = _uiState.value.testUrl,
-                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 9000L,
+                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 10000L,
                 startTestedCount = 0, startPassedCount = 0,
                 onActiveChanged = { transform -> updateSimpleModeActive(transform) },
                 onResult = { host, result, tested, passed ->
-                    resultsMap[host]?.let { resultsMap[host] = it.copy(e2eTestResult = result) }
+                    resultsMap.compute(host) { _, existing -> existing?.copy(e2eTestResult = result) }
                     updateSimpleModeResult(rebuildResultsList(), tested, passed)
                 },
                 onComplete = {
-                    _uiState.value = _uiState.value.copy(
-                        simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
+                    _uiState.update { s ->
+                        s.copy(simpleModeE2eState = s.simpleModeE2eState.copy(
                             isRunning = false, currentResolver = null, currentPhase = "",
                             activeResolvers = emptyMap()
-                        )
-                    )
+                        ))
+                    }
                     releaseWakeLock()
                 }
             )
@@ -1690,18 +1705,18 @@ class DnsScannerViewModel @Inject constructor(
         }
     }
 
-    /** Update simpleModeE2eState counters and results. Must be called on Main. */
+    /** Update simpleModeE2eState counters and results. Thread-safe via CAS. */
     private fun updateSimpleModeResult(results: List<ResolverScanResult>, tested: Int, passed: Int) {
-        val active = _uiState.value.simpleModeE2eState.activeResolvers
-        _uiState.value = _uiState.value.copy(
-            scannerState = _uiState.value.scannerState.copy(results = results),
-            simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
-                testedCount = tested, passedCount = passed,
-                currentResolver = active.keys.firstOrNull(),
-                currentPhase = active.values.firstOrNull() ?: "",
-                activeResolvers = active
+        _uiState.update { s ->
+            s.copy(
+                scannerState = s.scannerState.copy(results = results),
+                simpleModeE2eState = s.simpleModeE2eState.copy(
+                    testedCount = tested, passedCount = passed,
+                    currentResolver = s.simpleModeE2eState.activeResolvers.keys.firstOrNull(),
+                    currentPhase = s.simpleModeE2eState.activeResolvers.values.firstOrNull() ?: ""
+                )
             )
-        )
+        }
     }
 
     /** Thread-safe CAS update of e2eScannerState.activeResolvers. */
@@ -1716,18 +1731,18 @@ class DnsScannerViewModel @Inject constructor(
         }
     }
 
-    /** Update e2eScannerState counters and results. Must be called on Main. */
+    /** Update e2eScannerState counters and results. Thread-safe via CAS. */
     private fun updateE2eResult(results: List<ResolverScanResult>, tested: Int, passed: Int) {
-        val active = _uiState.value.e2eScannerState.activeResolvers
-        _uiState.value = _uiState.value.copy(
-            scannerState = _uiState.value.scannerState.copy(results = results),
-            e2eScannerState = _uiState.value.e2eScannerState.copy(
-                testedCount = tested, passedCount = passed,
-                currentResolver = active.keys.firstOrNull(),
-                currentPhase = active.values.firstOrNull() ?: "",
-                activeResolvers = active
+        _uiState.update { s ->
+            s.copy(
+                scannerState = s.scannerState.copy(results = results),
+                e2eScannerState = s.e2eScannerState.copy(
+                    testedCount = tested, passedCount = passed,
+                    currentResolver = s.e2eScannerState.activeResolvers.keys.firstOrNull(),
+                    currentPhase = s.e2eScannerState.activeResolvers.values.firstOrNull() ?: ""
+                )
             )
-        )
+        }
     }
 
     fun updateE2eSortOption(option: E2eSortOption) {
@@ -1829,21 +1844,31 @@ class DnsScannerViewModel @Inject constructor(
             launchE2eWorkers(
                 queue = queue, profile = profile,
                 testUrl = _uiState.value.testUrl,
-                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 5000L,
+                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 10000L,
                 startTestedCount = startTestedCount, startPassedCount = startPassedCount,
                 onActiveChanged = { transform -> updateE2eActive(transform) },
                 onResult = { host, result, tested, passed ->
-                    val updatedResults = _uiState.value.scannerState.results.map { r ->
-                        if (r.host == host) r.copy(e2eTestResult = result) else r
+                    // Build updated results inside CAS to avoid stale reads
+                    _uiState.update { s ->
+                        val updatedResults = s.scannerState.results.map { r ->
+                            if (r.host == host) r.copy(e2eTestResult = result) else r
+                        }
+                        s.copy(
+                            scannerState = s.scannerState.copy(results = updatedResults),
+                            e2eScannerState = s.e2eScannerState.copy(
+                                testedCount = tested, passedCount = passed,
+                                currentResolver = s.e2eScannerState.activeResolvers.keys.firstOrNull(),
+                                currentPhase = s.e2eScannerState.activeResolvers.values.firstOrNull() ?: ""
+                            )
+                        )
                     }
-                    updateE2eResult(updatedResults, tested, passed)
                 },
                 onComplete = {
-                    _uiState.value = _uiState.value.copy(
-                        e2eScannerState = _uiState.value.e2eScannerState.copy(
+                    _uiState.update { s ->
+                        s.copy(e2eScannerState = s.e2eScannerState.copy(
                             isRunning = false, activeResolvers = emptyMap()
-                        )
-                    )
+                        ))
+                    }
                     releaseWakeLock()
                 }
             )

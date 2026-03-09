@@ -288,7 +288,7 @@ abstract class SlipNetDatabase : RoomDatabase() {
 
         val MIGRATION_20_21 = object : Migration(20, 21) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE server_profiles ADD COLUMN a_record_mode INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN dns_payload_size INTEGER NOT NULL DEFAULT 0")
             }
         }
 

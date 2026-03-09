@@ -144,6 +144,41 @@ object DnsttSocksBridge {
         }
     }
 
+    // Rate-limited logging: suppress repeated rejection messages.
+    // Logs the first occurrence, then a summary count every LOG_RATE_LIMIT_MS.
+    private const val LOG_RATE_LIMIT_MS = 2000L
+
+    private class RateLimitedLog {
+        @Volatile var lastLogTime = 0L
+        val count = AtomicInteger(0)
+        fun reset() { count.set(0); lastLogTime = 0 }
+    }
+
+    private val circuitRejectLog = RateLimitedLog()
+    private val ipv6RejectLog = RateLimitedLog()
+
+    private fun logRateLimited(rl: RateLimitedLog, msg: String) {
+        rl.count.incrementAndGet()
+        val now = System.currentTimeMillis()
+        if (now - rl.lastLogTime >= LOG_RATE_LIMIT_MS) {
+            rl.lastLogTime = now
+            val suppressed = rl.count.getAndSet(0)
+            if (suppressed > 1) {
+                logd("$msg (and ${suppressed - 1} more)")
+            } else {
+                logd(msg)
+            }
+        }
+    }
+
+    private fun logCircuitReject(destHost: String, destPort: Int) {
+        logRateLimited(circuitRejectLog, "CONNECT: circuit open, rejecting $destHost:$destPort")
+    }
+
+    private fun logIpv6Reject(destHost: String, destPort: Int) {
+        logRateLimited(ipv6RejectLog, "CONNECT: rejected IPv6 $destHost:$destPort locally")
+    }
+
     fun start(
         dnsttPort: Int,
         dnsttHost: String = "127.0.0.1",
@@ -168,11 +203,13 @@ object DnsttSocksBridge {
         this.socksPassword = socksPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
         this.dnsFallbackHost = dnsFallback ?: FALLBACK_DNS_HOST
-        // Reset circuit breakers
+        // Reset circuit breakers and rate-limit counters
         consecutiveFailures.set(0)
         circuitOpenUntil = 0
         connectFailures.set(0)
         connectCircuitOpenUntil = 0
+        circuitRejectLog.reset()
+        ipv6RejectLog.reset()
         // Resize worker pool based on authoritative mode
         val poolSize = dnsPoolSize
         dnsWorkers = arrayOfNulls(poolSize)
@@ -643,7 +680,7 @@ object DnsttSocksBridge {
                     // generates suspicious burst patterns visible to DPI.
                     // Reply 0x05 = "Connection refused" so apps fall back to IPv4.
                     if (addrType == 0x04) {
-                        logd("CONNECT: rejected IPv6 $destHost:$destPort locally")
+                        logIpv6Reject(destHost, destPort)
                         try { Thread.sleep(2000) } catch (_: InterruptedException) {}
                         output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                         output.flush()
@@ -688,7 +725,7 @@ object DnsttSocksBridge {
 
         // CONNECT circuit breaker: tunnel is overwhelmed, reject immediately
         if (isConnectCircuitOpen()) {
-            logd("CONNECT: circuit open, rejecting $destHost:$destPort")
+            logCircuitReject(destHost, destPort)
             clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
             clientOutput.flush()
             return

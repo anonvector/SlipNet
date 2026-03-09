@@ -59,7 +59,10 @@ data class ServerProfile(
     val allowSharing: Boolean = false,
     val boundDeviceId: String = "",
     // NoizDNS stealth mode: trades speed for DPI resistance (jitter, slow polling, cover traffic)
-    val noizdnsStealth: Boolean = false
+    val noizdnsStealth: Boolean = false,
+    // DNS query payload size cap (KCP MTU). 0 = full capacity (default).
+    // Lower values produce smaller, less conspicuous DNS queries.
+    val dnsPayloadSize: Int = 0
 ) {
     val isExpired: Boolean get() = expirationDate > 0 && System.currentTimeMillis() > expirationDate
 }

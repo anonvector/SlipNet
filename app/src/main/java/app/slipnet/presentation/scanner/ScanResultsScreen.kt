@@ -165,63 +165,76 @@ fun ScanResultsScreen(
         }
     }
 
-    // Cached list of working IPs — used by dialog, TopAppBar copy/export
-    val workingIps = remember(uiState.scannerState.results, uiState.scanMode) {
-        if (uiState.scanMode == ScanMode.SIMPLE) {
-            uiState.scannerState.results
-                .filter { it.e2eTestResult?.success == true }
-                .map { it.host }
-        } else {
-            uiState.scannerState.results
-                .filter { it.status == ResolverStatus.WORKING }
-                .map { it.host }
+    // Single-pass filter: visible E2E-passed and Stage 1 working IPs (respects search/score)
+    val (visibleE2eIps, visibleStage1Ips) = remember(uiState.scannerState.results, scoreFilter, searchQuery) {
+        val query = searchQuery.trim()
+        val e2e = mutableListOf<String>()
+        val stage1 = mutableListOf<String>()
+        for (result in uiState.scannerState.results) {
+            val matchesFilters = (result.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
+                (query.isEmpty() || result.host.contains(query))
+            if (!matchesFilters) continue
+            if (result.status == ResolverStatus.WORKING) stage1.add(result.host)
+            if (result.e2eTestResult?.success == true) e2e.add(result.host)
+        }
+        e2e as List<String> to (stage1 as List<String>)
+    }
+
+    val hasE2eResults = remember(uiState.scannerState.results) {
+        uiState.scannerState.results.any { it.e2eTestResult != null }
+    }
+
+    fun copyIpsToClipboard(ips: List<String>) {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("DNS Resolvers", ips.joinToString(", ")))
+        scope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            launch { snackbarHostState.showSnackbar("Copied ${ips.size} IPs") }
+            delay(1500)
+            snackbarHostState.currentSnackbarData?.dismiss()
         }
     }
 
-    // Dialog for choosing all working IPs vs selected only
+    // Dialog for choosing which IPs to copy/export
     if (pendingAction != null) {
-        val selectedIps = uiState.selectedResolvers.toList()
         val action = pendingAction
+        val selectedIps = uiState.selectedResolvers.toList()
+
+        fun doCopy(ips: List<String>) {
+            pendingAction = null
+            copyIpsToClipboard(ips)
+        }
+
+        fun doExport(ips: List<String>) {
+            pendingAction = null
+            performExport(context, ips, scope, snackbarHostState)
+        }
+
         AlertDialog(
             onDismissRequest = { pendingAction = null },
             title = { Text(if (action == "copy") "Copy IPs" else "Export IPs") },
             text = { Text("Which IPs do you want to ${if (action == "copy") "copy" else "export"}?") },
             confirmButton = {
-                TextButton(onClick = {
-                    pendingAction = null
-                    if (action == "copy") {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("DNS Resolvers", workingIps.joinToString(", ")))
-                        scope.launch {
-                            snackbarHostState.currentSnackbarData?.dismiss()
-                            launch { snackbarHostState.showSnackbar("Copied ${workingIps.size} IPs") }
-                            delay(1500)
-                            snackbarHostState.currentSnackbarData?.dismiss()
+                Column(horizontalAlignment = Alignment.End) {
+                    if (hasE2eResults && visibleE2eIps.isNotEmpty()) {
+                        TextButton(onClick = {
+                            if (action == "copy") doCopy(visibleE2eIps) else doExport(visibleE2eIps)
+                        }) {
+                            Text("E2E passed (${visibleE2eIps.size})")
                         }
-                    } else {
-                        performExport(context, workingIps, scope, snackbarHostState)
                     }
-                }) {
-                    Text("All working (${workingIps.size})")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    pendingAction = null
-                    if (action == "copy") {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("DNS Resolvers", selectedIps.joinToString(", ")))
-                        scope.launch {
-                            snackbarHostState.currentSnackbarData?.dismiss()
-                            launch { snackbarHostState.showSnackbar("Copied ${selectedIps.size} IPs") }
-                            delay(1500)
-                            snackbarHostState.currentSnackbarData?.dismiss()
+                    TextButton(onClick = {
+                        if (action == "copy") doCopy(visibleStage1Ips) else doExport(visibleStage1Ips)
+                    }) {
+                        Text("Stage 1 working (${visibleStage1Ips.size})")
+                    }
+                    if (selectedIps.isNotEmpty()) {
+                        TextButton(onClick = {
+                            if (action == "copy") doCopy(selectedIps) else doExport(selectedIps)
+                        }) {
+                            Text("Selected only (${selectedIps.size})")
                         }
-                    } else {
-                        performExport(context, selectedIps, scope, snackbarHostState)
                     }
-                }) {
-                    Text("Selected only (${selectedIps.size})")
                 }
             }
         )
@@ -288,31 +301,24 @@ fun ScanResultsScreen(
                             )
                         }
                     }
-                    if (workingIps.isNotEmpty() && isIdle) {
+                    if (visibleStage1Ips.isNotEmpty() && isIdle) {
                         IconButton(
                             onClick = {
-                                if (uiState.selectedResolvers.isNotEmpty()) {
+                                if (hasE2eResults || uiState.selectedResolvers.isNotEmpty()) {
                                     pendingAction = "copy"
                                 } else {
-                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    clipboard.setPrimaryClip(ClipData.newPlainText("DNS Resolvers", workingIps.joinToString(", ")))
-                                    scope.launch {
-                                        snackbarHostState.currentSnackbarData?.dismiss()
-                                        launch { snackbarHostState.showSnackbar("Copied ${workingIps.size} IPs") }
-                                        delay(1500)
-                                        snackbarHostState.currentSnackbarData?.dismiss()
-                                    }
+                                    copyIpsToClipboard(visibleStage1Ips)
                                 }
                             }
                         ) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy all working IPs")
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy visible IPs")
                         }
                         IconButton(
                             onClick = {
-                                if (uiState.selectedResolvers.isNotEmpty()) {
+                                if (hasE2eResults || uiState.selectedResolvers.isNotEmpty()) {
                                     pendingAction = "export"
                                 } else {
-                                    performExport(context, workingIps, scope, snackbarHostState)
+                                    performExport(context, visibleStage1Ips, scope, snackbarHostState)
                                 }
                             }
                         ) {
@@ -357,7 +363,8 @@ fun ScanResultsScreen(
                     SimpleModeProgressSection(
                         scannerState = uiState.scannerState,
                         simpleModeE2eState = uiState.simpleModeE2eState,
-                        onStopScan = { viewModel.stopScan() }
+                        onStopScan = { viewModel.stopScan() },
+                        onResumeScan = { viewModel.resumeScan() }
                     )
                 }
             } else {
@@ -561,7 +568,9 @@ fun ScanResultsScreen(
                     ResultsEmptyState(
                         isScanning = uiState.scannerState.isScanning,
                         isSimpleMode = isSimpleMode,
-                        isSimpleModeRunning = uiState.simpleModeE2eState.isRunning
+                        isSimpleModeRunning = uiState.simpleModeE2eState.isRunning,
+                        workingCount = uiState.scannerState.workingCount,
+                        e2eTestedCount = uiState.simpleModeE2eState.testedCount
                     )
                 }
             } else {
@@ -575,7 +584,22 @@ fun ScanResultsScreen(
                     ),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    items(displayResults.size, key = { index -> "${index}_${displayResults[index].host}" }) { index ->
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "\u2190 Swipe left to copy IP",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                    items(displayResults.size, key = { index -> displayResults[index].host }) { index ->
                         val result = displayResults[index]
                         val isSelected = uiState.selectedResolvers.contains(result.host)
                         val dismissState = rememberSwipeToDismissBoxState(
@@ -938,41 +962,12 @@ private fun ResultsProgressSection(
                     )
                 }
 
-                if (isScanning) {
-                    Button(
-                        onClick = onStopScan,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ErrorRed
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Stop,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text("Stop", style = MaterialTheme.typography.labelMedium)
-                    }
-                } else if (canResume) {
-                    Button(
-                        onClick = onResumeScan,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text("Continue", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
+                ScanControlButton(
+                    isRunning = isScanning,
+                    canResume = canResume,
+                    onStop = onStopScan,
+                    onResume = onResumeScan
+                )
             }
 
             Row(
@@ -1173,7 +1168,8 @@ private fun E2eProgressSection(e2eScannerState: E2eScannerState) {
 private fun SimpleModeProgressSection(
     scannerState: app.slipnet.domain.model.ScannerState,
     simpleModeE2eState: SimpleModeE2eState,
-    onStopScan: () -> Unit
+    onStopScan: () -> Unit,
+    onResumeScan: () -> Unit
 ) {
     val dnsProgress = scannerState.progress
     val e2eProgress = if (simpleModeE2eState.queuedCount > 0) {
@@ -1182,6 +1178,12 @@ private fun SimpleModeProgressSection(
     val animatedDnsProgress by animateFloatAsState(targetValue = dnsProgress, label = "dnsProgress")
     val animatedE2eProgress by animateFloatAsState(targetValue = e2eProgress, label = "e2eProgress")
     val isRunning = scannerState.isScanning || simpleModeE2eState.isRunning
+    val hasPartialDns = scannerState.scannedCount > 0 &&
+        scannerState.scannedCount < scannerState.totalCount + scannerState.focusRangeCount
+    val hasPartialE2e = remember(scannerState.results) {
+        scannerState.results.any { it.status == ResolverStatus.WORKING && it.e2eTestResult == null }
+    }
+    val canResume = !isRunning && (hasPartialDns || hasPartialE2e)
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -1213,18 +1215,12 @@ private fun SimpleModeProgressSection(
                         color = WorkingGreen
                     )
                 }
-                if (isRunning) {
-                    Button(
-                        onClick = onStopScan,
-                        colors = ButtonDefaults.buttonColors(containerColor = ErrorRed),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                    ) {
-                        Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Stop", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
+                ScanControlButton(
+                    isRunning = isRunning,
+                    canResume = canResume,
+                    onStop = onStopScan,
+                    onResume = onResumeScan
+                )
             }
 
             LinearProgressIndicator(
@@ -1367,10 +1363,44 @@ private fun ActiveResolversList(activeResolvers: Map<String, String>) {
 }
 
 @Composable
+private fun ScanControlButton(
+    isRunning: Boolean,
+    canResume: Boolean,
+    onStop: () -> Unit,
+    onResume: () -> Unit
+) {
+    if (isRunning) {
+        Button(
+            onClick = onStop,
+            colors = ButtonDefaults.buttonColors(containerColor = ErrorRed),
+            shape = RoundedCornerShape(10.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Stop", style = MaterialTheme.typography.labelMedium)
+        }
+    } else if (canResume) {
+        Button(
+            onClick = onResume,
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+            shape = RoundedCornerShape(10.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Continue", style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+@Composable
 private fun ResultsEmptyState(
     isScanning: Boolean = false,
     isSimpleMode: Boolean = false,
-    isSimpleModeRunning: Boolean = false
+    isSimpleModeRunning: Boolean = false,
+    workingCount: Int = 0,
+    e2eTestedCount: Int = 0
 ) {
     Box(
         modifier = Modifier
@@ -1394,8 +1424,12 @@ private fun ResultsEmptyState(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = if (isSimpleMode)
+                    text = if (isSimpleMode && workingCount > 0)
+                        "$workingCount working so far, testing E2E ($e2eTestedCount tested)\u2026"
+                    else if (isSimpleMode)
                         "Resolvers that pass the tunnel test will appear here"
+                    else if (workingCount > 0)
+                        "$workingCount working so far, waiting for filters to match\u2026"
                     else
                         "Working resolvers will appear here",
                     style = MaterialTheme.typography.bodySmall,
