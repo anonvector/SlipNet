@@ -38,6 +38,27 @@ private val DarkColorScheme = darkColorScheme(
     onError = Color(0xFF601410)
 )
 
+private val AmoledColorScheme = darkColorScheme(
+    primary = SlipstreamPrimaryLight,
+    onPrimary = Color.Black,
+    primaryContainer = SlipstreamPrimaryDark,
+    onPrimaryContainer = Color.White,
+    secondary = SlipstreamSecondary,
+    onSecondary = Color.Black,
+    secondaryContainer = SlipstreamSecondaryDark,
+    onSecondaryContainer = Color.White,
+    tertiary = Pink80,
+    onTertiary = Color.Black,
+    background = BackgroundAmoled,
+    onBackground = Color.White,
+    surface = SurfaceAmoled,
+    onSurface = Color.White,
+    surfaceVariant = SurfaceVariantAmoled,
+    onSurfaceVariant = Color(0xFFCAC4D0),
+    error = Color(0xFFF2B8B5),
+    onError = Color(0xFF601410)
+)
+
 private val LightColorScheme = lightColorScheme(
     primary = SlipstreamPrimary,
     onPrimary = Color.White,
@@ -68,10 +89,12 @@ fun SlipstreamTheme(
     val darkTheme = when (darkMode) {
         DarkMode.LIGHT -> false
         DarkMode.DARK -> true
+        DarkMode.AMOLED -> true
         DarkMode.SYSTEM -> isSystemInDarkTheme()
     }
 
     val colorScheme = when {
+        darkMode == DarkMode.AMOLED -> AmoledColorScheme
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)

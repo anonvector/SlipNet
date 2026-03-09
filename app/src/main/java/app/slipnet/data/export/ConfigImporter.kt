@@ -78,6 +78,9 @@ sealed class ImportResult {
  * Decoded profile format v16 (extends v15 with locked profile enhancements):
  * v16|..same as v15..|expirationDate|allowSharing|boundDeviceId
  *
+ * Decoded profile format v17 (extends v16 with hidden resolvers):
+ * v17|..same as v16..|resolversHidden|hiddenResolvers
+ *
  */
 @Singleton
 class ConfigImporter @Inject constructor() {
@@ -115,7 +118,8 @@ class ConfigImporter @Inject constructor() {
         private const val V14_FIELD_COUNT = 31
         private const val V15_FIELD_COUNT = 33
         private const val V16_FIELD_COUNT = 36
-        private const val CURRENT_MAX_VERSION = 16
+        private const val V17_FIELD_COUNT = 38
+        private const val CURRENT_MAX_VERSION = 17
     }
 
     fun parseAndImport(input: String, localDeviceId: String = ""): ImportResult {
@@ -241,12 +245,13 @@ class ConfigImporter @Inject constructor() {
             "14" -> parseProfileV14(fields, lineNum)
             "15" -> parseProfileV15(fields, lineNum)
             "16" -> parseProfileV16(fields, lineNum)
+            "17" -> parseProfileV17(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 16) {
-                    parseProfileV16(fields, lineNum)
+                if (versionNum != null && versionNum > 17) {
+                    parseProfileV17(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -1858,6 +1863,33 @@ class ConfigImporter @Inject constructor() {
             expirationDate = expirationDate,
             allowSharing = allowSharing,
             boundDeviceId = boundDeviceId
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV17(fields: List<String>, lineNum: Int): ProfileParseResult {
+        // v17 extends v16 with 2 new fields; fall back to v16 parser for the base fields
+        if (fields.size < V16_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v17 format (expected at least $V16_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        // Extract v17 fields (positions 36-37), defaulting if absent
+        val resolversHidden = if (fields.size > 36) fields[36] == "1" else false
+        val hiddenResolversStr = if (fields.size > 37) fields[37] else ""
+
+        // If resolvers are hidden, put the hidden resolvers into position 4 before parsing v16
+        val effectiveFields = if (resolversHidden && hiddenResolversStr.isNotBlank()) {
+            fields.toMutableList().also { it[4] = hiddenResolversStr }
+        } else {
+            fields
+        }
+
+        val baseResult = parseProfileV16(effectiveFields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        val profile = baseResult.profile.copy(
+            resolversHidden = resolversHidden
         )
 
         return ProfileParseResult.Success(profile)

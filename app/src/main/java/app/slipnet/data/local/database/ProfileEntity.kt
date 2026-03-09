@@ -133,5 +133,8 @@ data class ProfileEntity(
     val noizdnsStealth: Boolean = false,
 
     @ColumnInfo(name = "dns_payload_size", defaultValue = "0")
-    val dnsPayloadSize: Int = 0
+    val dnsPayloadSize: Int = 0,
+
+    @ColumnInfo(name = "resolvers_hidden", defaultValue = "0")
+    val resolversHidden: Boolean = false
 )

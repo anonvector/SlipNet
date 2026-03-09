@@ -152,31 +152,38 @@ func formatDNSAddr(p *Profile) string {
 	return strings.Join(addrs, ",")
 }
 
-// findAuthoritativeServer looks up the NS record for the tunnel domain
-// to find the authoritative server IP. Returns the IP or empty string.
+// findAuthoritativeServer resolves the authoritative server IP for the tunnel
+// domain. It first tries NS record lookup, then falls back to the
+// "ns.<parent-domain>" convention. Returns the IP or empty string.
 func findAuthoritativeServer(tunnelDomain string) string {
-	// Try looking up NS for the tunnel domain directly
 	nss, err := net.LookupNS(tunnelDomain)
 	if err == nil && len(nss) > 0 {
-		nsHost := strings.TrimSuffix(nss[0].Host, ".")
-		ips, err := net.LookupHost(nsHost)
-		if err == nil && len(ips) > 0 {
-			return ips[0]
-		}
+		return resolveNSHost(nss)
 	}
+	return findServerFallback(tunnelDomain)
+}
 
-	// Fallback: try "ns.<parent-domain>" as a common convention
-	parts := strings.SplitN(tunnelDomain, ".", 2)
-	if len(parts) < 2 {
-		return ""
-	}
-	parentDomain := parts[1]
-	nsHost := "ns." + parentDomain
+// resolveNSHost resolves the first NS record hostname to an IP.
+func resolveNSHost(nss []*net.NS) string {
+	nsHost := strings.TrimSuffix(nss[0].Host, ".")
 	ips, err := net.LookupHost(nsHost)
 	if err == nil && len(ips) > 0 {
 		return ips[0]
 	}
+	return ""
+}
 
+// findServerFallback tries the "ns.<parent-domain>" convention.
+func findServerFallback(tunnelDomain string) string {
+	parts := strings.SplitN(tunnelDomain, ".", 2)
+	if len(parts) < 2 {
+		return ""
+	}
+	nsHost := "ns." + parts[1]
+	ips, err := net.LookupHost(nsHost)
+	if err == nil && len(ips) > 0 {
+		return ips[0]
+	}
 	return ""
 }
 
@@ -263,22 +270,35 @@ func main() {
 	}
 
 	if dnsOverride == "" {
-		// Auto-detect: check if DNS delegation works
 		fmt.Printf("  Checking DNS for %s...\n", profile.Domain)
-		_, nsErr := net.LookupNS(profile.Domain)
-		if nsErr != nil {
-			fmt.Printf("  DNS delegation not available via public DNS\n")
+		if forceDirectMode {
+			// --direct: find the server IP and connect directly
 			serverIP := findAuthoritativeServer(profile.Domain)
 			if serverIP != "" {
 				fmt.Printf("  Found server at %s, using direct mode\n", serverIP)
 				dnsAddr = serverIP + ":53"
-				authMode = true
-				directMode = true
 			} else {
 				fmt.Printf("  Warning: could not auto-detect server IP, trying profile resolver\n")
 			}
 		} else {
-			fmt.Printf("  DNS delegation OK\n")
+			// Auto-detect: check if DNS delegation works
+			nss, nsErr := net.LookupNS(profile.Domain)
+			if nsErr != nil {
+				fmt.Printf("  DNS delegation not available via public DNS\n")
+				// NS lookup already failed — skip it in findAuthoritativeServer
+				// and go straight to the fallback.
+				serverIP := findServerFallback(profile.Domain)
+				if serverIP != "" {
+					fmt.Printf("  Found server at %s, using direct mode\n", serverIP)
+					dnsAddr = serverIP + ":53"
+					authMode = true
+					directMode = true
+				} else {
+					fmt.Printf("  Warning: could not auto-detect server IP, trying profile resolver\n")
+				}
+			} else if len(nss) > 0 {
+				fmt.Printf("  DNS delegation OK\n")
+			}
 		}
 	}
 
@@ -286,7 +306,7 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("╔══════════════════════════════════════════════════╗")
-	fmt.Printf("║           SlipNet CLI  %-25s  ║\n", version)
+	fmt.Printf("║          SlipNet CLI  %-25s  ║\n", version)
 	fmt.Println("╚══════════════════════════════════════════════════╝")
 	fmt.Println()
 	fmt.Printf("  Profile:    %s\n", profile.Name)

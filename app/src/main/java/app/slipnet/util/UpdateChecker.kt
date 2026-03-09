@@ -74,8 +74,10 @@ object UpdateChecker {
      * same version without a tag: 2.3-beta < 2.3
      */
     private fun isNewer(remote: String, current: String): Boolean {
+        // Strip build-variant suffixes (e.g. "-lite") — they aren't version indicators
+        val cleanCurrent = current.removeSuffix("-lite")
         val (rNums, rPre) = parseVersion(remote)
-        val (cNums, cPre) = parseVersion(current)
+        val (cNums, cPre) = parseVersion(cleanCurrent)
         for (i in 0 until maxOf(rNums.size, cNums.size)) {
             val rv = rNums.getOrElse(i) { 0 }
             val cv = cNums.getOrElse(i) { 0 }
