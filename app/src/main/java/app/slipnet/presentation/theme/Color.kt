@@ -25,12 +25,18 @@ val DisconnectedRed = Color(0xFFF44336)
 val DisconnectedRedDark = Color(0xFFD32F2F)
 val ConnectingOrange = Color(0xFFFF9800)
 val ConnectingOrangeDark = Color(0xFFF57C00)
+val WarningYellow = Color(0xFFFFC107)
 
 // Background colors
 val SurfaceLight = Color(0xFFFFFBFE)
 val SurfaceDark = Color(0xFF1C1B1F)
 val BackgroundLight = Color(0xFFFFFBFE)
 val BackgroundDark = Color(0xFF1C1B1F)
+
+// AMOLED dark colors (pure black)
+val SurfaceAmoled = Color(0xFF000000)
+val BackgroundAmoled = Color(0xFF000000)
+val SurfaceVariantAmoled = Color(0xFF1A1A1A)
 
 // Traffic indicator colors
 val UploadBlue = Color(0xFF2196F3)

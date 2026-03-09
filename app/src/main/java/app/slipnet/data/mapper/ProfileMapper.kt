@@ -64,7 +64,8 @@ class ProfileMapper @Inject constructor(
             allowSharing = entity.allowSharing,
             boundDeviceId = entity.boundDeviceId,
             noizdnsStealth = entity.noizdnsStealth,
-            dnsPayloadSize = entity.dnsPayloadSize
+            dnsPayloadSize = entity.dnsPayloadSize,
+            resolversHidden = entity.resolversHidden
         )
     }
 
@@ -113,7 +114,8 @@ class ProfileMapper @Inject constructor(
             allowSharing = profile.allowSharing,
             boundDeviceId = profile.boundDeviceId,
             noizdnsStealth = profile.noizdnsStealth,
-            dnsPayloadSize = profile.dnsPayloadSize
+            dnsPayloadSize = profile.dnsPayloadSize,
+            resolversHidden = profile.resolversHidden
         )
     }
 

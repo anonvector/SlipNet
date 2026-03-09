@@ -700,6 +700,7 @@ class PreferencesDataStore @Inject constructor(
 enum class DarkMode(val value: String) {
     LIGHT("light"),
     DARK("dark"),
+    AMOLED("amoled"),
     SYSTEM("system");
 
     companion object {

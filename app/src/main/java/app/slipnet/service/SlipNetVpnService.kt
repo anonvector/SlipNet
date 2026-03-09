@@ -11,6 +11,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.ProxyInfo
 import android.net.VpnService
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
@@ -67,6 +68,8 @@ class SlipNetVpnService : VpnService() {
         private const val QUIC_DOWN_THRESHOLD = 2 // Reconnect after 2 checks (~30s) with QUIC down
         private const val SSH_PROBE_INTERVAL = 2 // Probe SSH session every 2 health checks (~30s)
         private const val DNS_POOL_DEAD_THRESHOLD = 3 // Warn after 3 consecutive checks (~45s) with all workers dead
+        private const val TUNNEL_STALL_CHECK_INTERVAL = 4 // Check traffic flow every 4 health checks (~60s)
+        private const val TUNNEL_STALL_THRESHOLD = 2 // Reconnect after 2 consecutive stalls (~120s)
 
         // Persistence keys for auto-restart
         private const val PREFS_NAME = "vpn_service_state"
@@ -122,12 +125,18 @@ class SlipNetVpnService : VpnService() {
     private var healthCheckCount = 0
     private var dnsPoolDeadChecks = 0
     private var dnsPoolDeadNotified = false
+    private var tunnelStallChecks = 0
+    private var lastTxBytes = 0L
+    private var lastRxBytes = 0L
 
     // Persistence for service resilience
     private lateinit var prefs: SharedPreferences
 
-    // WakeLock to prevent CPU sleep during VPN (10-min timeout; foreground service keeps process alive)
+    // WakeLock to prevent CPU sleep during VPN session
     private var wakeLock: PowerManager.WakeLock? = null
+
+    // WifiLock to prevent Wi-Fi radio from entering low-power mode when screen is off
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -255,18 +264,35 @@ class SlipNetVpnService : VpnService() {
             val notification = notificationHelper.createVpnNotification(ConnectionState.Connecting)
             startForeground(NotificationHelper.VPN_NOTIFICATION_ID, notification)
 
-            // Acquire WakeLock with 10-min timeout (foreground service keeps process alive)
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+
+            // Acquire WakeLock to keep CPU awake for the entire VPN session
             if (wakeLock == null) {
-                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
                 wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SlipNet:VpnWakeLock").apply {
                     setReferenceCounted(false)
-                    acquire(10 * 60 * 1000L)
+                    acquire()
                 }
                 Log.d(TAG, "WakeLock acquired")
             }
 
+            // Acquire WifiLock to keep Wi-Fi radio active when screen is off
+            if (wifiLock == null) {
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                @Suppress("DEPRECATION")
+                wifiLock = wifiManager?.createWifiLock(
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                        WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                    else
+                        WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    "SlipNet:VpnWifiLock"
+                )?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+                if (wifiLock != null) Log.d(TAG, "WifiLock acquired")
+            }
+
             // Warn if battery optimization is not disabled
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
                 Log.w(TAG, "Battery optimization is enabled - VPN may be interrupted by Doze mode")
             }
@@ -2037,6 +2063,9 @@ class SlipNetVpnService : VpnService() {
         healthCheckCount = 0
         dnsPoolDeadChecks = 0
         dnsPoolDeadNotified = false
+        tunnelStallChecks = 0
+        lastTxBytes = 0L
+        lastRxBytes = 0L
         healthCheckJob = serviceScope.launch(Dispatchers.IO) {
             // Give the connection time to establish before monitoring
             delay(10_000L)
@@ -2118,6 +2147,37 @@ class SlipNetVpnService : VpnService() {
                     }
                     dnsPoolDeadChecks = 0
                     dnsPoolDeadNotified = false
+                }
+
+                // Traffic stall detection: if VPN is forwarding outgoing packets but
+                // getting nothing back, the tunnel is dead (connected but can't transfer data).
+                if (!isProxyOnly && healthCheckCount % TUNNEL_STALL_CHECK_INTERVAL == 0) {
+                    val stats = HevSocks5Tunnel.getStats()
+                    if (stats != null) {
+                        val txIncreased = stats.txBytes > lastTxBytes
+                        val rxIncreased = stats.rxBytes > lastRxBytes
+
+                        if (txIncreased && !rxIncreased) {
+                            tunnelStallChecks++
+                            Log.w(TAG, "Tunnel stall detected ($tunnelStallChecks/$TUNNEL_STALL_THRESHOLD): tx flowing but no rx")
+                            if (tunnelStallChecks >= TUNNEL_STALL_THRESHOLD) {
+                                Log.e(TAG, "Tunnel stalled — data sent but no response for ~${tunnelStallChecks * TUNNEL_STALL_CHECK_INTERVAL * HEALTH_CHECK_INTERVAL_MS / 1000}s")
+                                tunnelStallChecks = 0
+                                launch(Dispatchers.Main) {
+                                    handleTunnelFailure("tunnel not responding")
+                                }
+                                break
+                            }
+                        } else {
+                            if (tunnelStallChecks > 0) {
+                                Log.i(TAG, "Tunnel stall recovered after $tunnelStallChecks checks")
+                            }
+                            tunnelStallChecks = 0
+                        }
+
+                        lastTxBytes = stats.txBytes
+                        lastRxBytes = stats.rxBytes
+                    }
                 }
 
             }
@@ -3146,14 +3206,8 @@ class SlipNetVpnService : VpnService() {
         }
     }
 
-    /**
-     * Clean up all resources - must be called before stopping service.
-     * This is a suspend function to run blocking operations on IO dispatcher.
-     */
-    private suspend fun cleanupConnection() {
-        Log.d(TAG, "Cleaning up connection resources")
-
-        // Release WakeLock
+    /** Release WakeLock and WifiLock if held. */
+    private fun releaseLocks() {
         wakeLock?.let {
             if (it.isHeld) {
                 it.release()
@@ -3161,6 +3215,23 @@ class SlipNetVpnService : VpnService() {
             }
         }
         wakeLock = null
+        wifiLock?.let {
+            if (it.isHeld) {
+                it.release()
+                Log.d(TAG, "WifiLock released")
+            }
+        }
+        wifiLock = null
+    }
+
+    /**
+     * Clean up all resources - must be called before stopping service.
+     * This is a suspend function to run blocking operations on IO dispatcher.
+     */
+    private suspend fun cleanupConnection() {
+        Log.d(TAG, "Cleaning up connection resources")
+
+        releaseLocks()
 
         // Stop health monitoring
         healthCheckJob?.cancel()
@@ -3260,15 +3331,6 @@ class SlipNetVpnService : VpnService() {
     override fun onDestroy() {
         Log.i(TAG, "Service onDestroy")
 
-        // Safety net: release WakeLock if still held
-        wakeLock?.let {
-            if (it.isHeld) {
-                it.release()
-                Log.d(TAG, "WakeLock released (onDestroy safety net)")
-            }
-        }
-        wakeLock = null
-
         // Capture state before cleanup resets currentProfileId to -1
         val wasActive = currentProfileId != -1L
         val profileName = currentProfileName
@@ -3307,14 +3369,7 @@ class SlipNetVpnService : VpnService() {
     private fun cleanupConnectionSync() {
         Log.d(TAG, "Quick cleanup (sync)")
 
-        // Release WakeLock
-        wakeLock?.let {
-            if (it.isHeld) {
-                it.release()
-                Log.d(TAG, "WakeLock released (sync)")
-            }
-        }
-        wakeLock = null
+        releaseLocks()
 
         // Stop health monitoring
         healthCheckJob?.cancel()

@@ -107,7 +107,7 @@ import app.slipnet.tunnel.GeoBypassCountry
 
 private val WorkingGreen = Color(0xFF4CAF50)
 
-private enum class ResolverPanel { NONE, COUNTRY, CUSTOM }
+private enum class ResolverPanel { NONE, COUNTRY, CUSTOM, IR_DNS }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -304,7 +304,9 @@ fun DnsScannerScreen(
                 onSelectAllOctets = { viewModel.selectAllOctetGroups() },
                 onDeselectAllOctets = { viewModel.deselectAllOctetGroups() },
                 onCustomRangeInputChange = { viewModel.updateCustomRangeInput(it) },
-                onLoadCustomRange = { viewModel.loadCustomRangeList() }
+                onLoadCustomRange = { viewModel.loadCustomRangeList() },
+                onLoadIrDnsCidrInfo = { viewModel.loadIrDnsCidrInfo() },
+                onLoadIrDnsRange = { viewModel.loadIrDnsRangeList() }
             )
 
             // Recent DNS
@@ -681,7 +683,7 @@ private fun ConfigurationSection(
                     value = e2eTimeoutMs,
                     onValueChange = { onE2eTimeoutChange(it.filter { c -> c.isDigit() }) },
                     label = { Text("E2E Timeout (ms)") },
-                    placeholder = { Text("9000") },
+                    placeholder = { Text("10000") },
                     leadingIcon = {
                         Icon(
                             Icons.Default.Schedule,
@@ -747,13 +749,16 @@ private fun ResolverListSection(
     onSelectAllOctets: () -> Unit,
     onDeselectAllOctets: () -> Unit,
     onCustomRangeInputChange: (String) -> Unit,
-    onLoadCustomRange: () -> Unit
+    onLoadCustomRange: () -> Unit,
+    onLoadIrDnsCidrInfo: () -> Unit,
+    onLoadIrDnsRange: () -> Unit
 ) {
     var activePanel by remember {
         mutableStateOf(
             when (listSource) {
                 ListSource.COUNTRY_RANGE -> ResolverPanel.COUNTRY
                 ListSource.CUSTOM_RANGE -> ResolverPanel.CUSTOM
+                ListSource.IR_DNS_RANGE -> ResolverPanel.IR_DNS
                 else -> ResolverPanel.NONE
             }
         )
@@ -764,10 +769,12 @@ private fun ResolverListSection(
         val expected = when (listSource) {
             ListSource.COUNTRY_RANGE -> ResolverPanel.COUNTRY
             ListSource.CUSTOM_RANGE -> ResolverPanel.CUSTOM
+            ListSource.IR_DNS_RANGE -> ResolverPanel.IR_DNS
             else -> null
         }
         if (expected != null && activePanel == ResolverPanel.NONE) {
             activePanel = expected
+            if (expected == ResolverPanel.IR_DNS) onLoadIrDnsCidrInfo()
         }
     }
 
@@ -828,6 +835,7 @@ private fun ResolverListSection(
                             ListSource.IMPORTED -> if (importedFileName != null) "Imported: $importedFileName" else "Imported from file"
                             ListSource.COUNTRY_RANGE -> "${selectedCountry.displayName} IP range ($effectiveSampleCount random IPs)"
                             ListSource.CUSTOM_RANGE -> "Custom range ($resolverCount IPs)"
+                            ListSource.IR_DNS_RANGE -> "IR DNS range ($effectiveSampleCount random IPs)"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -929,7 +937,33 @@ private fun ResolverListSection(
                 }
             }
 
-            // Country / Custom range panel (single AnimatedContent to avoid double-layout)
+            OutlinedButton(
+                onClick = {
+                    val newPanel = if (activePanel == ResolverPanel.IR_DNS) ResolverPanel.NONE else ResolverPanel.IR_DNS
+                    activePanel = newPanel
+                    if (newPanel == ResolverPanel.IR_DNS) onLoadIrDnsCidrInfo()
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(vertical = 10.dp),
+                colors = if (activePanel == ResolverPanel.IR_DNS || listSource == ListSource.IR_DNS_RANGE) {
+                    ButtonDefaults.outlinedButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                } else {
+                    ButtonDefaults.outlinedButtonColors()
+                }
+            ) {
+                Icon(
+                    Icons.Default.ShareLocation,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("IR DNS Ranges", maxLines = 1)
+            }
+
+            // Country / Custom / IR DNS range panel (single AnimatedContent to avoid double-layout)
             AnimatedContent(
                 targetState = activePanel,
                 transitionSpec = {
@@ -1253,6 +1287,253 @@ private fun ResolverListSection(
                             // Start Scan button after generation
                             AnimatedVisibility(
                                 visible = listSource == ListSource.COUNTRY_RANGE && !isLoading && resolverCount > 0
+                            ) {
+                                Button(
+                                    onClick = onStartScan,
+                                    enabled = canStartScan,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Icon(
+                                        Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Start Scan", fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+
+                    ResolverPanel.IR_DNS -> {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            // Stats row
+                            if (cidrGroups.isNotEmpty()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                            RoundedCornerShape(8.dp)
+                                        )
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = "${cidrGroups.sumOf { it.rangeCount }} ranges",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "%,d total IPs".format(countryTotalIps),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            text = "${selectedOctets.size}/${cidrGroups.size} groups",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "%,d selected IPs".format(selectedTotalIps),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Range browser
+                            if (cidrGroups.isNotEmpty()) {
+                                var showRangeGroups by remember { mutableStateOf(false) }
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { showRangeGroups = !showRangeGroups }
+                                            .padding(vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                if (showRangeGroups) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = "IP Range Groups (${selectedOctets.size}/${cidrGroups.size} selected)",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Text(
+                                                text = "All",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.clickable { onSelectAllOctets() }
+                                            )
+                                            Text(
+                                                text = "None",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.clickable { onDeselectAllOctets() }
+                                            )
+                                        }
+                                    }
+
+                                    AnimatedVisibility(visible = showRangeGroups) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(200.dp)
+                                                .border(
+                                                    1.dp,
+                                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                                    RoundedCornerShape(12.dp)
+                                                )
+                                                .clip(RoundedCornerShape(12.dp))
+                                        ) {
+                                            LazyColumn(
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentPadding = PaddingValues(4.dp)
+                                            ) {
+                                                items(cidrGroups.size) { index ->
+                                                    val group = cidrGroups[index]
+                                                    val isSelected = group.firstOctet in selectedOctets
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clickable { onToggleOctet(group.firstOctet) }
+                                                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        Checkbox(
+                                                            checked = isSelected,
+                                                            onCheckedChange = { onToggleOctet(group.firstOctet) },
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                        Text(
+                                                            text = group.label,
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            fontWeight = FontWeight.Medium,
+                                                            modifier = Modifier.width(80.dp)
+                                                        )
+                                                        Text(
+                                                            text = "${group.rangeCount} ranges",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                        Text(
+                                                            text = "%,d".format(group.totalIps),
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Sample count selector
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = "Sample Size",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    listOf(1000, 2000, 5000, 10000).forEach { count ->
+                                        OptionChip(
+                                            selected = !useCustomSampleCount && sampleCount == count,
+                                            onClick = { onSelectSampleCount(count) },
+                                            label = count.toString()
+                                        )
+                                    }
+                                    OptionChip(
+                                        selected = useCustomSampleCount,
+                                        onClick = { onUseCustomSampleCount(true) },
+                                        label = "Custom"
+                                    )
+                                }
+                                AnimatedVisibility(visible = useCustomSampleCount) {
+                                    OutlinedTextField(
+                                        value = customSampleCountText,
+                                        onValueChange = onCustomSampleCountChange,
+                                        label = { Text("Count") },
+                                        placeholder = { Text("e.g. 3000") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        supportingText = { Text("1 - %,d".format(DnsScannerUiState.MAX_SAMPLE_COUNT)) },
+                                        trailingIcon = if (selectedTotalIps > 0) {
+                                            {
+                                                Text(
+                                                    text = "Max",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier
+                                                        .clickable {
+                                                            onCustomSampleCountChange(
+                                                                selectedTotalIps.coerceAtMost(DnsScannerUiState.MAX_SAMPLE_COUNT.toLong()).toString()
+                                                            )
+                                                        }
+                                                        .padding(end = 12.dp)
+                                                )
+                                            }
+                                        } else null
+                                    )
+                                }
+                            }
+
+                            // Generate button
+                            FilledTonalButton(
+                                onClick = onLoadIrDnsRange,
+                                enabled = !isLoading && selectedOctets.isNotEmpty(),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                if (isLoading) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Text("Generate $effectiveSampleCount IR DNS IPs")
+                            }
+
+                            // Start Scan button after loading
+                            AnimatedVisibility(
+                                visible = listSource == ListSource.IR_DNS_RANGE && !isLoading && resolverCount > 0
                             ) {
                                 Button(
                                     onClick = onStartScan,

@@ -62,7 +62,9 @@ data class ServerProfile(
     val noizdnsStealth: Boolean = false,
     // DNS query payload size cap (KCP MTU). 0 = full capacity (default).
     // Lower values produce smaller, less conspicuous DNS queries.
-    val dnsPayloadSize: Int = 0
+    val dnsPayloadSize: Int = 0,
+    // When true, resolvers are hidden from the user (set during import of hidden-resolver profiles)
+    val resolversHidden: Boolean = false
 ) {
     val isExpired: Boolean get() = expirationDate > 0 && System.currentTimeMillis() > expirationDate
 }
