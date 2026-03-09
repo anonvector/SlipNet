@@ -363,49 +363,99 @@ fun EditProfileScreen(
 
                             // Resolver field (not shown when DNSTT with DoH transport)
                             if (!(uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH)) {
-                                val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
-                                OutlinedTextField(
-                                    value = uiState.resolvers,
-                                    onValueChange = { viewModel.updateResolvers(it) },
-                                    label = { Text("DNS Resolver") },
-                                    placeholder = { Text(if (isDoT) "e.g. dns.google:853" else "e.g. 8.8.8.8:53") },
-                                    isError = uiState.resolversError != null,
-                                    supportingText = {
-                                        Text(uiState.resolversError ?: if (isDoT) "IP or domain (host:853)" else "IP or domain (host:port)")
-                                    },
-                                    trailingIcon = {
-                                        IconButton(
-                                            onClick = { viewModel.autoDetectResolver() },
-                                            enabled = !uiState.isAutoDetecting
-                                        ) {
-                                            if (uiState.isAutoDetecting) {
-                                                CircularProgressIndicator(
-                                                    modifier = Modifier.size(18.dp),
-                                                    strokeWidth = 2.dp
-                                                )
-                                            } else {
-                                                Text(
-                                                    text = "Local",
-                                                    style = MaterialTheme.typography.labelMedium,
-                                                    color = MaterialTheme.colorScheme.primary
-                                                )
+                                if (uiState.resolversHidden) {
+                                    // Hidden resolver: show toggle for custom override
+                                    Text(
+                                        text = "DNS Resolver: Default (hidden)",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "Use custom resolver",
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Switch(
+                                            checked = uiState.useCustomResolver,
+                                            onCheckedChange = { viewModel.updateUseCustomResolver(it) }
+                                        )
+                                    }
+                                    if (uiState.useCustomResolver) {
+                                        val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
+                                        OutlinedTextField(
+                                            value = uiState.resolvers,
+                                            onValueChange = { viewModel.updateResolvers(it) },
+                                            label = { Text("DNS Resolver") },
+                                            placeholder = { Text(if (isDoT) "e.g. dns.google:853" else "e.g. 8.8.8.8:53") },
+                                            isError = uiState.resolversError != null,
+                                            supportingText = {
+                                                Text(uiState.resolversError ?: if (isDoT) "IP or domain (host:853)" else "IP or domain (host:port)")
+                                            },
+                                            singleLine = true,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                        if (onNavigateToScanner != null) {
+                                            Button(
+                                                onClick = { viewModel.saveForScanner() },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                                                Spacer(Modifier.width(8.dp))
+                                                Text("Scan for Working Resolvers")
                                             }
                                         }
-                                    },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(12.dp)
-                                )
-
-                                if (onNavigateToScanner != null) {
-                                    Button(
-                                        onClick = { viewModel.saveForScanner() },
+                                    }
+                                } else {
+                                    val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
+                                    OutlinedTextField(
+                                        value = uiState.resolvers,
+                                        onValueChange = { viewModel.updateResolvers(it) },
+                                        label = { Text("DNS Resolver") },
+                                        placeholder = { Text(if (isDoT) "e.g. dns.google:853" else "e.g. 8.8.8.8:53") },
+                                        isError = uiState.resolversError != null,
+                                        supportingText = {
+                                            Text(uiState.resolversError ?: if (isDoT) "IP or domain (host:853)" else "IP or domain (host:port)")
+                                        },
+                                        trailingIcon = {
+                                            IconButton(
+                                                onClick = { viewModel.autoDetectResolver() },
+                                                enabled = !uiState.isAutoDetecting
+                                            ) {
+                                                if (uiState.isAutoDetecting) {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(18.dp),
+                                                        strokeWidth = 2.dp
+                                                    )
+                                                } else {
+                                                    Text(
+                                                        text = "Local",
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        singleLine = true,
                                         modifier = Modifier.fillMaxWidth(),
-                                        shape = RoundedCornerShape(10.dp)
-                                    ) {
-                                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(Modifier.width(8.dp))
-                                        Text("Scan for Working Resolvers")
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+
+                                    if (onNavigateToScanner != null) {
+                                        Button(
+                                            onClick = { viewModel.saveForScanner() },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(8.dp))
+                                            Text("Scan for Working Resolvers")
+                                        }
                                     }
                                 }
                             }
@@ -738,7 +788,7 @@ fun EditProfileScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "DNS MTU",
+                                text = "DNS Query Size",
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Text(
@@ -768,7 +818,7 @@ fun EditProfileScreen(
                         var useCustom by remember { mutableStateOf(isCustom) }
                         AlertDialog(
                             onDismissRequest = { showMtuDialog = false },
-                            title = { Text("DNS MTU") },
+                            title = { Text("DNS Query Size") },
                             text = {
                                 Column {
                                     Text(
@@ -912,49 +962,98 @@ fun EditProfileScreen(
                 val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake && !uiState.isNaiveBased &&
                         !(uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH)
                 if (showResolvers) {
-                    val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
-                    OutlinedTextField(
-                        value = uiState.resolvers,
-                        onValueChange = { viewModel.updateResolvers(it) },
-                        label = { Text("DNS Resolver") },
-                        placeholder = { Text(if (isDoT) "e.g. dns.google:853" else "e.g. 8.8.8.8:53") },
-                        isError = uiState.resolversError != null,
-                        supportingText = {
-                            Text(uiState.resolversError ?: if (isDoT) "IP or domain (host:853)" else "IP or domain (host:port)")
-                        },
-                        trailingIcon = {
-                            IconButton(
-                                onClick = { viewModel.autoDetectResolver() },
-                                enabled = !uiState.isAutoDetecting
-                            ) {
-                                if (uiState.isAutoDetecting) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(18.dp),
-                                        strokeWidth = 2.dp
-                                    )
-                                } else {
-                                    Text(
-                                        text = "Local",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
+                    if (uiState.resolversHidden) {
+                        // Hidden resolver: show toggle for custom override
+                        Text(
+                            text = "DNS Resolver: Default (hidden)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Use custom resolver",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Switch(
+                                checked = uiState.useCustomResolver,
+                                onCheckedChange = { viewModel.updateUseCustomResolver(it) }
+                            )
+                        }
+                        if (uiState.useCustomResolver) {
+                            val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
+                            OutlinedTextField(
+                                value = uiState.resolvers,
+                                onValueChange = { viewModel.updateResolvers(it) },
+                                label = { Text("DNS Resolver") },
+                                placeholder = { Text(if (isDoT) "e.g. dns.google:853" else "e.g. 8.8.8.8:53") },
+                                isError = uiState.resolversError != null,
+                                supportingText = {
+                                    Text(uiState.resolversError ?: if (isDoT) "IP or domain (host:853)" else "IP or domain (host:port)")
+                                },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (onNavigateToScanner != null) {
+                                Button(
+                                    onClick = { viewModel.saveForScanner() },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Icon(Icons.Default.Search, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Scan for Working Resolvers")
                                 }
                             }
-                        },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                        }
+                    } else {
+                        val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
+                        OutlinedTextField(
+                            value = uiState.resolvers,
+                            onValueChange = { viewModel.updateResolvers(it) },
+                            label = { Text("DNS Resolver") },
+                            placeholder = { Text(if (isDoT) "e.g. dns.google:853" else "e.g. 8.8.8.8:53") },
+                            isError = uiState.resolversError != null,
+                            supportingText = {
+                                Text(uiState.resolversError ?: if (isDoT) "IP or domain (host:853)" else "IP or domain (host:port)")
+                            },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { viewModel.autoDetectResolver() },
+                                    enabled = !uiState.isAutoDetecting
+                                ) {
+                                    if (uiState.isAutoDetecting) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "Local",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-                    // Scan Resolvers button
-                    if (onNavigateToScanner != null) {
-                        Button(
-                            onClick = { viewModel.saveForScanner() },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Search, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Scan for Working Resolvers")
+                        // Scan Resolvers button
+                        if (onNavigateToScanner != null) {
+                            Button(
+                                onClick = { viewModel.saveForScanner() },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Search, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Scan for Working Resolvers")
+                            }
                         }
                     }
                 }
@@ -1198,7 +1297,7 @@ fun EditProfileScreen(
                             value = uiState.keepAliveInterval,
                             onValueChange = { viewModel.updateKeepAliveInterval(it) },
                             label = { Text("Keep-Alive Interval (ms)") },
-                            placeholder = { Text("200") },
+                            placeholder = { Text("5000") },
                             supportingText = { Text("QUIC keep-alive interval in milliseconds") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
@@ -1508,7 +1607,7 @@ fun EditProfileScreen(
                 }
 
                 // Server setup guide
-                if (uiState.isNoizdnsBased || uiState.isNaiveBased || uiState.isSlipstreamBased) {
+                if (uiState.isNoizdnsBased || uiState.isNaiveBased) {
                     Spacer(modifier = Modifier.height(8.dp))
                     HorizontalDivider()
                     Spacer(modifier = Modifier.height(12.dp))
@@ -1516,13 +1615,11 @@ fun EditProfileScreen(
                     val guideUrl = when {
                         uiState.isNoizdnsBased -> "https://github.com/anonvector/noizdns-deploy"
                         uiState.isNaiveBased -> "https://github.com/anonvector/slipgate"
-                        uiState.isSlipstreamBased -> "https://github.com/anonvector/slipgate"
                         else -> null
                     }
                     val guideLabel = when {
                         uiState.isNoizdnsBased -> "NoizDNS Server Setup Guide"
                         uiState.isNaiveBased -> "NaiveProxy Server Setup Guide"
-                        uiState.isSlipstreamBased -> "Slipstream Server Setup Guide"
                         else -> null
                     }
                     if (guideUrl != null && guideLabel != null) {

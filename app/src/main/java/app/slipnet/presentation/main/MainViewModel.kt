@@ -452,12 +452,12 @@ class MainViewModel @Inject constructor(
 
     // ── Import / Export ─────────────────────────────────────────────────
 
-    fun exportProfile(profile: ServerProfile) {
+    fun exportProfile(profile: ServerProfile, hideResolvers: Boolean = false) {
         if (profile.isLocked) {
             _uiState.value = _uiState.value.copy(error = "Cannot export a locked profile")
             return
         }
-        val json = configExporter.exportSingleProfile(profile)
+        val json = configExporter.exportSingleProfile(profile, hideResolvers)
         _uiState.value = _uiState.value.copy(exportedJson = json)
     }
 
@@ -466,10 +466,11 @@ class MainViewModel @Inject constructor(
         password: String,
         expirationDate: Long = 0,
         allowSharing: Boolean = false,
-        boundDeviceId: String = ""
+        boundDeviceId: String = "",
+        hideResolvers: Boolean = false
     ) {
         val json = configExporter.exportSingleProfileLocked(
-            profile, password, expirationDate, allowSharing, boundDeviceId
+            profile, password, expirationDate, allowSharing, boundDeviceId, hideResolvers
         )
         _uiState.value = _uiState.value.copy(exportedJson = json)
     }
@@ -525,12 +526,12 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(importPreview = null)
     }
 
-    fun showQrCode(profile: ServerProfile) {
+    fun showQrCode(profile: ServerProfile, hideResolvers: Boolean = false) {
         if (profile.isLocked) {
             _uiState.value = _uiState.value.copy(error = "Cannot export a locked profile")
             return
         }
-        val configUri = configExporter.exportSingleProfile(profile)
+        val configUri = configExporter.exportSingleProfile(profile, hideResolvers)
         _uiState.value = _uiState.value.copy(
             qrCodeData = QrCodeData(profile.name, configUri)
         )
@@ -545,10 +546,11 @@ class MainViewModel @Inject constructor(
         password: String,
         expirationDate: Long = 0,
         allowSharing: Boolean = false,
-        boundDeviceId: String = ""
+        boundDeviceId: String = "",
+        hideResolvers: Boolean = false
     ) {
         val configUri = configExporter.exportSingleProfileLocked(
-            profile, password, expirationDate, allowSharing, boundDeviceId
+            profile, password, expirationDate, allowSharing, boundDeviceId, hideResolvers
         )
         _uiState.value = _uiState.value.copy(
             qrCodeData = QrCodeData(profile.name, configUri)

@@ -14,8 +14,8 @@ import javax.inject.Singleton
  * Single profile format: slipnet://[base64-encoded-profile]
  * Multiple profiles: one URI per line
  *
- * Encoded profile format v16 (pipe-delimited):
- * v16|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId
+ * Encoded profile format v17 (pipe-delimited):
+ * v17|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId|resolversHidden|hiddenResolvers
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -25,7 +25,7 @@ class ConfigExporter @Inject constructor() {
     companion object {
         const val SCHEME = "slipnet://"
         const val ENCRYPTED_SCHEME = "slipnet-enc://"
-        const val VERSION = "16"
+        const val VERSION = "17"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -42,9 +42,9 @@ class ConfigExporter @Inject constructor() {
         private const val RESOLVER_PART_DELIMITER = ":"
     }
 
-    fun exportSingleProfile(profile: ServerProfile): String {
+    fun exportSingleProfile(profile: ServerProfile, hideResolvers: Boolean = false): String {
         if (profile.isLocked) throw IllegalStateException("Cannot export a locked profile")
-        return encodeProfile(profile)
+        return encodeProfile(profile, hideResolvers)
     }
 
     fun exportSingleProfileLocked(
@@ -52,7 +52,8 @@ class ConfigExporter @Inject constructor() {
         password: String,
         expirationDate: Long = 0,
         allowSharing: Boolean = false,
-        boundDeviceId: String = ""
+        boundDeviceId: String = "",
+        hideResolvers: Boolean = false
     ): String {
         val hash = LockPasswordUtil.hashPassword(password)
         val lockedProfile = profile.copy(
@@ -62,7 +63,7 @@ class ConfigExporter @Inject constructor() {
             allowSharing = allowSharing,
             boundDeviceId = boundDeviceId
         )
-        val data = buildProfileData(lockedProfile)
+        val data = buildProfileData(lockedProfile, hideResolvers)
         val encrypted = LockPasswordUtil.encryptConfig(data)
         val encoded = Base64.encodeToString(encrypted, Base64.NO_WRAP)
         return "$ENCRYPTED_SCHEME$encoded"
@@ -82,7 +83,7 @@ class ConfigExporter @Inject constructor() {
         return exportable.joinToString("\n") { encodeProfile(it) }
     }
 
-    private fun buildProfileData(profile: ServerProfile): String {
+    private fun buildProfileData(profile: ServerProfile, hideResolvers: Boolean = false): String {
         val resolversStr = profile.resolvers.joinToString(RESOLVER_DELIMITER) { resolver ->
             "${resolver.host}${RESOLVER_PART_DELIMITER}${resolver.port}${RESOLVER_PART_DELIMITER}${if (resolver.authoritative) "1" else "0"}"
         }
@@ -101,12 +102,17 @@ class ConfigExporter @Inject constructor() {
             TunnelType.NAIVE -> MODE_NAIVE
         }
 
+        // When hideResolvers is true, leave position 4 empty so old versions (v1-v16)
+        // cannot see the resolver addresses. The actual resolvers go to a new trailing field.
+        val visibleResolvers = if (hideResolvers) "" else resolversStr
+        val hiddenResolvers = if (hideResolvers) resolversStr else ""
+
         return listOf(
             VERSION,
             tunnelTypeStr,
             profile.name,
             profile.domain,
-            resolversStr,
+            visibleResolvers,
             if (profile.authoritativeMode) "1" else "0",
             profile.keepAliveInterval.toString(),
             profile.congestionControl.value,
@@ -137,12 +143,14 @@ class ConfigExporter @Inject constructor() {
             profile.lockPasswordHash,
             profile.expirationDate.toString(),
             if (profile.allowSharing) "1" else "0",
-            profile.boundDeviceId
+            profile.boundDeviceId,
+            if (hideResolvers) "1" else "0",
+            hiddenResolvers
         ).joinToString(FIELD_DELIMITER)
     }
 
-    private fun encodeProfile(profile: ServerProfile): String {
-        val data = buildProfileData(profile)
+    private fun encodeProfile(profile: ServerProfile, hideResolvers: Boolean = false): String {
+        val data = buildProfileData(profile, hideResolvers)
         val encoded = Base64.encodeToString(data.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         return "$SCHEME$encoded"
     }
