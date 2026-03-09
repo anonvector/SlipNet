@@ -4,7 +4,13 @@
   <img src="imgs/icon.png" alt="SlipNet Logo" width="200">
 </p>
 
-A fast, modern Android VPN client built with Jetpack Compose and Kotlin, featuring DNS tunneling with support for multiple protocols.
+A fast, modern VPN client featuring DNS tunneling with support for multiple protocols. Available as an Android app (Jetpack Compose + Kotlin), a cross-platform CLI client (Go), and a desktop GUI for Mac, Windows, and Linux.
+
+## Desktop GUI (Mac, Windows, Linux)
+
+**Prefer a point-and-click interface?** [**SlipStreamGUI**](https://github.com/mirzaaghazadeh/SlipStreamGUI) is a modern, cross-platform GUI client — no terminal required. It uses this project's binaries (SlipNet CLI) under the hood. Download, install, and connect with a few clicks.
+
+[![SlipStreamGUI](https://img.shields.io/badge/Download-SlipStreamGUI-green?style=for-the-badge)](https://github.com/mirzaaghazadeh/SlipStreamGUI/releases/latest)
 
 ## Community
 
@@ -88,13 +94,18 @@ To use this client, you must have a compatible server. Please configure your ser
 
 ## Requirements
 
+### Android App
 - Android 7.0 (API 24) or higher
 - Android Studio Hedgehog (2023.1.1) or later
 - JDK 17
 - Rust toolchain (for building the native library)
 - Android NDK 29
 
-## Building
+### CLI Client
+- Go 1.24+ (auto-downloaded via GOTOOLCHAIN if needed)
+- No other dependencies (statically linked binaries)
+
+## Building (Android)
 
 ### Prerequisites
 
@@ -142,9 +153,86 @@ To use this client, you must have a compatible server. Please configure your ser
 
    Or open the project in Android Studio and build from there.
 
+## CLI Client
+
+SlipNet includes a cross-platform CLI client for **macOS**, **Linux**, and **Windows**. It connects using a `slipnet://` config URI and starts a local SOCKS5 proxy. For a GUI alternative, see [SlipStreamGUI](https://github.com/mirzaaghazadeh/SlipStreamGUI).
+
+### Download
+
+Pre-built binaries are available on the [Releases](https://github.com/anonvector/SlipNet/releases) page:
+
+| Platform | Binary |
+|----------|--------|
+| macOS (Apple Silicon) | `slipnet-darwin-arm64` |
+| macOS (Intel) | `slipnet-darwin-amd64` |
+| Linux (x64) | `slipnet-linux-amd64` |
+| Linux (ARM64) | `slipnet-linux-arm64` |
+| Windows (x64) | `slipnet-windows-amd64.exe` |
+
+### CLI Usage
+
+```bash
+# Basic usage — auto-detects server if DNS delegation isn't set up
+./slipnet 'slipnet://BASE64...'
+
+# Specify a custom DNS resolver
+./slipnet --dns 1.1.1.1 'slipnet://BASE64...'
+
+# Use a custom local proxy port
+./slipnet --port 9050 'slipnet://BASE64...'
+
+# Show version
+./slipnet --version
+```
+
+Once connected, configure your apps to use the SOCKS5 proxy:
+
+```bash
+# Test with curl
+curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me
+
+# If the server requires SOCKS5 authentication (username:password)
+curl --socks5-hostname user:pass@127.0.0.1:1080 https://ifconfig.me
+
+# Firefox: Settings → Network → SOCKS5 proxy: 127.0.0.1:1080
+#          Check "Proxy DNS when using SOCKS v5"
+
+# Chrome (launch with proxy flag):
+google-chrome --proxy-server="socks5://127.0.0.1:1080"
+```
+
+The CLI auto-detects when DNS delegation isn't available and falls back to connecting directly to the server via its NS record.
+
+### Building CLI from Source
+
+```bash
+git clone https://github.com/anonvector/SlipNet.git
+cd SlipNet
+git submodule update --init --recursive
+cd cli
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o slipnet .
+```
+
+Cross-compile for other platforms:
+
+```bash
+# Linux
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o slipnet-linux-amd64 .
+
+# Windows
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o slipnet-windows-amd64.exe .
+
+# macOS Intel
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o slipnet-darwin-amd64 .
+```
+
 ## Project Structure
 
 ```
+cli/                        # Cross-platform CLI client (Go)
+├── main.go                 # URI parser, tunnel client, SOCKS5 proxy
+├── go.mod
+└── go.sum
 app/
 ├── src/main/
 │   ├── java/app/slipnet/
