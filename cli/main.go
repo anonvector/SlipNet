@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"dnstt-mobile/mobile"
 )
@@ -182,6 +183,7 @@ func findAuthoritativeServer(tunnelDomain string) string {
 func main() {
 	var portOverride int
 	var dnsOverride string
+	var forceDirectMode bool
 	var uriParts []string
 
 	for i := 1; i < len(os.Args); i++ {
@@ -204,6 +206,8 @@ func main() {
 			} else {
 				log.Fatal("--port requires a value")
 			}
+		case "--direct", "-direct":
+			forceDirectMode = true
 		case "--version", "-version", "-v":
 			fmt.Printf("slipnet %s\n", version)
 			os.Exit(0)
@@ -248,10 +252,17 @@ func main() {
 			dnsOverride += ":53"
 		}
 		dnsAddr = dnsOverride
+		if forceDirectMode {
+			directMode = true
+			authMode = true
+		}
+		fmt.Printf("  Using custom DNS: %s\n", dnsAddr)
+	} else if forceDirectMode {
 		directMode = true
 		authMode = true
-		fmt.Printf("  Using custom DNS: %s\n", dnsAddr)
-	} else {
+	}
+
+	if dnsOverride == "" {
 		// Auto-detect: check if DNS delegation works
 		fmt.Printf("  Checking DNS for %s...\n", profile.Domain)
 		_, nsErr := net.LookupNS(profile.Domain)
@@ -285,9 +296,17 @@ func main() {
 	if directMode {
 		fmt.Println("              (direct to server, auto-detected)")
 	}
-	fmt.Printf("  Transport:  %s\n", profile.DNSTransport)
+	transport := profile.DNSTransport
+	if transport == "" {
+		transport = "udp"
+	}
+	fmt.Printf("  Transport:  %s\n", transport)
 	fmt.Printf("  Auth Mode:  %v\n", authMode)
-	fmt.Printf("  Public Key: %s...%s\n", profile.PublicKey[:8], profile.PublicKey[len(profile.PublicKey)-8:])
+	if len(profile.PublicKey) > 16 {
+		fmt.Printf("  Public Key: %s...%s\n", profile.PublicKey[:8], profile.PublicKey[len(profile.PublicKey)-8:])
+	} else {
+		fmt.Printf("  Public Key: %s\n", profile.PublicKey)
+	}
 	fmt.Println()
 	fmt.Printf("  SOCKS5 Proxy: %s\n", listenAddr)
 	fmt.Println()
@@ -325,8 +344,14 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("  Disconnecting...")
-	client.Stop()
-	fmt.Println("  Done.")
+	done := make(chan struct{})
+	go func() { client.Stop(); close(done) }()
+	select {
+	case <-done:
+		fmt.Println("  Done.")
+	case <-time.After(5 * time.Second):
+		fmt.Println("  Shutdown timed out, forcing exit.")
+	}
 }
 
 func printUsage() {
@@ -337,6 +362,7 @@ Usage:
 
 Options:
   --dns HOST[:PORT]   Custom DNS resolver (e.g., --dns 1.1.1.1 or --dns <server-ip>)
+  --direct            Connect directly to server (authoritative mode)
   --port PORT         Override local SOCKS5 proxy port (default: from profile)
   --version           Show version
   --help              Show this help
@@ -347,6 +373,6 @@ when DNS delegation isn't working.
 Examples:
   %[2]s slipnet://BASE64...
   %[2]s --dns 1.1.1.1 slipnet://BASE64...
-  %[2]s --dns <server-ip> --port 9050 slipnet://BASE64...
+  %[2]s --dns <server-ip> --direct --port 9050 slipnet://BASE64...
 `, version, os.Args[0])
 }
