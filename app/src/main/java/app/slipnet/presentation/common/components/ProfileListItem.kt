@@ -45,6 +45,7 @@ import app.slipnet.presentation.profiles.EditProfileViewModel
 import app.slipnet.presentation.theme.ConnectedGreen
 import app.slipnet.presentation.theme.ConnectingOrange
 import app.slipnet.presentation.theme.DisconnectedRed
+import app.slipnet.presentation.theme.WarningYellow
 import app.slipnet.tunnel.DOH_SERVERS
 
 @Composable
@@ -210,10 +211,23 @@ fun ProfileListItem(
                             }
                         }
                         is PingResult.Success -> {
-                            val latencyColor = when {
-                                pingResult.latencyMs < 300 -> ConnectedGreen
-                                pingResult.latencyMs < 1000 -> ConnectingOrange
-                                else -> DisconnectedRed
+                            val isDnsTunneled = profile.tunnelType in listOf(
+                                TunnelType.DNSTT, TunnelType.DNSTT_SSH,
+                                TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH,
+                                TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH
+                            )
+                            val latencyColor = if (isDnsTunneled) {
+                                when {
+                                    pingResult.latencyMs < 1000 -> ConnectedGreen
+                                    pingResult.latencyMs < 2000 -> WarningYellow
+                                    else -> DisconnectedRed
+                                }
+                            } else {
+                                when {
+                                    pingResult.latencyMs < 300 -> ConnectedGreen
+                                    pingResult.latencyMs < 1000 -> ConnectingOrange
+                                    else -> DisconnectedRed
+                                }
                             }
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(

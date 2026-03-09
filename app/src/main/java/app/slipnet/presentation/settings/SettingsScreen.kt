@@ -380,8 +380,8 @@ fun SettingsScreen(
 
                 ClickableSettingItem(
                     icon = Icons.Default.SettingsEthernet,
-                    title = "MTU",
-                    description = "Packet size: ${uiState.vpnMtu}. Lower values improve compatibility on mobile networks.",
+                    title = "VPN MTU",
+                    description = "VPN packet size: ${uiState.vpnMtu}. Lower values improve compatibility on mobile networks.",
                     onClick = { showMtuDialog = true }
                 )
 
@@ -564,6 +564,7 @@ fun SettingsScreen(
                     description = when (uiState.darkMode) {
                         DarkMode.LIGHT -> "Light"
                         DarkMode.DARK -> "Dark"
+                        DarkMode.AMOLED -> "AMOLED Dark"
                         DarkMode.SYSTEM -> "Follow system"
                     },
                     onClick = { showDarkModeDialog = true }
@@ -791,6 +792,7 @@ fun SettingsScreen(
                                 text = when (mode) {
                                     DarkMode.LIGHT -> "Light"
                                     DarkMode.DARK -> "Dark"
+                                    DarkMode.AMOLED -> "AMOLED Dark"
                                     DarkMode.SYSTEM -> "Follow system"
                                 },
                                 modifier = Modifier.padding(start = 8.dp)
@@ -1980,13 +1982,13 @@ private fun DonateCard() {
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "SlipNet is free, open-source, and built to fight internet censorship. No ads, no data collection, no subscriptions. Your donation helps keep this tool free and improving for everyone who needs it.",
+                        text = "SlipNet is free, source-available, and built to fight internet censorship. No ads, no data collection, no subscriptions. Your donation helps keep this tool free and improving for everyone who needs it.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     Text(
-                        text = "USDT (BEP20 / ERC20)",
+                        text = "USDT (BEP20 / ERC20 / Arbitrum)",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary
                     )

@@ -200,6 +200,7 @@ fun MainScreen(
     var exportLockAllowSharing by remember { mutableStateOf(false) }
     var exportLockDeviceId by remember { mutableStateOf("") }
     var exportLockPasswordVisible by remember { mutableStateOf(false) }
+    var exportHideResolvers by remember { mutableStateOf(false) }
     var showLiteInfoDialog by remember { mutableStateOf(false) }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
@@ -988,7 +989,10 @@ fun MainScreen(
                             )
                             Switch(
                                 checked = exportLockEnabled,
-                                onCheckedChange = { exportLockEnabled = it }
+                                onCheckedChange = {
+                                    exportLockEnabled = it
+                                    if (!it) exportHideResolvers = false
+                                }
                             )
                         }
                         if (exportLockEnabled) {
@@ -1008,6 +1012,27 @@ fun MainScreen(
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Hide DNS resolver",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Switch(
+                                    checked = exportHideResolvers,
+                                    onCheckedChange = { exportHideResolvers = it }
+                                )
+                            }
+                            if (exportHideResolvers) {
+                                Text(
+                                    text = "Resolver addresses will be hidden. Old app versions won't be able to import this profile.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
 
                             // Expiration toggle + days
                             Row(
@@ -1077,17 +1102,18 @@ fun MainScreen(
                                     System.currentTimeMillis() + days * 24 * 60 * 60 * 1000L
                                 } else 0L
                                 if (exportLockMode == "qr") {
-                                    viewModel.showQrCodeLocked(p, exportLockPassword, expiryMs, exportLockAllowSharing, exportLockDeviceId)
+                                    viewModel.showQrCodeLocked(p, exportLockPassword, expiryMs, exportLockAllowSharing, exportLockDeviceId, exportHideResolvers)
                                 } else {
-                                    viewModel.exportProfileLocked(p, exportLockPassword, expiryMs, exportLockAllowSharing, exportLockDeviceId)
+                                    viewModel.exportProfileLocked(p, exportLockPassword, expiryMs, exportLockAllowSharing, exportLockDeviceId, exportHideResolvers)
                                 }
                             } else {
                                 if (exportLockMode == "qr") {
-                                    viewModel.showQrCode(p)
+                                    viewModel.showQrCode(p, exportHideResolvers)
                                 } else {
-                                    viewModel.exportProfile(p)
+                                    viewModel.exportProfile(p, exportHideResolvers)
                                 }
                             }
+                            exportHideResolvers = false
                             exportLockProfile = null
                         },
                         enabled = !exportLockEnabled || exportLockPassword.isNotBlank()

@@ -142,6 +142,10 @@ data class EditProfileUiState(
     val noizdnsStealth: Boolean = false,
     // DNS query payload size (0 = max/full capacity)
     val dnsPayloadSize: Int = 0,
+    // Hidden resolvers (imported profile had resolvers hidden by exporter)
+    val resolversHidden: Boolean = false,
+    // When true, user chose to use their own resolver instead of the hidden default
+    val useCustomResolver: Boolean = false,
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NOIZDNS_SSH
@@ -246,6 +250,7 @@ class EditProfileViewModel @Inject constructor(
                     expirationDate = profile.expirationDate,
                     allowSharing = profile.allowSharing,
                     boundDeviceId = profile.boundDeviceId,
+                    resolversHidden = profile.resolversHidden,
                     isLoading = false
                 )
             } else {
@@ -278,6 +283,14 @@ class EditProfileViewModel @Inject constructor(
             null
         }
         _uiState.value = _uiState.value.copy(resolvers = resolvers, resolversError = error)
+    }
+
+    fun updateUseCustomResolver(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(
+            useCustomResolver = enabled,
+            resolvers = if (!enabled) "" else _uiState.value.resolvers,
+            resolversError = null
+        )
     }
 
     fun updateAuthoritativeMode(enabled: Boolean) {
@@ -959,9 +972,11 @@ class EditProfileViewModel @Inject constructor(
         }
 
         // Resolver validation (SSH-only, DOH, Snowflake, NaiveProxy-based, and DNSTT with DoH transport don't need resolvers)
+        // Also skip when resolvers are hidden and user isn't overriding with custom ones
         val skipResolvers = state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
                 state.tunnelType == TunnelType.SNOWFLAKE || state.isNaiveBased ||
-                (state.isDnsttOrNoizBased && state.dnsTransport == DnsTransport.DOH)
+                (state.isDnsttOrNoizBased && state.dnsTransport == DnsTransport.DOH) ||
+                (state.resolversHidden && !state.useCustomResolver)
         if (!skipResolvers) {
             if (state.resolvers.isBlank()) {
                 _uiState.value = _uiState.value.copy(resolversError = "At least one resolver is required")
@@ -1054,7 +1069,12 @@ class EditProfileViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isSaving = true)
 
             try {
-                val resolversList = parseResolvers(state.resolvers, state.authoritativeMode || state.dnsttAuthoritative)
+                // When resolvers are hidden and user isn't overriding, load existing resolvers from DB
+                val resolversList = if (state.resolversHidden && !state.useCustomResolver && state.profileId != null) {
+                    getProfileByIdUseCase(state.profileId)?.resolvers ?: emptyList()
+                } else {
+                    parseResolvers(state.resolvers, state.authoritativeMode || state.dnsttAuthoritative)
+                }
                 val keepAlive = state.keepAliveInterval.toIntOrNull() ?: 5000
 
                 val profile = ServerProfile(
@@ -1092,6 +1112,7 @@ class EditProfileViewModel @Inject constructor(
                     expirationDate = state.expirationDate,
                     allowSharing = state.allowSharing,
                     boundDeviceId = state.boundDeviceId,
+                    resolversHidden = state.resolversHidden && !state.useCustomResolver,
                 )
 
                 val savedId = saveProfileUseCase(profile)
