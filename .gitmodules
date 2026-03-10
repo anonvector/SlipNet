@@ -10,6 +10,9 @@
 [submodule "dnstt"]
 	path = dnstt
 	url = https://github.com/anonvector/dnstt.git
+[submodule "noizdns"]
+	path = noizdns
+	url = https://github.com/anonvector/noizdns.git
 [submodule "lyrebird"]
 	path = lyrebird
 	url = https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird.git
