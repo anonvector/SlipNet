@@ -68,8 +68,11 @@ class SlipNetVpnService : VpnService() {
         private const val QUIC_DOWN_THRESHOLD = 2 // Reconnect after 2 checks (~30s) with QUIC down
         private const val SSH_PROBE_INTERVAL = 2 // Probe SSH session every 2 health checks (~30s)
         private const val DNS_POOL_DEAD_THRESHOLD = 3 // Warn after 3 consecutive checks (~45s) with all workers dead
+        private const val DNS_POOL_DEAD_THRESHOLD_SOCKS = 2 // Faster warning for SOCKS profiles (~30s)
         private const val TUNNEL_STALL_CHECK_INTERVAL = 4 // Check traffic flow every 4 health checks (~60s)
-        private const val TUNNEL_STALL_THRESHOLD = 2 // Reconnect after 2 consecutive stalls (~120s)
+        private const val TUNNEL_STALL_CHECK_INTERVAL_SOCKS = 2 // Faster stall check for SOCKS profiles (~30s)
+        private const val TUNNEL_STALL_THRESHOLD = 2 // Reconnect after 2 consecutive stalls
+        private const val TUNNEL_STALL_THRESHOLD_SOCKS = 1 // Faster reconnect for SOCKS profiles (~30s)
 
         // Persistence keys for auto-restart
         private const val PREFS_NAME = "vpn_service_state"
@@ -2135,10 +2138,16 @@ class SlipNetVpnService : VpnService() {
                 }
                 if (dnsPoolDead) {
                     dnsPoolDeadChecks++
-                    if (dnsPoolDeadChecks >= DNS_POOL_DEAD_THRESHOLD && !dnsPoolDeadNotified) {
-                        Log.w(TAG, "All DNS workers dead for ${dnsPoolDeadChecks * HEALTH_CHECK_INTERVAL_MS / 1000}s — DNS resolvers may be unreachable")
+                    val isDnsTunneled = currentTunnelType in listOf(
+                        TunnelType.DNSTT, TunnelType.DNSTT_SSH,
+                        TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
+                        TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
+                    )
+                    val threshold = if (isDnsTunneled) DNS_POOL_DEAD_THRESHOLD else DNS_POOL_DEAD_THRESHOLD_SOCKS
+                    if (dnsPoolDeadChecks >= threshold && !dnsPoolDeadNotified) {
+                        Log.w(TAG, "All DNS workers dead for ${dnsPoolDeadChecks * HEALTH_CHECK_INTERVAL_MS / 1000}s")
                         dnsPoolDeadNotified = true
-                        connectionManager.setDnsWarning("DNS resolvers may be unreachable. Try a different profile or DNS server.")
+                        connectionManager.setDnsWarning("Connection is not working. Try reconnecting or switching profiles.")
                     }
                 } else {
                     if (dnsPoolDeadNotified) {
@@ -2151,7 +2160,14 @@ class SlipNetVpnService : VpnService() {
 
                 // Traffic stall detection: if VPN is forwarding outgoing packets but
                 // getting nothing back, the tunnel is dead (connected but can't transfer data).
-                if (!isProxyOnly && healthCheckCount % TUNNEL_STALL_CHECK_INTERVAL == 0) {
+                val isDnsTunneledStall = currentTunnelType in listOf(
+                    TunnelType.DNSTT, TunnelType.DNSTT_SSH,
+                    TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
+                    TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
+                )
+                val stallCheckInterval = if (isDnsTunneledStall) TUNNEL_STALL_CHECK_INTERVAL else TUNNEL_STALL_CHECK_INTERVAL_SOCKS
+                val stallThreshold = if (isDnsTunneledStall) TUNNEL_STALL_THRESHOLD else TUNNEL_STALL_THRESHOLD_SOCKS
+                if (!isProxyOnly && healthCheckCount % stallCheckInterval == 0) {
                     val stats = HevSocks5Tunnel.getStats()
                     if (stats != null) {
                         val txIncreased = stats.txBytes > lastTxBytes
@@ -2159,9 +2175,9 @@ class SlipNetVpnService : VpnService() {
 
                         if (txIncreased && !rxIncreased) {
                             tunnelStallChecks++
-                            Log.w(TAG, "Tunnel stall detected ($tunnelStallChecks/$TUNNEL_STALL_THRESHOLD): tx flowing but no rx")
-                            if (tunnelStallChecks >= TUNNEL_STALL_THRESHOLD) {
-                                Log.e(TAG, "Tunnel stalled — data sent but no response for ~${tunnelStallChecks * TUNNEL_STALL_CHECK_INTERVAL * HEALTH_CHECK_INTERVAL_MS / 1000}s")
+                            Log.w(TAG, "Tunnel stall detected ($tunnelStallChecks/$stallThreshold): tx flowing but no rx")
+                            if (tunnelStallChecks >= stallThreshold) {
+                                Log.e(TAG, "Tunnel stalled — data sent but no response for ~${tunnelStallChecks * stallCheckInterval * HEALTH_CHECK_INTERVAL_MS / 1000}s")
                                 tunnelStallChecks = 0
                                 launch(Dispatchers.Main) {
                                     handleTunnelFailure("tunnel not responding")
