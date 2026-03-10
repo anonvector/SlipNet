@@ -70,6 +70,7 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -147,6 +148,7 @@ fun ScanResultsScreen(
         )
     }
     var showSortFilter by remember { mutableStateOf(prefs.getBoolean("show_sort_filter", true)) }
+    var showAllWorking by remember { mutableStateOf(prefs.getBoolean("show_all_working", false)) }
     var searchQuery by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
     // null = no dialog, "copy" or "export" = pending action
@@ -244,36 +246,11 @@ fun ScanResultsScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(
-                            "Scan Results",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        val isSimple = uiState.scanMode == ScanMode.SIMPLE
-                        if (isSimple) {
-                            val e2e = uiState.simpleModeE2eState
-                            val scanState = uiState.scannerState
-                            val subtitle = if (scanState.isScanning || e2e.isRunning) {
-                                "DNS: ${scanState.scannedCount}/${scanState.totalCount}${if (scanState.focusRangeCount > 0) " + ${scanState.focusRangeCount} neighbors" else ""} — E2E: ${e2e.testedCount}/${e2e.queuedCount} (${e2e.passedCount} passed)"
-                            } else if (e2e.testedCount > 0) {
-                                "${e2e.passedCount} passed of ${e2e.testedCount} tested"
-                            } else null
-                            subtitle?.let {
-                                Text(
-                                    text = it,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        } else if (uiState.scannerState.isScanning) {
-                            Text(
-                                text = "Scanning ${uiState.scannerState.scannedCount} of ${uiState.scannerState.totalCount}${if (uiState.scannerState.focusRangeCount > 0) " + ${uiState.scannerState.focusRangeCount} neighbors" else ""}...",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
+                    Text(
+                        "Scan Results",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 },
                 navigationIcon = {
                     IconButton(
@@ -528,11 +505,17 @@ fun ScanResultsScreen(
 
             // Results
             val isSimpleMode = uiState.scanMode == ScanMode.SIMPLE
-            val displayResults = remember(uiState.scannerState.results, scoreFilter, sortOption, isSimpleMode, searchQuery) {
+            val displayResults = remember(uiState.scannerState.results, scoreFilter, sortOption, isSimpleMode, showAllWorking, searchQuery) {
                 val query = searchQuery.trim()
-                val filtered = if (isSimpleMode) {
+                val filtered = if (isSimpleMode && !showAllWorking) {
                     uiState.scannerState.results.filter {
                         it.e2eTestResult?.success == true &&
+                            (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
+                            (query.isEmpty() || it.host.contains(query))
+                    }
+                } else if (isSimpleMode) {
+                    uiState.scannerState.results.filter {
+                        it.status == ResolverStatus.WORKING &&
                             (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
                             (query.isEmpty() || it.host.contains(query))
                     }
@@ -693,21 +676,44 @@ fun ScanResultsScreen(
                     }
 
                     AnimatedVisibility(visible = showSortFilter) {
-                        SortControlBar(
-                            sortOption = sortOption,
-                            onSortOptionChange = {
-                                sortOption = it
-                                prefs.edit().putString("sort_option", it.name).apply()
-                                viewModel.updateE2eSortOption(E2eSortOption.valueOf(it.name))
-                            },
-                            scoreFilter = scoreFilter,
-                            onScoreFilterChange = {
-                                scoreFilter = it
-                                prefs.edit().putString("score_filter", it.name).apply()
-                                viewModel.updateE2eMinScore(it.minScore)
-                            },
-                            hideScoreFilter = false
-                        )
+                        Column {
+                            SortControlBar(
+                                sortOption = sortOption,
+                                onSortOptionChange = {
+                                    sortOption = it
+                                    prefs.edit().putString("sort_option", it.name).apply()
+                                    viewModel.updateE2eSortOption(E2eSortOption.valueOf(it.name))
+                                },
+                                scoreFilter = scoreFilter,
+                                onScoreFilterChange = {
+                                    scoreFilter = it
+                                    prefs.edit().putString("score_filter", it.name).apply()
+                                    viewModel.updateE2eMinScore(it.minScore)
+                                },
+                                hideScoreFilter = false
+                            )
+                            if (uiState.scanMode == ScanMode.SIMPLE) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "Show all working",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Switch(
+                                        checked = showAllWorking,
+                                        onCheckedChange = {
+                                            showAllWorking = it
+                                            prefs.edit().putBoolean("show_all_working", it).apply()
+                                        }
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

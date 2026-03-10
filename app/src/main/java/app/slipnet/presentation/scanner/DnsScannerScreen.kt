@@ -256,6 +256,7 @@ fun DnsScannerScreen(
             ConfigurationSection(
                 testDomain = uiState.testDomain,
                 isProfileLocked = isProfileLocked,
+                scanPort = uiState.scanPort,
                 timeoutMs = uiState.timeoutMs,
                 concurrency = uiState.concurrency,
                 shuffleList = uiState.shuffleList,
@@ -265,6 +266,7 @@ fun DnsScannerScreen(
                 e2eConcurrency = uiState.e2eConcurrency,
                 showTestUrl = uiState.profileId != null,
                 onTestDomainChange = { viewModel.updateTestDomain(it) },
+                onScanPortChange = { viewModel.updateScanPort(it) },
                 onTimeoutChange = { viewModel.updateTimeout(it) },
                 onConcurrencyChange = { viewModel.updateConcurrency(it) },
                 onShuffleListChange = { viewModel.updateShuffleList(it) },
@@ -502,6 +504,7 @@ private fun ScanModeToggle(
 private fun ConfigurationSection(
     testDomain: String,
     isProfileLocked: Boolean = false,
+    scanPort: String,
     timeoutMs: String,
     concurrency: String,
     shuffleList: Boolean = false,
@@ -511,6 +514,7 @@ private fun ConfigurationSection(
     e2eConcurrency: String = "3",
     showTestUrl: Boolean = false,
     onTestDomainChange: (String) -> Unit,
+    onScanPortChange: (String) -> Unit,
     onTimeoutChange: (String) -> Unit,
     onConcurrencyChange: (String) -> Unit,
     onShuffleListChange: (Boolean) -> Unit = {},
@@ -566,16 +570,19 @@ private fun ConfigurationSection(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 OutlinedTextField(
+                    value = scanPort,
+                    onValueChange = onScanPortChange,
+                    label = { Text("Port") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.weight(0.7f),
+                    shape = RoundedCornerShape(12.dp)
+                )
+
+                OutlinedTextField(
                     value = timeoutMs,
                     onValueChange = onTimeoutChange,
                     label = { Text("Timeout") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Schedule,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    },
                     suffix = { Text("ms") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
@@ -587,16 +594,9 @@ private fun ConfigurationSection(
                     value = concurrency,
                     onValueChange = onConcurrencyChange,
                     label = { Text("Workers") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Speed,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(0.8f),
                     shape = RoundedCornerShape(12.dp)
                 )
             }

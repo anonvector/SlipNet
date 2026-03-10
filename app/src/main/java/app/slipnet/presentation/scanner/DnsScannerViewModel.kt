@@ -54,6 +54,7 @@ enum class E2eSortOption {
 data class DnsScannerUiState(
     val profileId: Long? = null,
     val testDomain: String = "google.com",
+    val scanPort: String = "53",
     val timeoutMs: String = "3000",
     val concurrency: String = "50",
     val resolverList: List<String> = emptyList(),
@@ -695,6 +696,10 @@ class DnsScannerViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(testDomain = domain)
     }
 
+    fun updateScanPort(port: String) {
+        _uiState.value = _uiState.value.copy(scanPort = port)
+    }
+
     fun updateTimeout(timeout: String) {
         _uiState.value = _uiState.value.copy(timeoutMs = timeout)
         saveScannerSettings()
@@ -1069,6 +1074,7 @@ class DnsScannerViewModel @Inject constructor(
         val state = _uiState.value
         val timeout = state.timeoutMs.toLongOrNull() ?: 3000L
         val concurrency = state.concurrency.toIntOrNull() ?: 50
+        val scanPort = state.scanPort.toIntOrNull()?.coerceIn(1, 65535) ?: 53
 
         // Shuffle the list if enabled, then persist the order so resume works correctly.
         // For the default list, always fetch original order so famous resolvers stay at the top.
@@ -1112,7 +1118,8 @@ class DnsScannerViewModel @Inject constructor(
                 testDomain = state.effectiveTestDomain,
                 timeout = timeout,
                 concurrency = concurrency,
-                minScore = _uiState.value.e2eMinScore
+                minScore = _uiState.value.e2eMinScore,
+                port = scanPort
             )
         } else {
             launchScan(
@@ -1123,7 +1130,8 @@ class DnsScannerViewModel @Inject constructor(
                 concurrency = concurrency,
                 existingResults = emptyMap(),
                 startScannedCount = 0,
-                startWorkingCount = 0
+                startWorkingCount = 0,
+                port = scanPort
             )
         }
     }
@@ -1142,6 +1150,7 @@ class DnsScannerViewModel @Inject constructor(
 
         val timeout = state.timeoutMs.toLongOrNull() ?: 3000L
         val concurrency = state.concurrency.toIntOrNull() ?: 50
+        val scanPort = state.scanPort.toIntOrNull()?.coerceIn(1, 65535) ?: 53
 
         // Determine which hosts were already scanned.
         val existingResults = mutableMapOf<String, ResolverScanResult>()
@@ -1188,7 +1197,8 @@ class DnsScannerViewModel @Inject constructor(
             concurrency = concurrency,
             existingResults = existingResults,
             startScannedCount = existingResults.size,
-            startWorkingCount = startWorkingCount
+            startWorkingCount = startWorkingCount,
+            port = scanPort
         )
     }
 
@@ -1208,6 +1218,7 @@ class DnsScannerViewModel @Inject constructor(
 
         val timeout = state.timeoutMs.toLongOrNull() ?: 3000L
         val concurrency = state.concurrency.toIntOrNull() ?: 50
+        val resumeScanPort = state.scanPort.toIntOrNull()?.coerceIn(1, 65535) ?: 53
 
         // Gather already-scanned results (preserving E2E data)
         val existingResults = mutableMapOf<String, ResolverScanResult>()
@@ -1334,6 +1345,7 @@ class DnsScannerViewModel @Inject constructor(
 
                 scannerRepository.scanResolvers(
                     hosts = remainingDnsHosts,
+                    port = resumeScanPort,
                     testDomain = state.effectiveTestDomain,
                     timeoutMs = timeout,
                     concurrency = concurrency
@@ -1345,6 +1357,7 @@ class DnsScannerViewModel @Inject constructor(
                     _uiState.update { s -> s.copy(resolverList = s.resolverList + neighborIps) }
                     scannerRepository.scanResolvers(
                         hosts = neighborIps,
+                        port = resumeScanPort,
                         testDomain = state.effectiveTestDomain,
                         timeoutMs = timeout,
                         concurrency = concurrency
@@ -1392,7 +1405,8 @@ class DnsScannerViewModel @Inject constructor(
         concurrency: Int,
         existingResults: Map<String, ResolverScanResult>,
         startScannedCount: Int,
-        startWorkingCount: Int
+        startWorkingCount: Int,
+        port: Int = 53
     ) {
         // Run transparent proxy detection concurrently
         viewModelScope.launch {
@@ -1468,6 +1482,7 @@ class DnsScannerViewModel @Inject constructor(
 
             scannerRepository.scanResolvers(
                 hosts = hosts,
+                port = port,
                 testDomain = testDomain,
                 timeoutMs = timeout,
                 concurrency = concurrency
@@ -1482,6 +1497,7 @@ class DnsScannerViewModel @Inject constructor(
                 _uiState.update { s -> s.copy(resolverList = s.resolverList + neighborIps) }
                 scannerRepository.scanResolvers(
                     hosts = neighborIps,
+                    port = port,
                     testDomain = testDomain,
                     timeoutMs = timeout,
                     concurrency = concurrency
@@ -1500,7 +1516,8 @@ class DnsScannerViewModel @Inject constructor(
         testDomain: String,
         timeout: Long,
         concurrency: Int,
-        minScore: Int = 1
+        minScore: Int = 1,
+        port: Int = 53
     ) {
         val profile = _uiState.value.profile ?: run {
             _uiState.value = _uiState.value.copy(error = "No profile loaded")
@@ -1598,6 +1615,7 @@ class DnsScannerViewModel @Inject constructor(
 
             scannerRepository.scanResolvers(
                 hosts = hosts,
+                port = port,
                 testDomain = testDomain,
                 timeoutMs = timeout,
                 concurrency = concurrency
@@ -1612,6 +1630,7 @@ class DnsScannerViewModel @Inject constructor(
                 _uiState.update { s -> s.copy(resolverList = s.resolverList + neighborIps) }
                 scannerRepository.scanResolvers(
                     hosts = neighborIps,
+                    port = port,
                     testDomain = testDomain,
                     timeoutMs = timeout,
                     concurrency = concurrency
@@ -1989,7 +2008,8 @@ class DnsScannerViewModel @Inject constructor(
     }
 
     fun getSelectedResolversString(): String {
-        return _uiState.value.selectedResolvers.joinToString(",") { "$it:53" }
+        val port = _uiState.value.scanPort.toIntOrNull()?.coerceIn(1, 65535) ?: 53
+        return _uiState.value.selectedResolvers.joinToString(",") { "$it:$port" }
     }
 
     fun clearError() {
