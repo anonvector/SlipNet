@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"dnstt-mobile/mobile"
+	"noizdns/mobile"
 )
 
 // version is set at build time via -ldflags "-X main.version=..."
@@ -355,6 +355,11 @@ func main() {
 	}
 
 	client.SetAuthoritativeMode(authMode)
+
+	// Enable NoizDNS mode for sayedns profiles
+	if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
+		client.SetNoizMode(true)
+	}
 
 	if err := client.Start(); err != nil {
 		log.Fatalf("Failed to start tunnel: %v", err)

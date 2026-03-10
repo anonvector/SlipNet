@@ -2,7 +2,7 @@ module slipnet-cli
 
 go 1.24.0
 
-require dnstt-mobile v0.0.0
+require noizdns v0.0.0
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
@@ -25,6 +25,6 @@ require (
 )
 
 replace (
-	dnstt-mobile => ../dnstt-mobile
+	noizdns => ../noizdns
 	www.bamsoftware.com/git/dnstt.git => ../dnstt
 )
