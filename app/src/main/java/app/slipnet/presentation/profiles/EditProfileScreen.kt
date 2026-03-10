@@ -355,7 +355,7 @@ fun EditProfileScreen(
                                     dohUrlError = uiState.dohUrlError,
                                     onUrlChange = { viewModel.updateDohUrl(it) },
                                     onPresetSelected = { viewModel.selectDohPreset(it) },
-                                    onTestServers = { viewModel.testDohServers() },
+                                    onTestServers = { scope -> viewModel.testDohServers(scope) },
                                     customDohUrls = uiState.customDohUrls,
                                     onCustomDohUrlsChange = { viewModel.updateCustomDohUrls(it) }
                                 )
@@ -602,7 +602,7 @@ fun EditProfileScreen(
                         dohUrlError = uiState.dohUrlError,
                         onUrlChange = { viewModel.updateDohUrl(it) },
                         onPresetSelected = { viewModel.selectDohPreset(it) },
-                        onTestServers = { viewModel.testDohServers() },
+                        onTestServers = { scope -> viewModel.testDohServers(scope) },
                         customDohUrls = uiState.customDohUrls,
                         onCustomDohUrlsChange = { viewModel.updateCustomDohUrls(it) }
                     )
@@ -952,7 +952,7 @@ fun EditProfileScreen(
                         dohUrlError = uiState.dohUrlError,
                         onUrlChange = { viewModel.updateDohUrl(it) },
                         onPresetSelected = { viewModel.selectDohPreset(it) },
-                        onTestServers = { viewModel.testDohServers() },
+                        onTestServers = { scope -> viewModel.testDohServers(scope) },
                         customDohUrls = uiState.customDohUrls,
                         onCustomDohUrlsChange = { viewModel.updateCustomDohUrls(it) }
                     )
@@ -1723,7 +1723,7 @@ private fun DohServerSelector(
     dohUrlError: String?,
     onUrlChange: (String) -> Unit,
     onPresetSelected: (DohServer) -> Unit,
-    onTestServers: () -> Unit,
+    onTestServers: (DohTestScope) -> Unit,
     customDohUrls: String = "",
     onCustomDohUrlsChange: (String) -> Unit = {}
 ) {
@@ -1841,26 +1841,39 @@ private fun DohServerSelector(
         }
     }
 
+    OutlinedButton(
+        onClick = { importLauncher.launch("text/*") },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Import List")
+    }
+
+    val presetUrls = remember { DOH_SERVERS.map { it.url }.toSet() }
+    val hasCustom = customDohUrls.lines().any { it.trim().startsWith("https://") }
+            || (dohUrl.startsWith("https://") && dohUrl !in presetUrls)
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         OutlinedButton(
-            onClick = { importLauncher.launch("text/*") },
-            modifier = Modifier.weight(1f)
-        ) {
-            Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Import List")
-        }
-
-        OutlinedButton(
-            onClick = onTestServers,
+            onClick = { onTestServers(DohTestScope.PRESETS) },
             modifier = Modifier.weight(1f)
         ) {
             Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Test All")
+            Spacer(Modifier.width(6.dp))
+            Text("Presets")
+        }
+
+        OutlinedButton(
+            onClick = { onTestServers(DohTestScope.CUSTOM) },
+            enabled = hasCustom,
+            modifier = Modifier.weight(1f)
+        ) {
+            Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Custom")
         }
     }
 }

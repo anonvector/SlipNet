@@ -27,6 +27,9 @@ object AppLog {
     private val nextId = AtomicLong(0)
     private val buffer = ArrayDeque<LogEntry>()
 
+    /** When true, sensitive config details are redacted from the in-app log buffer. */
+    @Volatile var redactSensitive = false
+
     // Lazy snapshot — only rebuilt when the debug sheet is open (observerCount > 0).
     private val _lines = MutableStateFlow<List<LogEntry>>(emptyList())
     val lines: StateFlow<List<LogEntry>> = _lines.asStateFlow()
@@ -88,40 +91,65 @@ object AppLog {
         observerCount = (observerCount - 1).coerceAtLeast(0)
     }
 
+    /** Tags whose messages contain sensitive config details (hosts, ports, credentials). */
+    private val SENSITIVE_TAGS = setOf(
+        "HevSocks5Tunnel",
+        "SlipstreamSocksBridge",
+        "DnsttSocksBridge",
+        "SshTunnelBridge",
+        "SlipNetVpnService",
+        "KotlinTunnelManager",
+        "NaiveSocksBridge",
+        "TorSocksBridge",
+        "SlipstreamBridge",
+        "DnsttBridge",
+        "NaiveBridge",
+        "VpnRepositoryImpl"
+    )
+
+    /**
+     * Check if this log line should be redacted from the in-app buffer.
+     * For locked profiles, all messages from sensitive tags are suppressed
+     * (still forwarded to Android logcat which requires ADB access).
+     */
+    private fun shouldRedact(tag: String): Boolean {
+        return redactSensitive && tag in SENSITIVE_TAGS
+    }
+
     fun v(tag: String, msg: String): Int {
-        append('V', tag, msg)
+        if (!shouldRedact(tag)) append('V', tag, msg)
         return android.util.Log.v(tag, msg)
     }
 
     fun d(tag: String, msg: String): Int {
-        append('D', tag, msg)
+        if (!shouldRedact(tag)) append('D', tag, msg)
         return android.util.Log.d(tag, msg)
     }
 
     fun i(tag: String, msg: String): Int {
-        append('I', tag, msg)
+        if (!shouldRedact(tag)) append('I', tag, msg)
         return android.util.Log.i(tag, msg)
     }
 
     fun w(tag: String, msg: String): Int {
-        append('W', tag, msg)
+        if (!shouldRedact(tag)) append('W', tag, msg)
         return android.util.Log.w(tag, msg)
     }
 
     @JvmStatic
     fun w(tag: String, msg: String, tr: Throwable?): Int {
-        append('W', tag, if (tr != null) "$msg\n${tr.stackTraceToString()}" else msg)
+        if (!shouldRedact(tag)) append('W', tag, if (tr != null) "$msg\n${tr.stackTraceToString()}" else msg)
         return android.util.Log.w(tag, msg, tr)
     }
 
     fun e(tag: String, msg: String): Int {
-        append('E', tag, msg)
+        if (!shouldRedact(tag)) append('E', tag, msg)
         return android.util.Log.e(tag, msg)
     }
 
     @JvmStatic
     fun e(tag: String, msg: String, tr: Throwable?): Int {
-        append('E', tag, if (tr != null) "$msg\n${tr.stackTraceToString()}" else msg)
+        if (!shouldRedact(tag)) append('E', tag, if (tr != null) "$msg\n${tr.stackTraceToString()}" else msg)
         return android.util.Log.e(tag, msg, tr)
     }
 

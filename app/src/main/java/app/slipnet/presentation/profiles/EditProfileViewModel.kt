@@ -50,6 +50,9 @@ data class DohTestResult(
     val isSuccess: Boolean get() = latencyMs != null && error == null
 }
 
+/** Which DoH servers to include in a scan. */
+enum class DohTestScope { ALL, PRESETS, CUSTOM }
+
 /**
  * UI-only bridge type selector. Not persisted — the actual bridge lines are stored
  * in torBridgeLines and transport is auto-detected at runtime.
@@ -206,6 +209,24 @@ class EditProfileViewModel @Inject constructor(
     init {
         if (profileId != null && profileId != 0L) {
             loadProfile(profileId)
+        } else {
+            // New profile: pre-fill local DNS resolver for tunnel types that need one
+            prefillLocalResolver()
+        }
+    }
+
+    private fun prefillLocalResolver() {
+        val needsResolver = initialTunnelType in setOf(
+            TunnelType.DNSTT, TunnelType.DNSTT_SSH,
+            TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
+            TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
+        )
+        if (!needsResolver) return
+        viewModelScope.launch {
+            val ip = withContext(Dispatchers.IO) { getSystemDnsServer() }
+            if (ip != null && _uiState.value.resolvers.isBlank()) {
+                _uiState.value = _uiState.value.copy(resolvers = "$ip:53")
+            }
         }
     }
 
@@ -728,12 +749,20 @@ class EditProfileViewModel @Inject constructor(
     private fun parseCustomDohUrls(): List<DohServer> {
         val state = _uiState.value
         val presetUrls = DOH_SERVERS.map { it.url }.toSet()
-        return state.customDohUrls
-            .lines()
-            .map { it.trim() }
+
+        // Collect URLs from both the single custom URL field and the batch field
+        val singleCustom = state.dohUrl.trim()
+        val allLines = buildList {
+            if (singleCustom.startsWith("https://") && singleCustom !in presetUrls) {
+                add(singleCustom)
+            }
+            addAll(state.customDohUrls.lines().map { it.trim() })
+        }
+
+        return allLines
             .filter { it.startsWith("https://") }
             .filter { it !in presetUrls }
-            .distinctBy { it }
+            .distinct()
             .map { url ->
                 val host = try {
                     java.net.URL(url).host
@@ -744,10 +773,15 @@ class EditProfileViewModel @Inject constructor(
             }
     }
 
-    fun testDohServers() {
+    fun testDohServers(scope: DohTestScope = DohTestScope.ALL) {
         viewModelScope.launch {
             val customServers = parseCustomDohUrls()
-            val allServers = DOH_SERVERS + customServers
+            val allServers = when (scope) {
+                DohTestScope.ALL -> DOH_SERVERS + customServers
+                DohTestScope.PRESETS -> DOH_SERVERS
+                DohTestScope.CUSTOM -> customServers
+            }
+            if (allServers.isEmpty()) return@launch
 
             _uiState.value = _uiState.value.copy(
                 isTestingDoh = true,

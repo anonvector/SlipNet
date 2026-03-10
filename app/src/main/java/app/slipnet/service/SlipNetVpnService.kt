@@ -257,6 +257,9 @@ class SlipNetVpnService : VpnService() {
             currentProfileName = profile.name
             isUserInitiatedDisconnect = false
 
+            // Redact sensitive config from in-app debug log for locked profiles
+            app.slipnet.util.AppLog.redactSensitive = profile.isLocked
+
             // Dismiss any previous reconnect/disconnect notifications
             getSystemService(NotificationManager::class.java).apply {
                 cancel(NotificationHelper.RECONNECT_NOTIFICATION_ID)
@@ -2147,7 +2150,7 @@ class SlipNetVpnService : VpnService() {
                     if (dnsPoolDeadChecks >= threshold && !dnsPoolDeadNotified) {
                         Log.w(TAG, "All DNS workers dead for ${dnsPoolDeadChecks * HEALTH_CHECK_INTERVAL_MS / 1000}s")
                         dnsPoolDeadNotified = true
-                        connectionManager.setDnsWarning("Connection is not working. Try reconnecting or switching profiles.")
+                        connectionManager.setDnsWarning("Connection is not working. Try different dns resolver or switching profiles.")
                     }
                 } else {
                     if (dnsPoolDeadNotified) {
@@ -3245,6 +3248,7 @@ class SlipNetVpnService : VpnService() {
      * This is a suspend function to run blocking operations on IO dispatcher.
      */
     private suspend fun cleanupConnection() {
+        app.slipnet.util.AppLog.redactSensitive = false
         Log.d(TAG, "Cleaning up connection resources")
 
         releaseLocks()
@@ -3383,6 +3387,7 @@ class SlipNetVpnService : VpnService() {
      * Used in onDestroy where we can't suspend.
      */
     private fun cleanupConnectionSync() {
+        app.slipnet.util.AppLog.redactSensitive = false
         Log.d(TAG, "Quick cleanup (sync)")
 
         releaseLocks()

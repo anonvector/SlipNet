@@ -1395,7 +1395,7 @@ private fun ConnectionStatusStrip(
                 Text(
                     text = dnsWarning ?: "",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    color = Color(0xFFFF9800),
                     modifier = Modifier.padding(start = 22.dp, top = 6.dp)
                 )
             }
