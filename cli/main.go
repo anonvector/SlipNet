@@ -238,8 +238,25 @@ func main() {
 		log.Fatalf("Failed to parse URI: %v", err)
 	}
 
+	// Validate tunnel type — CLI only supports DNSTT and NoizDNS
+	switch profile.TunnelType {
+	case "dnstt", "dnstt_ssh", "sayedns", "sayedns_ssh":
+		// supported
+	case "ss", "slipstream_ssh", "ssh", "doh", "snowflake", "naive_ssh", "naive":
+		log.Fatalf("This config uses tunnel type %q which is not supported by the CLI.\n"+
+			"SlipNet CLI only supports DNSTT and NoizDNS tunnel types.\n"+
+			"Use the SlipNet app for other tunnel types.", profile.TunnelType)
+	default:
+		if profile.TunnelType != "" {
+			log.Fatalf("Unknown tunnel type %q in config", profile.TunnelType)
+		}
+	}
+
 	if profile.PublicKey == "" {
-		log.Fatal("Profile is missing public key")
+		log.Fatal("Config is missing the server's public key.\n" +
+			"The slipnet:// URI must include the server's Noise public key.\n" +
+			"Ask your server admin for a config that includes the public key,\n" +
+			"or re-export the config from the SlipNet app.")
 	}
 	if profile.Domain == "" {
 		log.Fatal("Profile is missing tunnel domain")
