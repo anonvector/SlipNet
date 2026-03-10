@@ -98,3 +98,6 @@ app/schemas/
 
 # Release build output
 app/release/
+
+# DNS Multiplexer (separate repo: anonvector/DNS-Multiplexer)
+dns-multiplexer/
