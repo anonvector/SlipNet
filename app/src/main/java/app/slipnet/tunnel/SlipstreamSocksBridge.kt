@@ -15,6 +15,7 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
@@ -67,6 +68,10 @@ object SlipstreamSocksBridge {
     private val connectionThreads = CopyOnWriteArrayList<Thread>()
     // Track all remote sockets (connections to Slipstream) for explicit cleanup
     private val remoteSockets = CopyOnWriteArrayList<Socket>()
+
+    // Tunnel-level byte counters (only counts data actually relayed through the tunnel)
+    private val tunnelTxBytes = AtomicLong(0)  // client → tunnel (upload)
+    private val tunnelRxBytes = AtomicLong(0)  // tunnel → client (download)
 
     // --- DNS Worker Pool ---
     // Persistent SOCKS5 connections through Slipstream→Dante to DNS server.
@@ -232,10 +237,16 @@ object SlipstreamSocksBridge {
         }
         connectionThreads.clear()
 
+        tunnelTxBytes.set(0)
+        tunnelRxBytes.set(0)
+
         logd("Bridge stopped")
     }
 
     fun isRunning(): Boolean = running.get()
+
+    fun getTunnelTxBytes(): Long = tunnelTxBytes.get()
+    fun getTunnelRxBytes(): Long = tunnelRxBytes.get()
 
     fun isClientHealthy(): Boolean {
         val ss = serverSocket ?: return false
@@ -464,7 +475,7 @@ object SlipstreamSocksBridge {
                     continue
                 }
                 val result = sendDnsQuery(worker, payload)
-                if (result != null) { recordDnsSuccess(); return result }
+                if (result != null) { recordDnsSuccess(); tunnelTxBytes.addAndGet(payload.size.toLong()); tunnelRxBytes.addAndGet(result.size.toLong()); return result }
             } catch (e: Exception) {
                 logd("FWD_UDP: DNS worker $idx failed: ${e.message}")
                 dnsWorkers[idx] = null
@@ -484,7 +495,7 @@ object SlipstreamSocksBridge {
             if (!newWorker.lock.tryLock(5, TimeUnit.SECONDS)) continue
             try {
                 val result = sendDnsQuery(newWorker, payload)
-                if (result != null) { recordDnsSuccess(); return result }
+                if (result != null) { recordDnsSuccess(); tunnelTxBytes.addAndGet(payload.size.toLong()); tunnelRxBytes.addAndGet(result.size.toLong()); return result }
             } catch (e: Exception) {
                 logd("FWD_UDP: recreated DNS worker $idx failed: ${e.message}")
                 dnsWorkers[idx] = null
@@ -500,7 +511,7 @@ object SlipstreamSocksBridge {
         // Phase 3: Per-query fallback (old behavior — new connection per query)
         logd("FWD_UDP: all workers failed, falling back to per-query connection")
         val tcpResult = forwardDnsTcpOneShot(payload)
-        if (tcpResult != null) { recordDnsSuccess(); return tcpResult }
+        if (tcpResult != null) { recordDnsSuccess(); tunnelTxBytes.addAndGet(payload.size.toLong()); tunnelRxBytes.addAndGet(tcpResult.size.toLong()); return tcpResult }
         recordDnsFailure()
 
         // Phase 4: DoH fallback — always attempt, bypasses tunnel entirely
@@ -889,7 +900,7 @@ object SlipstreamSocksBridge {
             remoteSocket.use { remote ->
                 val t1 = Thread({
                     try {
-                        copyStream(clientInput, remoteOutput)
+                        copyStream(clientInput, remoteOutput, tunnelTxBytes)
                     } catch (e: Exception) {
                         logd("slip-bridge-c2s: ${e.message}")
                     } finally {
@@ -900,7 +911,7 @@ object SlipstreamSocksBridge {
                 t1.start()
 
                 try {
-                    copyStream(remoteInput, clientOutput)
+                    copyStream(remoteInput, clientOutput, tunnelRxBytes)
                 } catch (e: Exception) {
                     logd("slip-bridge-s2c: ${e.message}")
                 } finally {
@@ -1283,13 +1294,14 @@ object SlipstreamSocksBridge {
         }
     }
 
-    private fun copyStream(input: InputStream, output: OutputStream) {
+    private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null) {
         val buffer = ByteArray(BUFFER_SIZE)
         while (!Thread.currentThread().isInterrupted) {
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) break
             output.write(buffer, 0, bytesRead)
             output.flush()
+            counter?.addAndGet(bytesRead.toLong())
         }
     }
 

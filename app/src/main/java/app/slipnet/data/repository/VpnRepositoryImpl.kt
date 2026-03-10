@@ -721,6 +721,25 @@ class VpnRepositoryImpl @Inject constructor(
     }
 
     fun refreshTrafficStats() {
+        // For SOCKS-bridged tunnel types, use tunnel-level byte counters
+        // instead of TUN-level stats (which include local retries/health checks)
+        when (currentTunnelType) {
+            TunnelType.SLIPSTREAM -> {
+                _trafficStats.value = TrafficStats(
+                    bytesSent = SlipstreamSocksBridge.getTunnelTxBytes(),
+                    bytesReceived = SlipstreamSocksBridge.getTunnelRxBytes()
+                )
+                return
+            }
+            TunnelType.DNSTT, TunnelType.NOIZDNS -> {
+                _trafficStats.value = TrafficStats(
+                    bytesSent = DnsttSocksBridge.getTunnelTxBytes(),
+                    bytesReceived = DnsttSocksBridge.getTunnelRxBytes()
+                )
+                return
+            }
+            else -> {}
+        }
         val stats = HevSocks5Tunnel.getStats()
         if (stats != null) {
             _trafficStats.value = TrafficStats(
