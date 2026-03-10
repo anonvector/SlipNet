@@ -1734,18 +1734,24 @@ class DnsScannerViewModel @Inject constructor(
                     val (host, port) = queue.take() ?: break
                     onActiveChanged { it + (host to "Starting...") }
 
-                    val e2eResult = if (useIsolated) {
-                        scannerRepository.testResolverE2eIsolated(
-                            resolverHost = host, resolverPort = port,
-                            profile = profile, testUrl = testUrl, timeoutMs = e2eTimeout,
-                            onPhaseUpdate = { phase -> onActiveChanged { it + (host to phase) } }
-                        )
-                    } else {
-                        scannerRepository.testResolverE2e(
-                            resolverHost = host, resolverPort = port,
-                            profile = profile, testUrl = testUrl, timeoutMs = e2eTimeout,
-                            onPhaseUpdate = { phase -> onActiveChanged { it + (host to phase) } }
-                        )
+                    val e2eResult = try {
+                        if (useIsolated) {
+                            scannerRepository.testResolverE2eIsolated(
+                                resolverHost = host, resolverPort = port,
+                                profile = profile, testUrl = testUrl, timeoutMs = e2eTimeout,
+                                onPhaseUpdate = { phase -> onActiveChanged { it + (host to phase) } }
+                            )
+                        } else {
+                            scannerRepository.testResolverE2e(
+                                resolverHost = host, resolverPort = port,
+                                profile = profile, testUrl = testUrl, timeoutMs = e2eTimeout,
+                                onPhaseUpdate = { phase -> onActiveChanged { it + (host to phase) } }
+                            )
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        E2eTestResult(errorMessage = e.message ?: "Worker error")
                     }
 
                     val newTested = testedCount.incrementAndGet()
