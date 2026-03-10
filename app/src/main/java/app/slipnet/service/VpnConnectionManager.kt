@@ -108,6 +108,7 @@ class VpnConnectionManager @Inject constructor(
 
         pendingProfile = profile
         _connectionState.value = ConnectionState.Connecting
+        _dnsWarning.value = null
 
         scope.launch {
             profileRepository.setActiveProfile(profile.id)

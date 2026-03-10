@@ -275,9 +275,14 @@ fun MainScreen(
     val sleepTimerActive = uiState.connectionState is ConnectionState.Connected &&
             uiState.sleepTimerRemainingSeconds > 0
 
+    val dnsWarningActive = uiState.connectionState is ConnectionState.Connected &&
+            uiState.dnsWarning != null
+
     val fabExtraPadding by animateDpAsState(
         targetValue = when {
+            uiState.connectionState is ConnectionState.Connected && sleepTimerActive && dnsWarningActive -> 72.dp
             uiState.connectionState is ConnectionState.Connected && sleepTimerActive -> 52.dp
+            uiState.connectionState is ConnectionState.Connected && dnsWarningActive -> 48.dp
             uiState.connectionState is ConnectionState.Connected -> 28.dp
             showTorProgressFab -> 30.dp
             else -> 0.dp
