@@ -29,6 +29,7 @@ object HttpProxyServer {
     private const val BIND_RETRY_DELAY_MS = 200L
     private const val BUFFER_SIZE = 32768
     private const val TCP_CONNECT_TIMEOUT_MS = 30000
+    private const val RELAY_IDLE_TIMEOUT_MS = 300000
 
     private var socksHost: String = "127.0.0.1"
     private var socksPort: Int = 1080
@@ -210,7 +211,7 @@ object HttpProxyServer {
         clientOutput.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
         clientOutput.flush()
 
-        clientSocket.soTimeout = 0
+        clientSocket.soTimeout = RELAY_IDLE_TIMEOUT_MS
 
         // Bridge bidirectionally
         remoteSocket.use { remote ->
@@ -222,7 +223,7 @@ object HttpProxyServer {
                     copyStream(clientInput, remoteOutput)
                 } catch (_: Exception) {
                 } finally {
-                    try { remoteOutput.close() } catch (_: Exception) {}
+                    try { remote.shutdownOutput() } catch (_: Exception) {}
                 }
             }, "http-proxy-c2s")
             t1.isDaemon = true
@@ -331,7 +332,7 @@ object HttpProxyServer {
             remoteOutput.write("\r\n".toByteArray())
             remoteOutput.flush()
 
-            clientSocket.soTimeout = 0
+            clientSocket.soTimeout = RELAY_IDLE_TIMEOUT_MS
 
             // Bidirectional bridge: forwards request body (if any) and response.
             // Server will close after response due to Connection: close.
@@ -420,17 +421,13 @@ object HttpProxyServer {
     }
 
     private fun copyStream(input: InputStream, output: OutputStream) {
-        val buffered = BufferedOutputStream(output, BUFFER_SIZE)
         val buffer = ByteArray(BUFFER_SIZE)
         while (!Thread.currentThread().isInterrupted) {
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) break
-            buffered.write(buffer, 0, bytesRead)
-            if (bytesRead < BUFFER_SIZE || input.available() == 0) {
-                buffered.flush()
-            }
+            output.write(buffer, 0, bytesRead)
+            output.flush()
         }
-        buffered.flush()
     }
 
 }
