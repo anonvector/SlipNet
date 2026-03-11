@@ -61,6 +61,12 @@ jobs:
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
           go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o ../slipnet-${{ matrix.suffix }}${{ matrix.ext }} .
 
+      - name: Compress with UPX (Linux/macOS only)
+        if: matrix.goos != 'windows'
+        run: |
+          sudo apt-get install -y upx-ucl > /dev/null 2>&1
+          upx --best --lzma slipnet-${{ matrix.suffix }} || true
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
