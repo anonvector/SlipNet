@@ -748,12 +748,11 @@ class EditProfileViewModel @Inject constructor(
 
     private fun parseCustomDohUrls(): List<DohServer> {
         val state = _uiState.value
-        val presetUrls = DOH_SERVERS.map { it.url }.toSet()
 
         // Collect URLs from both the single custom URL field and the batch field
         val singleCustom = state.dohUrl.trim()
         val allLines = buildList {
-            if (singleCustom.startsWith("https://") && singleCustom !in presetUrls) {
+            if (singleCustom.startsWith("https://")) {
                 add(singleCustom)
             }
             addAll(state.customDohUrls.lines().map { it.trim() })
@@ -761,7 +760,6 @@ class EditProfileViewModel @Inject constructor(
 
         return allLines
             .filter { it.startsWith("https://") }
-            .filter { it !in presetUrls }
             .distinct()
             .map { url ->
                 val host = try {
@@ -776,8 +774,9 @@ class EditProfileViewModel @Inject constructor(
     fun testDohServers(scope: DohTestScope = DohTestScope.ALL) {
         viewModelScope.launch {
             val customServers = parseCustomDohUrls()
+            val presetUrls = DOH_SERVERS.map { it.url }.toSet()
             val allServers = when (scope) {
-                DohTestScope.ALL -> DOH_SERVERS + customServers
+                DohTestScope.ALL -> DOH_SERVERS + customServers.filter { it.url !in presetUrls }
                 DohTestScope.PRESETS -> DOH_SERVERS
                 DohTestScope.CUSTOM -> customServers
             }
