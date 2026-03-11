@@ -101,3 +101,7 @@ app/release/
 
 # DNS Multiplexer (separate repo: anonvector/DNS-Multiplexer)
 dns-multiplexer/
+
+# NoizDNS (private repo, compiled .aar files are committed instead)
+noizdns/
+noizdns-deploy/
