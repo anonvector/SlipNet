@@ -104,3 +104,12 @@ dns-multiplexer/
 
 # NoizDNS deploy (separate repo)
 noizdns-deploy/
+
+# Embedded slipstream binary (placed by CI, not committed)
+cli/embedded/slipstream-client
+cli/embedded/slipstream-client.exe
+
+# CLI build output
+cli/slipnet
+cli/slipnet-cli
+cli/slipnet.exe

@@ -6,13 +6,16 @@ import app.slipnet.data.export.ConfigExporter
 import app.slipnet.data.export.ConfigImporter
 import app.slipnet.data.export.ImportResult
 import app.slipnet.data.local.datastore.PreferencesDataStore
+import app.slipnet.domain.model.ChainValidation
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.PingResult
+import app.slipnet.domain.model.ProfileChain
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
 import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.model.isAvailable
 import app.slipnet.domain.model.E2eTestResult
+import app.slipnet.domain.repository.ChainRepository
 import app.slipnet.domain.repository.ProfileRepository
 import app.slipnet.domain.repository.ResolverScannerRepository
 import app.slipnet.domain.usecase.ConnectVpnUseCase
@@ -58,7 +61,9 @@ data class MainUiState(
     val snowflakeBootstrapProgress: Int = -1,
     // Profile list state
     val profiles: List<ServerProfile> = emptyList(),
+    val chains: List<ProfileChain> = emptyList(),
     val connectedProfileId: Long? = null,
+    val connectedChainId: Long? = null,
     val isLoading: Boolean = false,
     val error: String? = null,
     val exportedJson: String? = null,
@@ -92,6 +97,7 @@ class MainViewModel @Inject constructor(
     private val deleteProfileUseCase: DeleteProfileUseCase,
     private val saveProfileUseCase: SaveProfileUseCase,
     private val profileRepository: ProfileRepository,
+    private val chainRepository: ChainRepository,
     private val resolverScannerRepository: ResolverScannerRepository,
     private val configExporter: ConfigExporter,
     private val configImporter: ConfigImporter,
@@ -110,6 +116,7 @@ class MainViewModel @Inject constructor(
         observeConnectionState()
         observeDnsWarning()
         observeProfiles()
+        observeChains()
         observeProxyOnlyMode()
         observeDebugLogging()
         checkFirstLaunch()
@@ -125,9 +132,14 @@ class MainViewModel @Inject constructor(
                     is ConnectionState.Connected -> state.profile.id
                     else -> null
                 }
+                val chainId = when (state) {
+                    is ConnectionState.Connected -> if (state.chainId > 0) state.chainId else null
+                    else -> null
+                }
                 _uiState.value = _uiState.value.copy(
                     connectionState = state,
-                    connectedProfileId = connectedId,
+                    connectedProfileId = if (chainId != null) null else connectedId,
+                    connectedChainId = chainId,
                     error = if (state is ConnectionState.Error) state.message else _uiState.value.error
                 )
                 if (state is ConnectionState.Connecting) {
@@ -354,6 +366,36 @@ class MainViewModel @Inject constructor(
             is ConnectionState.Connecting,
             is ConnectionState.Error -> disconnect()
             else -> connect()
+        }
+    }
+
+    private fun observeChains() {
+        viewModelScope.launch {
+            chainRepository.getAllChains().collect { chains ->
+                _uiState.value = _uiState.value.copy(chains = chains)
+            }
+        }
+    }
+
+    fun connectChain(chain: ProfileChain) {
+        viewModelScope.launch {
+            val profiles = chain.profileIds.mapNotNull { profileRepository.getProfileById(it) }
+            if (profiles.size != chain.profileIds.size) {
+                _uiState.value = _uiState.value.copy(error = "Some profiles in chain were deleted")
+                return@launch
+            }
+            val validationError = ChainValidation.validate(profiles)
+            if (validationError != null) {
+                _uiState.value = _uiState.value.copy(error = validationError)
+                return@launch
+            }
+            connectionManager.connectChain(chain, profiles.first())
+        }
+    }
+
+    fun deleteChain(chain: ProfileChain) {
+        viewModelScope.launch {
+            chainRepository.deleteChain(chain.id)
         }
     }
 
@@ -723,6 +765,7 @@ class MainViewModel @Inject constructor(
                 } catch (_: Exception) { return null }
                 host to 443
             }
+            TunnelType.SOCKS5 -> profile.domain to profile.socks5ServerPort
             else -> null
         }
     }

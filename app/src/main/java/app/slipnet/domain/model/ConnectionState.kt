@@ -5,7 +5,9 @@ sealed class ConnectionState {
     data object Connecting : ConnectionState()
     data class Connected(
         val profile: ServerProfile,
-        val connectedAt: Long = System.currentTimeMillis()
+        val connectedAt: Long = System.currentTimeMillis(),
+        val chainName: String? = null,
+        val chainId: Long = -1
     ) : ConnectionState()
     data object Disconnecting : ConnectionState()
     data class Error(val message: String, val cause: Throwable? = null) : ConnectionState()

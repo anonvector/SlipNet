@@ -35,6 +35,7 @@ import app.slipnet.tunnel.NaiveBridge
 import app.slipnet.tunnel.NaiveSocksBridge
 import app.slipnet.tunnel.SlipstreamBridge
 import app.slipnet.tunnel.SlipstreamSocksBridge
+import app.slipnet.tunnel.Socks5ProxyBridge
 import app.slipnet.tunnel.SnowflakeBridge
 import app.slipnet.tunnel.SshTunnelBridge
 import app.slipnet.tunnel.TorSocksBridge
@@ -59,6 +60,7 @@ class SlipNetVpnService : VpnService() {
         const val ACTION_CONNECT = "app.slipnet.CONNECT"
         const val ACTION_DISCONNECT = "app.slipnet.DISCONNECT"
         const val EXTRA_PROFILE_ID = "profile_id"
+        const val EXTRA_CHAIN_ID = "chain_id"
 
         private const val VPN_MTU = 1280
         private const val VPN_ADDRESS = "10.255.255.1"
@@ -96,6 +98,9 @@ class SlipNetVpnService : VpnService() {
     @Inject
     lateinit var preferencesDataStore: PreferencesDataStore
 
+    @Inject
+    lateinit var chainRepository: app.slipnet.domain.repository.ChainRepository
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var vpnInterface: ParcelFileDescriptor? = null
     private var healthCheckJob: Job? = null
@@ -115,6 +120,9 @@ class SlipNetVpnService : VpnService() {
     private var isProxyOnly = false
     private var isUserInitiatedDisconnect = false
     private var currentProfileName = ""
+    private var currentChainId: Long = -1
+    /** Tunnel types active in the current chain (outermost first), for cleanup ordering. */
+    private var activeChainLayers: List<TunnelType> = emptyList()
 
     // Auto-reconnect state
     @Volatile
@@ -150,8 +158,11 @@ class SlipNetVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_CONNECT -> {
+                val chainId = intent.getLongExtra(EXTRA_CHAIN_ID, -1)
                 val profileId = intent.getLongExtra(EXTRA_PROFILE_ID, -1)
-                if (profileId != -1L) {
+                if (chainId != -1L) {
+                    connectChain(chainId)
+                } else if (profileId != -1L) {
                     connect(profileId)
                 }
             }
@@ -381,6 +392,7 @@ class SlipNetVpnService : VpnService() {
                     TunnelType.SNOWFLAKE -> connectSnowflake(profile, dnsServer)
                     TunnelType.NAIVE_SSH -> connectNaiveSsh(profile, dnsServer, remoteDns, remoteDnsFallback)
                     TunnelType.NAIVE -> connectNaive(profile, dnsServer, remoteDns, remoteDnsFallback)
+                    TunnelType.SOCKS5 -> connectSocks5(profile, dnsServer, remoteDns)
                 }
 
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -402,6 +414,495 @@ class SlipNetVpnService : VpnService() {
                     stopSelf()
                 }
             }
+        }
+    }
+
+    // ── Chain Connection ──────────────────────────────────────────────
+
+    private fun connectChain(chainId: Long) {
+        stateObserverJob?.cancel()
+        stateObserverJob = null
+
+        connectJob?.cancel()
+        connectJob = serviceScope.launch {
+            disconnectJob?.join()
+            withContext(Dispatchers.IO) {
+                try { stopCurrentProxy() } catch (_: Exception) {}
+                delay(300)
+            }
+
+            val chain = chainRepository.getChainById(chainId)
+            if (chain == null) {
+                connectionManager.onVpnError("Chain not found")
+                stopSelf()
+                return@launch
+            }
+
+            // Resolve all profiles in the chain
+            val profiles = chain.profileIds.mapNotNull { connectionManager.getProfileById(it) }
+            if (profiles.size != chain.profileIds.size) {
+                connectionManager.onVpnError("Some profiles in chain were deleted")
+                stopSelf()
+                return@launch
+            }
+
+            // Validate the chain
+            val validationError = app.slipnet.domain.model.ChainValidation.validate(profiles)
+            if (validationError != null) {
+                connectionManager.onVpnError(validationError)
+                stopSelf()
+                return@launch
+            }
+
+            currentChainId = chainId
+            // Use first profile for connection state tracking
+            val primaryProfile = profiles.first()
+            currentProfileId = primaryProfile.id
+            currentProfileName = chain.name
+            isUserInitiatedDisconnect = false
+            app.slipnet.util.AppLog.redactSensitive = profiles.any { it.isLocked }
+
+            getSystemService(android.app.NotificationManager::class.java).apply {
+                cancel(NotificationHelper.RECONNECT_NOTIFICATION_ID)
+                cancel(NotificationHelper.DISCONNECT_NOTIFICATION_ID)
+            }
+
+            val notification = notificationHelper.createVpnNotification(ConnectionState.Connecting)
+            startForeground(NotificationHelper.VPN_NOTIFICATION_ID, notification)
+
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (wakeLock == null) {
+                wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "SlipNet:VpnWakeLock").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+            if (wifiLock == null) {
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+                @Suppress("DEPRECATION")
+                wifiLock = wifiManager?.createWifiLock(
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q)
+                        android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                    else
+                        android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    "SlipNet:VpnWifiLock"
+                )?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+
+            try {
+                isProxyOnly = preferencesDataStore.proxyOnlyMode.first()
+                val debug = preferencesDataStore.debugLogging.first()
+                SshTunnelBridge.debugLogging = debug
+                DohBridge.debugLogging = debug
+                SlipstreamSocksBridge.debugLogging = debug
+                DnsttSocksBridge.debugLogging = debug
+                NaiveSocksBridge.debugLogging = debug
+                TorSocksBridge.debugLogging = debug
+                HttpProxyServer.debugLogging = debug
+
+                val domainRouter = buildDomainRouter()
+                SshTunnelBridge.domainRouter = domainRouter
+                DohBridge.domainRouter = domainRouter
+                SlipstreamSocksBridge.domainRouter = domainRouter
+                NaiveSocksBridge.domainRouter = domainRouter
+                TorSocksBridge.domainRouter = domainRouter
+
+                executeChain(profiles)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                Log.d(TAG, "Chain connection coroutine cancelled")
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception during chain connection", e)
+                connectionManager.onVpnError(e.message ?: "Chain connection failed")
+                cleanupConnection()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
+    }
+
+    /**
+     * Execute a chain of profiles, starting each layer and wiring them together.
+     *
+     * Port allocation: final layer on proxyPort, each preceding layer on proxyPort + offset.
+     * Example for 3-layer chain: layer[0] on proxyPort+2, layer[1] on proxyPort+1, layer[2] on proxyPort.
+     */
+    private suspend fun executeChain(profiles: List<app.slipnet.domain.model.ServerProfile>) {
+        val proxyPort = preferencesDataStore.proxyListenPort.first()
+        val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        val chainSize = profiles.size
+        val dnsServer = resolveToIp(profiles.first().resolvers.firstOrNull()?.host)
+        var remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
+        var remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
+
+        // Track started layers for cleanup on failure
+        val startedLayers = mutableListOf<TunnelType>()
+
+        // Determine if VPN is needed before outermost layer
+        val outermost = profiles.first()
+        val needsVpnFirst = app.slipnet.domain.model.ChainValidation.needsVpnFirst(outermost.tunnelType)
+
+        if (!isProxyOnly && needsVpnFirst) {
+            vpnInterface = establishVpnInterface(dnsServer)
+            if (vpnInterface == null) {
+                connectionManager.onVpnError("Failed to establish VPN interface")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+            delay(200)
+        }
+
+        // Start each layer from outermost to innermost
+        for (i in profiles.indices) {
+            val profile = profiles[i]
+            val layerPort = proxyPort + (chainSize - 1 - i)
+            val layerHost = if (i < chainSize - 1) "127.0.0.1" else proxyHost
+            val isLast = i == chainSize - 1
+
+            // Previous layer's output (null for outermost)
+            val prevPort = if (i > 0) proxyPort + (chainSize - i) else -1
+
+            Log.i(TAG, "Chain layer $i/${chainSize - 1}: ${profile.tunnelType.displayName} on port $layerPort" +
+                    if (prevPort > 0) " (through port $prevPort)" else " (outermost)")
+
+            val prevLayerType = if (i > 0) profiles[i - 1].tunnelType else null
+
+            val result = startChainLayer(
+                profile = profile,
+                layerIndex = i,
+                layerPort = layerPort,
+                layerHost = layerHost,
+                prevPort = prevPort,
+                prevHost = "127.0.0.1",
+                prevLayerType = prevLayerType,
+                isLast = isLast,
+                remoteDns = remoteDns,
+                remoteDnsFallback = remoteDnsFallback
+            )
+            if (result.isFailure) {
+                val error = result.exceptionOrNull()?.message ?: "Failed to start ${profile.tunnelType.displayName}"
+                connectionManager.onVpnError(error)
+                // Clean up started layers in reverse
+                for (layer in startedLayers.reversed()) {
+                    stopLayer(layer)
+                }
+                vpnInterface?.close()
+                vpnInterface = null
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+            startedLayers.add(profile.tunnelType)
+
+            // Wait for this layer's port to be ready
+            val actualPort = if (profile.tunnelType == TunnelType.DNSTT || profile.tunnelType == TunnelType.NOIZDNS) {
+                DnsttBridge.getClientPort().also {
+                    if (it != layerPort) Log.i(TAG, "DNSTT bound to alternative port $it (preferred $layerPort)")
+                }
+            } else layerPort
+
+            // NaiveProxy needs its own readiness check (log-based, not TCP probe)
+            // Also temporarily set currentTunnelType so waitForProxyReady checks the right bridge
+            val savedTunnelType = currentTunnelType
+            currentTunnelType = profile.tunnelType
+            val layerReady = if (profile.tunnelType == TunnelType.NAIVE || profile.tunnelType == TunnelType.NAIVE_SSH) {
+                waitForNaiveReady(maxAttempts = 30, delayMs = 100)
+            } else {
+                waitForProxyReady(actualPort, maxAttempts = 30, delayMs = 100)
+            }
+            currentTunnelType = savedTunnelType
+
+            if (!layerReady) {
+                Log.e(TAG, "Chain layer $i failed to become ready on port $actualPort")
+                connectionManager.onVpnError("${profile.tunnelType.displayName} failed to start")
+                for (layer in startedLayers.reversed()) stopLayer(layer)
+                vpnInterface?.close()
+                vpnInterface = null
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+
+            // For Slipstream, wait for QUIC handshake
+            if (profile.tunnelType == TunnelType.SLIPSTREAM) {
+                if (!waitForQuicReady(maxAttempts = 50, delayMs = 200)) {
+                    connectionManager.onVpnError("Slipstream QUIC handshake failed")
+                    for (layer in startedLayers.reversed()) stopLayer(layer)
+                    vpnInterface?.close()
+                    vpnInterface = null
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return
+                }
+
+                // VPN interface after Slipstream is ready (if not already established)
+                if (!isProxyOnly && vpnInterface == null) {
+                    vpnInterface = establishVpnInterface(dnsServer)
+                    if (vpnInterface == null) {
+                        connectionManager.onVpnError("Failed to establish VPN interface")
+                        for (layer in startedLayers.reversed()) stopLayer(layer)
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                        return
+                    }
+                    delay(200)
+                }
+            }
+        }
+
+        // Store chain layers for cleanup
+        activeChainLayers = startedLayers.toList()
+        // Track the final layer's tunnel type for stats
+        currentTunnelType = profiles.last().tunnelType
+        vpnRepository.setCurrentTunnelType(currentTunnelType)
+
+        // Proxy-only mode: skip tun2socks
+        if (isProxyOnly) {
+            vpnRepository.setProxyConnected(profiles.first())
+            Log.i(TAG, "Proxy-only mode: chain ready on $proxyHost:$proxyPort")
+            finishConnection()
+            return
+        }
+
+        // Start tun2socks on the final proxy port
+        val tun2socksResult = vpnRepository.startTun2Socks(profiles.first(), vpnInterface!!)
+        if (tun2socksResult.isFailure) {
+            connectionManager.onVpnError(tun2socksResult.exceptionOrNull()?.message ?: "Failed to start tunnel")
+            for (layer in activeChainLayers.reversed()) stopLayer(layer)
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        Log.i(TAG, "Chain started: ${profiles.joinToString(" → ") { it.tunnelType.displayName }}")
+        finishConnection()
+    }
+
+    /**
+     * Start a single layer in the chain.
+     */
+    private suspend fun startChainLayer(
+        profile: app.slipnet.domain.model.ServerProfile,
+        layerIndex: Int = 0,
+        layerPort: Int,
+        layerHost: String,
+        prevPort: Int,
+        prevHost: String,
+        prevLayerType: TunnelType?,
+        isLast: Boolean,
+        remoteDns: String,
+        remoteDnsFallback: String
+    ): Result<Unit> {
+        return when (profile.tunnelType) {
+            TunnelType.DNSTT, TunnelType.NOIZDNS -> {
+                DnsttBridge.setVpnService(this@SlipNetVpnService)
+                val isNoizdns = profile.tunnelType == TunnelType.NOIZDNS
+                if (isLast) {
+                    val bridgePort = layerPort
+                    val internalPort = layerPort + 1
+                    val proxyResult = if (isNoizdns)
+                        vpnRepository.startNoizdnsProxy(profile, portOverride = internalPort, hostOverride = "127.0.0.1")
+                    else
+                        vpnRepository.startDnsttProxy(profile, portOverride = internalPort, hostOverride = "127.0.0.1")
+                    if (proxyResult.isFailure) return proxyResult
+                    val actualPort = DnsttBridge.getClientPort()
+                    vpnRepository.startDnsttSocksBridge(
+                        dnsttPort = actualPort, dnsttHost = "127.0.0.1",
+                        bridgePort = bridgePort, bridgeHost = layerHost,
+                        socksUsername = profile.socksUsername, socksPassword = profile.socksPassword,
+                        dnsServer = remoteDns, dnsFallback = remoteDnsFallback
+                    )
+                } else {
+                    if (isNoizdns)
+                        vpnRepository.startNoizdnsProxy(profile, portOverride = layerPort, hostOverride = "127.0.0.1")
+                    else
+                        vpnRepository.startDnsttProxy(profile, portOverride = layerPort, hostOverride = "127.0.0.1")
+                }
+            }
+            TunnelType.SLIPSTREAM -> {
+                SlipstreamBridge.setVpnService(this@SlipNetVpnService)
+                if (isLast) {
+                    val internalPort = layerPort + 1
+                    val proxyResult = vpnRepository.startSlipstreamProxy(profile, portOverride = internalPort, hostOverride = "127.0.0.1")
+                    if (proxyResult.isFailure) return proxyResult
+                    vpnRepository.startSlipstreamSocksBridge(
+                        slipstreamPort = internalPort, slipstreamHost = "127.0.0.1",
+                        bridgePort = layerPort, bridgeHost = layerHost,
+                        socksUsername = profile.socksUsername, socksPassword = profile.socksPassword,
+                        dnsServer = remoteDns, dnsFallback = remoteDnsFallback
+                    )
+                } else {
+                    vpnRepository.startSlipstreamProxy(profile, portOverride = layerPort, hostOverride = "127.0.0.1")
+                }
+            }
+            TunnelType.SSH -> {
+                // Create a named SSH instance for this chain layer
+                val sshInstance = SshTunnelBridge.createInstance("chain-ssh-$layerIndex")
+                configureSshInstance(sshInstance)
+
+                if (prevPort > 0) {
+                    val resolvedPrevType = prevLayerType
+                        ?: return Result.failure(Exception("No previous layer for SSH"))
+                    val output = app.slipnet.domain.model.ChainValidation.outputType(resolvedPrevType)
+
+                    // In a chain, SSH connects to the remote server through the previous
+                    // layer's proxy, so use `domain` (the actual server address).
+                    // sshHost defaults to 127.0.0.1 for DNSTT+SSH co-located scenarios
+                    // which is wrong when chaining through an external proxy.
+                    val chainSshHost = profile.domain.ifEmpty { profile.sshHost }
+
+                    withContext(Dispatchers.IO) {
+                        when (output) {
+                            app.slipnet.domain.model.LayerOutput.RAW_TCP -> {
+                                Log.i(TAG, "Starting SSH[$layerIndex] over raw TCP ($chainSshHost:${profile.sshPort} via $prevHost:$prevPort)")
+                                sshInstance.startOverProxy(
+                                    sshHost = chainSshHost,
+                                    sshPort = profile.sshPort,
+                                    sshUsername = profile.sshUsername,
+                                    sshPassword = profile.sshPassword,
+                                    proxyHost = prevHost,
+                                    proxyPort = prevPort,
+                                    listenPort = layerPort,
+                                    listenHost = layerHost,
+                                    blockDirectDns = true,
+                                    sshAuthType = profile.sshAuthType,
+                                    sshPrivateKey = profile.sshPrivateKey,
+                                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                                    remoteDnsHost = remoteDns,
+                                    remoteDnsFallback = remoteDnsFallback
+                                )
+                            }
+                            app.slipnet.domain.model.LayerOutput.SOCKS5 -> {
+                                Log.i(TAG, "Starting SSH[$layerIndex] over SOCKS5 ($chainSshHost:${profile.sshPort} via $prevHost:$prevPort)")
+                                sshInstance.startOverSocks5Proxy(
+                                    sshHost = chainSshHost,
+                                    sshPort = profile.sshPort,
+                                    sshUsername = profile.sshUsername,
+                                    sshPassword = profile.sshPassword,
+                                    proxyHost = prevHost,
+                                    proxyPort = prevPort,
+                                    socksUsername = null,
+                                    socksPassword = null,
+                                    listenPort = layerPort,
+                                    listenHost = layerHost,
+                                    sshAuthType = profile.sshAuthType,
+                                    sshPrivateKey = profile.sshPrivateKey,
+                                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                                    remoteDnsHost = remoteDns,
+                                    remoteDnsFallback = remoteDnsFallback
+                                )
+                            }
+                            null -> Result.failure(Exception("Previous layer cannot provide output for SSH"))
+                        }
+                    }
+                } else {
+                    withContext(Dispatchers.IO) {
+                        sshInstance.startDirect(
+                            tunnelHost = profile.domain,
+                            tunnelPort = profile.sshPort,
+                            sshUsername = profile.sshUsername,
+                            sshPassword = profile.sshPassword,
+                            listenPort = layerPort,
+                            listenHost = layerHost,
+                            forwardDnsThroughSsh = true,
+                            sshAuthType = profile.sshAuthType,
+                            sshPrivateKey = profile.sshPrivateKey,
+                            sshKeyPassphrase = profile.sshKeyPassphrase,
+                            remoteDnsHost = remoteDns,
+                            remoteDnsFallback = remoteDnsFallback
+                        )
+                    }
+                }
+            }
+            TunnelType.NAIVE -> {
+                if (isLast && prevPort <= 0) {
+                    val internalPort = layerPort + 1
+                    val naiveResult = withContext(Dispatchers.IO) {
+                        NaiveBridge.start(
+                            context = this@SlipNetVpnService,
+                            listenPort = internalPort,
+                            serverHost = profile.domain,
+                            serverPort = profile.naivePort,
+                            username = profile.naiveUsername,
+                            password = profile.naivePassword
+                        )
+                    }
+                    if (naiveResult.isFailure) return naiveResult
+                    vpnRepository.startNaiveSocksBridge(
+                        naivePort = internalPort, naiveHost = "127.0.0.1",
+                        bridgePort = layerPort, bridgeHost = layerHost,
+                        dnsServer = remoteDns, dnsFallback = remoteDnsFallback
+                    )
+                } else {
+                    withContext(Dispatchers.IO) {
+                        NaiveBridge.start(
+                            context = this@SlipNetVpnService,
+                            listenPort = layerPort,
+                            serverHost = profile.domain,
+                            serverPort = profile.naivePort,
+                            username = profile.naiveUsername,
+                            password = profile.naivePassword
+                        )
+                    }
+                }
+            }
+            TunnelType.SNOWFLAKE -> {
+                val ptPort = layerPort + 2
+                val torPort = layerPort + 1
+                vpnRepository.startSnowflakeProxy(profile, ptPort, torPort, layerPort)
+            }
+            TunnelType.DOH -> {
+                vpnRepository.startDohProxy(profile)
+            }
+            TunnelType.SOCKS5 -> {
+                val socksInstance = Socks5ProxyBridge.createInstance("chain-socks5-$layerIndex")
+                socksInstance.debugLogging = Socks5ProxyBridge.debugLogging
+                socksInstance.domainRouter = Socks5ProxyBridge.domainRouter
+                withContext(Dispatchers.IO) {
+                    socksInstance.start(
+                        remoteHost = profile.domain,
+                        remotePort = profile.socks5ServerPort,
+                        remoteUsername = profile.socksUsername,
+                        remotePassword = profile.socksPassword,
+                        listenPort = layerPort,
+                        listenHost = layerHost,
+                        dnsHost = remoteDns
+                    )
+                }
+            }
+            else -> Result.failure(Exception("${profile.tunnelType.displayName} cannot be used in a chain"))
+        }
+    }
+
+    /** Stop a single tunnel layer by type. */
+    private fun stopLayer(type: TunnelType) {
+        when (type) {
+            TunnelType.DNSTT, TunnelType.NOIZDNS -> {
+                DnsttSocksBridge.stop()
+                DnsttBridge.stopClient()
+            }
+            TunnelType.SLIPSTREAM -> {
+                SlipstreamSocksBridge.stop()
+                SlipstreamBridge.stopClient()
+            }
+            TunnelType.SSH -> SshTunnelBridge.stopAll()
+            TunnelType.NAIVE -> {
+                NaiveSocksBridge.stop()
+                NaiveBridge.stop()
+            }
+            TunnelType.SNOWFLAKE -> {
+                TorSocksBridge.stop()
+                SnowflakeBridge.stopClient()
+            }
+            TunnelType.DOH -> DohBridge.stop()
+            TunnelType.SOCKS5 -> Socks5ProxyBridge.stopAll()
+            else -> {}
         }
     }
 
@@ -602,6 +1103,18 @@ class SlipNetVpnService : VpnService() {
             }
         }
         SshTunnelBridge.configure(
+            cipher = cipher.jschConfig,
+            compression = compression,
+            maxChannels = maxChannels
+        )
+    }
+
+    private suspend fun configureSshInstance(instance: app.slipnet.tunnel.SshTunnelInstance) {
+        val cipher = preferencesDataStore.sshCipher.first()
+        val compression = preferencesDataStore.sshCompression.first()
+        val isCustom = preferencesDataStore.sshMaxChannelsIsCustom.first()
+        val maxChannels = if (isCustom) preferencesDataStore.sshMaxChannels.first() else 32
+        instance.configure(
             cipher = cipher.jschConfig,
             compression = compression,
             maxChannels = maxChannels
@@ -1709,6 +2222,109 @@ class SlipNetVpnService : VpnService() {
      * On reconnect, SMART profiles fall back to built-in Snowflake (SnowflakeBridge
      * treats "SMART" sentinel as built-in Snowflake).
      */
+
+    /**
+     * Connect using a remote SOCKS5 proxy.
+     * Traffic flow:
+     * App -> TUN -> hev-socks5-tunnel -> Socks5ProxyBridge (proxyPort)
+     *   -> Remote SOCKS5 Proxy (domain:socks5ServerPort) -> Internet
+     */
+    private suspend fun connectSocks5(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String) {
+        val proxyPort = preferencesDataStore.proxyListenPort.first()
+        val proxyHost = preferencesDataStore.proxyListenAddress.first()
+
+        if (isProxyOnly) {
+            Socks5ProxyBridge.debugLogging = preferencesDataStore.debugLogging.first()
+            val bridgeResult = withContext(Dispatchers.IO) {
+                Socks5ProxyBridge.start(
+                    remoteHost = profile.domain,
+                    remotePort = profile.socks5ServerPort,
+                    remoteUsername = profile.socksUsername,
+                    remotePassword = profile.socksPassword,
+                    listenPort = proxyPort,
+                    listenHost = proxyHost,
+                    dnsHost = remoteDns
+                )
+            }
+            if (bridgeResult.isFailure) {
+                connectionManager.onVpnError(bridgeResult.exceptionOrNull()?.message ?: "Failed to start SOCKS5 proxy bridge")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+
+            if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 100)) {
+                connectionManager.onVpnError("SOCKS5 proxy bridge failed to start")
+                Socks5ProxyBridge.stop()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+
+            vpnRepository.setProxyConnected(profile)
+            Log.i(TAG, "Proxy-only mode: SOCKS5 proxy bridge ready on $proxyHost:$proxyPort")
+            finishConnection()
+            return
+        }
+
+        // Step 1: Establish VPN interface
+        vpnInterface = establishVpnInterface(dnsServer)
+        if (vpnInterface == null) {
+            connectionManager.onVpnError("Failed to establish VPN interface")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+        delay(200)
+
+        // Step 2: Start SOCKS5 proxy bridge
+        Socks5ProxyBridge.debugLogging = preferencesDataStore.debugLogging.first()
+        val bridgeResult = withContext(Dispatchers.IO) {
+            Socks5ProxyBridge.start(
+                remoteHost = profile.domain,
+                remotePort = profile.socks5ServerPort,
+                remoteUsername = profile.socksUsername,
+                remotePassword = profile.socksPassword,
+                listenPort = proxyPort,
+                listenHost = proxyHost,
+                dnsHost = remoteDns
+            )
+        }
+        if (bridgeResult.isFailure) {
+            connectionManager.onVpnError(bridgeResult.exceptionOrNull()?.message ?: "Failed to start SOCKS5 proxy bridge")
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 100)) {
+            connectionManager.onVpnError("SOCKS5 proxy bridge failed to start")
+            Socks5ProxyBridge.stop()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Step 3: Start tun2socks
+        val tun2socksResult = vpnRepository.startTun2Socks(profile, vpnInterface!!)
+        if (tun2socksResult.isFailure) {
+            connectionManager.onVpnError(tun2socksResult.exceptionOrNull()?.message ?: "Failed to start tunnel")
+            Socks5ProxyBridge.stop()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        Log.d(TAG, "SOCKS5 proxy tunnel started")
+        finishConnection()
+    }
+
     private suspend fun connectSnowflakeSmart(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
@@ -1834,6 +2450,7 @@ class SlipNetVpnService : VpnService() {
             TunnelType.NAIVE_SSH -> NaiveBridge.isRunning()
             TunnelType.NAIVE -> NaiveBridge.isRunning()
             TunnelType.SNOWFLAKE -> SnowflakeBridge.isRunning()
+            TunnelType.SOCKS5 -> Socks5ProxyBridge.isRunning()
         }
         Log.e(TAG, "Proxy failed to become ready on port $port, nativeRunning=$nativeRunning")
 
@@ -1860,6 +2477,16 @@ class SlipNetVpnService : VpnService() {
         // Notify connection manager for bookkeeping (profile preferences, etc.)
         connectionManager.onVpnEstablished()
 
+        // Tag the Connected state with chain info so the UI can highlight the chain
+        if (currentChainId > 0) {
+            val current = vpnRepository.connectionState.value
+            if (current is ConnectionState.Connected) {
+                vpnRepository.updateConnectionState(
+                    current.copy(chainId = currentChainId, chainName = currentProfileName)
+                )
+            }
+        }
+
         // Save connection state for auto-restart if killed by system
         saveConnectionState(currentProfileId, connected = true)
 
@@ -1871,12 +2498,12 @@ class SlipNetVpnService : VpnService() {
                     val httpEnabled = preferencesDataStore.httpProxyEnabled.first()
                     if (httpEnabled) {
                         val httpPort = preferencesDataStore.httpProxyPort.first()
-                        val socksHost = preferencesDataStore.proxyListenAddress.first()
+                        val listenHost = preferencesDataStore.proxyListenAddress.first()
                         val socksPort = preferencesDataStore.proxyListenPort.first()
                         val result = HttpProxyServer.start(
-                            socksHost = socksHost,
+                            socksHost = "127.0.0.1",
                             socksPort = socksPort,
-                            listenHost = socksHost,
+                            listenHost = listenHost,
                             listenPort = httpPort
                         )
                         if (result.isFailure) {
@@ -1980,7 +2607,12 @@ class SlipNetVpnService : VpnService() {
                         Log.e(TAG, "Error checking NoizDNS state: ${e.message}")
                         true
                     }
-                    TunnelType.SSH -> SshTunnelBridge.isRunning()
+                    TunnelType.SSH -> {
+                        // Check default instance or any chain instance
+                        SshTunnelBridge.isRunning() || (0..3).any {
+                            SshTunnelBridge.getInstance("chain-ssh-$it")?.isRunning() == true
+                        }
+                    }
                     TunnelType.DNSTT_SSH -> try {
                         DnsttBridge.isRunning()
                     } catch (e: Exception) {
@@ -1997,6 +2629,11 @@ class SlipNetVpnService : VpnService() {
                     TunnelType.NAIVE_SSH -> NaiveBridge.isRunning()
                     TunnelType.NAIVE -> NaiveBridge.isRunning()
                     TunnelType.SNOWFLAKE -> SnowflakeBridge.isRunning()
+                    TunnelType.SOCKS5 -> {
+                        Socks5ProxyBridge.isRunning() || (0..3).any {
+                            Socks5ProxyBridge.getInstance("chain-socks5-$it")?.isRunning() == true
+                        }
+                    }
                 }
 
                 if (!nativeRunning) {
@@ -2211,20 +2848,22 @@ class SlipNetVpnService : VpnService() {
 
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             private var currentNetwork: Network? = null
-            private var initialized = false
+            // Ignore onAvailable calls for 2s after registration to let all
+            // initial callbacks settle (WiFi + cellular fire back-to-back)
+            private val registeredAt = System.currentTimeMillis()
+            private val quietPeriodMs = 2000L
 
             override fun onAvailable(network: Network) {
                 Log.d(TAG, "Network available: $network")
-                if (!initialized) {
-                    // First callback after registration — just record the existing network
-                    Log.d(TAG, "Initial network detected: $network (no reconnection)")
+                if (System.currentTimeMillis() - registeredAt < quietPeriodMs) {
+                    Log.d(TAG, "Initial network detected: $network (quiet period, no reconnection)")
                     currentNetwork = network
                     updateTrackedAddresses(network)
-                    initialized = true
                     return
                 }
                 if (currentNetwork == null) {
@@ -2260,6 +2899,12 @@ class SlipNetVpnService : VpnService() {
                     .toSet()
 
                 Log.d(TAG, "Link properties changed: $network, addresses=$newAddresses")
+
+                // Skip IP change detection during quiet period
+                if (System.currentTimeMillis() - registeredAt < quietPeriodMs) {
+                    lastNetworkAddresses = newAddresses
+                    return
+                }
 
                 // If IP addresses changed, we need to reconnect
                 if (lastNetworkAddresses.isNotEmpty() && newAddresses != lastNetworkAddresses) {
@@ -2344,12 +2989,37 @@ class SlipNetVpnService : VpnService() {
                     return@launch
                 }
 
+                // Save chain state before stopCurrentProxy clears it
+                val savedChainId = currentChainId
+                val wasChain = activeChainLayers.isNotEmpty()
+
                 // Stop current tunnels on IO to avoid blocking Main with Thread.sleep
                 withContext(Dispatchers.IO) {
                     if (!isProxyOnly) {
                         HevSocks5Tunnel.stop()
                     }
                     stopCurrentProxy()
+                }
+
+                // Chain reconnection: re-execute the full chain
+                if (wasChain && savedChainId > 0) {
+                    Log.i(TAG, "Reconnecting chain $savedChainId after network change")
+                    val chain = chainRepository.getChainById(savedChainId)
+                    if (chain == null) {
+                        Log.e(TAG, "Cannot reconnect chain: chain not found")
+                        handleTunnelFailure("chain not found during reconnect")
+                        return@launch
+                    }
+                    val chainProfiles = chain.profileIds.mapNotNull { connectionManager.getProfileById(it) }
+                    if (chainProfiles.size != chain.profileIds.size) {
+                        Log.e(TAG, "Cannot reconnect chain: some profiles were deleted")
+                        handleTunnelFailure("chain profiles missing during reconnect")
+                        return@launch
+                    }
+                    currentChainId = savedChainId
+                    executeChain(chainProfiles)
+                    Log.i(TAG, "Chain reconnected successfully after network change")
+                    return@launch
                 }
 
                 // For DNSTT-based tunnels, explicitly wait for the Go runtime to
@@ -2593,13 +3263,16 @@ class SlipNetVpnService : VpnService() {
                     }
 
                     // Restart bridge on proxyPort (with auth for Dante)
+                    DnsttSocksBridge.authoritativeMode = profile.dnsttAuthoritative
                     val bridgeResult = vpnRepository.startDnsttSocksBridge(
                         dnsttPort = actualDnsttPort,
                         dnsttHost = "127.0.0.1",
                         bridgePort = proxyPort,
                         bridgeHost = proxyHost,
                         socksUsername = profile.socksUsername,
-                        socksPassword = profile.socksPassword
+                        socksPassword = profile.socksPassword,
+                        dnsServer = remoteDns,
+                        dnsFallback = remoteDnsFallback
                     )
                     if (bridgeResult.isFailure) {
                         Log.e(TAG, "Failed to restart ${if (isNoizdns) "NoizDNS" else "DNSTT"} bridge after network change")
@@ -2791,11 +3464,10 @@ class SlipNetVpnService : VpnService() {
                     if (appendProxy || httpEnabled) {
                         val httpPort = preferencesDataStore.httpProxyPort.first()
                         val socksPort = preferencesDataStore.proxyListenPort.first()
-                        // Append mode uses 127.0.0.1; hotspot mode uses proxyListenAddress
-                        val socksHost = if (appendProxy) "127.0.0.1" else preferencesDataStore.proxyListenAddress.first()
-                        val listenHost = if (appendProxy) "127.0.0.1" else socksHost
+                        // Append mode uses 127.0.0.1 for listen; hotspot mode uses proxyListenAddress
+                        val listenHost = if (appendProxy) "127.0.0.1" else preferencesDataStore.proxyListenAddress.first()
                         val result = HttpProxyServer.start(
-                            socksHost = socksHost,
+                            socksHost = "127.0.0.1",
                             socksPort = socksPort,
                             listenHost = listenHost,
                             listenPort = httpPort
@@ -2836,6 +3508,17 @@ class SlipNetVpnService : VpnService() {
     private fun stopCurrentProxy() {
         // Always stop HTTP proxy (it chains through whatever SOCKS5 proxy is running)
         HttpProxyServer.stop()
+
+        // If this was a chain connection, stop all layers in reverse order
+        if (activeChainLayers.isNotEmpty()) {
+            Log.d(TAG, "Stopping chain layers: ${activeChainLayers.reversed().joinToString(" → ") { it.displayName }}")
+            for (layer in activeChainLayers.reversed()) {
+                stopLayer(layer)
+            }
+            activeChainLayers = emptyList()
+            currentChainId = -1
+            return
+        }
 
         when (currentTunnelType) {
             TunnelType.SLIPSTREAM -> {
@@ -2891,6 +3574,10 @@ class SlipNetVpnService : VpnService() {
                 TorSocksBridge.stop()
                 SnowflakeBridge.stopClient()
             }
+            TunnelType.SOCKS5 -> {
+                Log.d(TAG, "Stopping SOCKS5 proxy bridge")
+                Socks5ProxyBridge.stop()
+            }
         }
     }
 
@@ -2910,6 +3597,7 @@ class SlipNetVpnService : VpnService() {
             TunnelType.NAIVE_SSH -> { /* NaiveProxy+SSH: no bridge reference to clear */ }
             TunnelType.NAIVE -> { /* NaiveProxy standalone: no bridge reference to clear */ }
             TunnelType.SNOWFLAKE -> { /* Snowflake: no bridge reference to clear */ }
+            TunnelType.SOCKS5 -> { /* SOCKS5: no bridge reference to clear */ }
         }
     }
 
@@ -2935,6 +3623,7 @@ class SlipNetVpnService : VpnService() {
             TunnelType.NAIVE_SSH -> NaiveBridge.isClientHealthy() && SshTunnelBridge.isClientHealthy()
             TunnelType.NAIVE -> NaiveBridge.isClientHealthy() && NaiveSocksBridge.isClientHealthy()
             TunnelType.SNOWFLAKE -> SnowflakeBridge.isClientHealthy() && TorSocksBridge.isClientHealthy()
+            TunnelType.SOCKS5 -> Socks5ProxyBridge.isRunning() && Socks5ProxyBridge.isClientHealthy()
         }
     }
 
@@ -2969,7 +3658,8 @@ class SlipNetVpnService : VpnService() {
                 currentTunnelType == TunnelType.SLIPSTREAM_SSH ||
                 currentTunnelType == TunnelType.NAIVE_SSH ||
                 currentTunnelType == TunnelType.NAIVE ||
-                currentTunnelType == TunnelType.SNOWFLAKE
+                currentTunnelType == TunnelType.SNOWFLAKE ||
+                currentTunnelType == TunnelType.SOCKS5
 
         val splitEnabled = preferencesDataStore.splitTunnelingEnabled.first()
         val splitMode = preferencesDataStore.splitTunnelingMode.first()

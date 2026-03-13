@@ -361,6 +361,8 @@ class DnsScannerViewModel @Inject constructor(
     private var simpleModeE2eJob: Job? = null
     private var e2ePendingQueue: SortableQueue<Pair<String, Int>>? = null
     private val gson = Gson()
+    @Volatile private var lastPeriodicSaveMs = 0L
+    private val periodicSaveIntervalMs = 30_000L
 
     // Wake lock to keep CPU alive during scanning when app is backgrounded
     private var wakeLock: PowerManager.WakeLock? = null
@@ -532,6 +534,16 @@ class DnsScannerViewModel @Inject constructor(
             loadScannerSettings()
             try {
                 val json = preferencesDataStore.getSavedScanSession()
+                    ?: try {
+                        // Fallback: read from cache file (written synchronously in onCleared
+                        // as a safety net in case the DataStore write didn't complete).
+                        val cacheFile = java.io.File(appContext.cacheDir, "scan_session.json")
+                        if (cacheFile.exists()) cacheFile.readText().also {
+                            // Migrate to DataStore so subsequent loads are consistent
+                            preferencesDataStore.saveScanSession(it)
+                            cacheFile.delete()
+                        } else null
+                    } catch (_: Exception) { null }
                 if (json != null) {
                     val session = gson.fromJson(json, SavedScanSession::class.java)
                     val savedMode = try { session.scanMode?.let { ScanMode.valueOf(it) } } catch (_: Exception) { null }
@@ -640,6 +652,14 @@ class DnsScannerViewModel @Inject constructor(
         }
     }
 
+    /** Throttled periodic save — call from hot paths (emitState). */
+    private fun periodicSaveIfNeeded() {
+        val now = System.currentTimeMillis()
+        if (now - lastPeriodicSaveMs < periodicSaveIntervalMs) return
+        lastPeriodicSaveMs = now
+        saveScanSessionToStore()
+    }
+
     private fun clearSavedSession() {
         viewModelScope.launch {
             try {
@@ -652,20 +672,35 @@ class DnsScannerViewModel @Inject constructor(
 
     fun loadDefaultList() {
         clearSavedSession()
+        e2eJob?.cancel()
+        simpleModeE2eJob?.cancel()
         _uiState.value = _uiState.value.copy(
             resolverList = scannerRepository.getDefaultResolvers(),
             listSource = ListSource.DEFAULT,
             scannerState = ScannerState(),
-            selectedResolvers = emptySet()
+            selectedResolvers = emptySet(),
+            e2eScannerState = E2eScannerState(),
+            simpleModeE2eState = SimpleModeE2eState()
         )
         saveListSelection()
     }
 
-    fun importList(content: String, fileName: String? = null) {
+    fun importList(uri: android.net.Uri) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoadingList = true)
             try {
-                val resolvers = scannerRepository.parseResolverList(content)
+                val (resolvers, fileName) = withContext(Dispatchers.IO) {
+                    val name = try {
+                        appContext.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                            val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (cursor.moveToFirst() && idx >= 0) cursor.getString(idx) else null
+                        }
+                    } catch (_: Exception) { null }
+                    val parsed = appContext.contentResolver.openInputStream(uri)?.use { stream ->
+                        scannerRepository.parseResolverList(stream.bufferedReader())
+                    } ?: emptyList()
+                    Pair(parsed, name)
+                }
                 if (resolvers.isEmpty()) {
                     _uiState.value = _uiState.value.copy(
                         isLoadingList = false,
@@ -673,12 +708,16 @@ class DnsScannerViewModel @Inject constructor(
                     )
                 } else {
                     clearSavedSession()
+                    e2eJob?.cancel()
+                    simpleModeE2eJob?.cancel()
                     _uiState.value = _uiState.value.copy(
                         resolverList = resolvers,
                         listSource = ListSource.IMPORTED,
                         importedFileName = fileName,
                         scannerState = ScannerState(),
                         selectedResolvers = emptySet(),
+                        e2eScannerState = E2eScannerState(),
+                        simpleModeE2eState = SimpleModeE2eState(),
                         isLoadingList = false
                     )
                     saveListSelection()
@@ -810,11 +849,15 @@ class DnsScannerViewModel @Inject constructor(
                     )
                 } else {
                     clearSavedSession()
+                    e2eJob?.cancel()
+                    simpleModeE2eJob?.cancel()
                     _uiState.value = _uiState.value.copy(
                         resolverList = ips,
                         listSource = ListSource.COUNTRY_RANGE,
                         scannerState = ScannerState(),
                         selectedResolvers = emptySet(),
+                        e2eScannerState = E2eScannerState(),
+                        simpleModeE2eState = SimpleModeE2eState(),
                         isLoadingList = false,
                         timeoutMs = "1500"
                     )
@@ -882,11 +925,15 @@ class DnsScannerViewModel @Inject constructor(
                     )
                 } else {
                     clearSavedSession()
+                    e2eJob?.cancel()
+                    simpleModeE2eJob?.cancel()
                     _uiState.value = _uiState.value.copy(
                         resolverList = ips,
                         listSource = ListSource.IR_DNS_RANGE,
                         scannerState = ScannerState(),
                         selectedResolvers = emptySet(),
+                        e2eScannerState = E2eScannerState(),
+                        simpleModeE2eState = SimpleModeE2eState(),
                         isLoadingList = false,
                         timeoutMs = "1500"
                     )
@@ -968,11 +1015,15 @@ class DnsScannerViewModel @Inject constructor(
             try {
                 val ips = scannerRepository.expandIpRanges(ranges)
                 clearSavedSession()
+                e2eJob?.cancel()
+                simpleModeE2eJob?.cancel()
                 _uiState.value = _uiState.value.copy(
                     resolverList = ips,
                     listSource = ListSource.CUSTOM_RANGE,
                     scannerState = ScannerState(),
                     selectedResolvers = emptySet(),
+                    e2eScannerState = E2eScannerState(),
+                    simpleModeE2eState = SimpleModeE2eState(),
                     isLoadingList = false,
                     timeoutMs = "1500"
                 )
@@ -1067,6 +1118,12 @@ class DnsScannerViewModel @Inject constructor(
     }
 
     fun startFreshScan() {
+        // Cancel any previous scan/E2E jobs before starting fresh
+        scanJob?.cancel()
+        e2eJob?.cancel()
+        simpleModeE2eJob?.cancel()
+        e2ePendingQueue?.close()
+
         acquireWakeLock()
         _uiState.value = _uiState.value.copy(showResumeDialog = false)
         clearSavedSession()
@@ -1137,6 +1194,12 @@ class DnsScannerViewModel @Inject constructor(
     }
 
     fun resumeScan() {
+        // Cancel any previous scan/E2E jobs before resuming
+        scanJob?.cancel()
+        e2eJob?.cancel()
+        simpleModeE2eJob?.cancel()
+        e2ePendingQueue?.close()
+
         acquireWakeLock()
         _uiState.value = _uiState.value.copy(showResumeDialog = false)
         clearSavedSession()
@@ -1317,6 +1380,7 @@ class DnsScannerViewModel @Inject constructor(
                             )
                         )
                     }
+                    periodicSaveIfNeeded()
                 }
 
                 fun handleResult(result: ResolverScanResult) {
@@ -1391,6 +1455,8 @@ class DnsScannerViewModel @Inject constructor(
                             activeResolvers = emptyMap()
                         ))
                     }
+                    cleanupBridge()
+                    saveScanSessionToStore()
                     releaseWakeLock()
                 }
             )
@@ -1456,6 +1522,7 @@ class DnsScannerViewModel @Inject constructor(
                         )
                     )
                 }
+                periodicSaveIfNeeded()
             }
 
             fun handleResult(result: ResolverScanResult) {
@@ -1505,6 +1572,7 @@ class DnsScannerViewModel @Inject constructor(
             }
 
             emitState(false, force = true)
+            saveScanSessionToStore()
             clearSavedSession()
             releaseWakeLock()
         }
@@ -1582,6 +1650,7 @@ class DnsScannerViewModel @Inject constructor(
                         )
                     )
                 }
+                periodicSaveIfNeeded()
             }
 
             fun handleResult(result: ResolverScanResult) {
@@ -1661,6 +1730,8 @@ class DnsScannerViewModel @Inject constructor(
                             activeResolvers = emptyMap()
                         ))
                     }
+                    cleanupBridge()
+                    saveScanSessionToStore()
                     releaseWakeLock()
                 }
             )
@@ -1874,6 +1945,11 @@ class DnsScannerViewModel @Inject constructor(
     }
 
     fun startE2eTest(fresh: Boolean = false, minScore: Int = 0) {
+        // Cancel any previous E2E test to prevent its onComplete/cleanupBridge
+        // from interfering with the new test's first batch of workers.
+        e2eJob?.cancel()
+        e2ePendingQueue?.close()
+
         val state = _uiState.value
         val profile = state.profile ?: run {
             _uiState.value = state.copy(error = "No profile loaded")
@@ -1967,6 +2043,7 @@ class DnsScannerViewModel @Inject constructor(
                             isRunning = false, activeResolvers = emptyMap()
                         ))
                     }
+                    cleanupBridge()
                     releaseWakeLock()
                 }
             )
@@ -2023,6 +2100,7 @@ class DnsScannerViewModel @Inject constructor(
         e2eJob?.cancel()
         e2ePendingQueue?.close()
         simpleModeE2eJob?.cancel()
+        cleanupBridge()
 
         // Save partial results so the user can resume after navigating away.
         val state = _uiState.value
@@ -2053,10 +2131,22 @@ class DnsScannerViewModel @Inject constructor(
                 customRangeInput = state.customRangeInput.ifEmpty { null },
                 scanMode = state.scanMode.name
             )
+            val json = gson.toJson(session)
+            // Write to cache file synchronously as a safety net (survives even if
+            // the DataStore coroutine doesn't complete before the scope is cancelled).
             try {
-                val file = java.io.File(appContext.cacheDir, "scan_session.json")
-                file.writeText(gson.toJson(session))
+                java.io.File(appContext.cacheDir, "scan_session.json").writeText(json)
             } catch (_: Exception) {}
+            // Also persist to DataStore (primary source read on next launch).
+            // viewModelScope is still active during onCleared, but cancelled right
+            // after — use NonCancellable so the write completes.
+            viewModelScope.launch {
+                withContext(NonCancellable) {
+                    try {
+                        preferencesDataStore.saveScanSession(json)
+                    } catch (_: Exception) {}
+                }
+            }
         }
     }
 }

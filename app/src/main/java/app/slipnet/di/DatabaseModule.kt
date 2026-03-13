@@ -2,6 +2,7 @@ package app.slipnet.di
 
 import android.content.Context
 import androidx.room.Room
+import app.slipnet.data.local.database.ChainDao
 import app.slipnet.data.local.database.ProfileDao
 import app.slipnet.data.local.database.SlipNetDatabase
 import dagger.Module
@@ -42,7 +43,9 @@ object DatabaseModule {
                 SlipNetDatabase.MIGRATION_18_19,
                 SlipNetDatabase.MIGRATION_19_20,
                 SlipNetDatabase.MIGRATION_20_21,
-                SlipNetDatabase.MIGRATION_21_22
+                SlipNetDatabase.MIGRATION_21_22,
+                SlipNetDatabase.MIGRATION_22_23,
+                SlipNetDatabase.MIGRATION_23_24
             )
             .fallbackToDestructiveMigrationFrom(1, 2, 3, 4)
             .build()
@@ -52,5 +55,11 @@ object DatabaseModule {
     @Singleton
     fun provideProfileDao(database: SlipNetDatabase): ProfileDao {
         return database.profileDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideChainDao(database: SlipNetDatabase): ChainDao {
+        return database.chainDao()
     }
 }

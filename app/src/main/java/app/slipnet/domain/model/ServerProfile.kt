@@ -64,7 +64,9 @@ data class ServerProfile(
     // Lower values produce smaller, less conspicuous DNS queries.
     val dnsPayloadSize: Int = 0,
     // When true, resolvers are hidden from the user (set during import of hidden-resolver profiles)
-    val resolversHidden: Boolean = false
+    val resolversHidden: Boolean = false,
+    // SOCKS5 proxy server port (for SOCKS5 tunnel type)
+    val socks5ServerPort: Int = 1080
 ) {
     val isExpired: Boolean get() = expirationDate > 0 && System.currentTimeMillis() > expirationDate
 }
@@ -97,7 +99,8 @@ enum class TunnelType(val value: String, val displayName: String) {
     DOH("doh", "DOH (DNS over HTTPS)"),
     SNOWFLAKE("snowflake", "Tor"),
     NAIVE_SSH("naive_ssh", "NaiveProxy + SSH"),
-    NAIVE("naive", "NaiveProxy");
+    NAIVE("naive", "NaiveProxy"),
+    SOCKS5("socks5", "SOCKS5 Proxy");
 
     companion object {
         fun fromValue(value: String): TunnelType {

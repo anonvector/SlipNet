@@ -149,6 +149,9 @@ data class EditProfileUiState(
     val resolversHidden: Boolean = false,
     // When true, user chose to use their own resolver instead of the hidden default
     val useCustomResolver: Boolean = false,
+    // SOCKS5 proxy fields
+    val socks5ServerPort: String = "1080",
+    val socks5ServerPortError: String? = null,
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NOIZDNS_SSH
@@ -183,8 +186,11 @@ data class EditProfileUiState(
     val isNaiveBased: Boolean
         get() = tunnelType == TunnelType.NAIVE || tunnelType == TunnelType.NAIVE_SSH
 
+    val isSocks5: Boolean
+        get() = tunnelType == TunnelType.SOCKS5
+
     val showConnectionMethod: Boolean
-        get() = !isSshOnly && !isDoh && !isSnowflake
+        get() = !isSshOnly && !isDoh && !isSnowflake && !isSocks5
 }
 
 @HiltViewModel
@@ -240,7 +246,7 @@ class EditProfileViewModel @Inject constructor(
                     profileId = profile.id,
                     name = profile.name,
                     domain = profile.domain,
-                    resolvers = profile.resolvers.joinToString(",") { "${it.host}:${it.port}" },
+                    resolvers = if (profile.resolversHidden) "" else profile.resolvers.joinToString(",") { "${it.host}:${it.port}" },
                     authoritativeMode = profile.authoritativeMode,
                     keepAliveInterval = profile.keepAliveInterval.toString(),
                     congestionControl = profile.congestionControl,
@@ -272,6 +278,7 @@ class EditProfileViewModel @Inject constructor(
                     allowSharing = profile.allowSharing,
                     boundDeviceId = profile.boundDeviceId,
                     resolversHidden = profile.resolversHidden,
+                    socks5ServerPort = profile.socks5ServerPort.toString(),
                     isLoading = false
                 )
             } else {
@@ -407,6 +414,10 @@ class EditProfileViewModel @Inject constructor(
 
     fun updateNaivePassword(password: String) {
         _uiState.value = _uiState.value.copy(naivePassword = password, naivePasswordError = null)
+    }
+
+    fun updateSocks5ServerPort(port: String) {
+        _uiState.value = _uiState.value.copy(socks5ServerPort = port, socks5ServerPortError = null)
     }
 
     fun updateDohUrl(url: String) {
@@ -1007,7 +1018,7 @@ class EditProfileViewModel @Inject constructor(
         // Resolver validation (SSH-only, DOH, Snowflake, NaiveProxy-based, and DNSTT with DoH transport don't need resolvers)
         // Also skip when resolvers are hidden and user isn't overriding with custom ones
         val skipResolvers = state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
-                state.tunnelType == TunnelType.SNOWFLAKE || state.isNaiveBased ||
+                state.tunnelType == TunnelType.SNOWFLAKE || state.isNaiveBased || state.isSocks5 ||
                 (state.isDnsttOrNoizBased && state.dnsTransport == DnsTransport.DOH) ||
                 (state.resolversHidden && !state.useCustomResolver)
         if (!skipResolvers) {
@@ -1036,6 +1047,15 @@ class EditProfileViewModel @Inject constructor(
         if (state.tunnelType == TunnelType.SNOWFLAKE && state.torBridgeType == TorBridgeType.CUSTOM) {
             if (state.torBridgeLines.isBlank()) {
                 _uiState.value = _uiState.value.copy(torBridgeLinesError = "Bridge lines are required")
+                hasError = true
+            }
+        }
+
+        // SOCKS5 proxy validation
+        if (state.isSocks5) {
+            val port = state.socks5ServerPort.toIntOrNull()
+            if (port == null || port !in 1..65535) {
+                _uiState.value = _uiState.value.copy(socks5ServerPortError = "Port must be between 1 and 65535")
                 hasError = true
             }
         }
@@ -1146,6 +1166,7 @@ class EditProfileViewModel @Inject constructor(
                     allowSharing = state.allowSharing,
                     boundDeviceId = state.boundDeviceId,
                     resolversHidden = state.resolversHidden && !state.useCustomResolver,
+                    socks5ServerPort = if (state.isSocks5) (state.socks5ServerPort.toIntOrNull() ?: 1080) else 1080,
                 )
 
                 val savedId = saveProfileUseCase(profile)

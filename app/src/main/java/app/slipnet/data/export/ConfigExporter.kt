@@ -37,6 +37,7 @@ class ConfigExporter @Inject constructor() {
         const val MODE_SNOWFLAKE = "snowflake"
         const val MODE_NAIVE_SSH = "naive_ssh"
         const val MODE_NAIVE = "naive"
+        const val MODE_SOCKS5 = "socks5"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -100,6 +101,7 @@ class ConfigExporter @Inject constructor() {
             TunnelType.SNOWFLAKE -> MODE_SNOWFLAKE
             TunnelType.NAIVE_SSH -> MODE_NAIVE_SSH
             TunnelType.NAIVE -> MODE_NAIVE
+            TunnelType.SOCKS5 -> MODE_SOCKS5
         }
 
         // When hideResolvers is true, leave position 4 empty so old versions (v1-v16)

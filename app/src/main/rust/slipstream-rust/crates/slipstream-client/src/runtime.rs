@@ -371,8 +371,9 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                     ResolverMode::Recursive => resolver.pending_polls,
                 };
                 if pending_for_sleep > 0 {
-                    if is_idle && resolver.mode == ResolverMode::Authoritative {
+                    if is_idle {
                         // When idle, only wake for the next idle poll interval
+                        // (applies to both authoritative and recursive resolvers)
                         if current_time_for_idle.saturating_sub(last_idle_poll_at)
                             >= idle_poll_interval_us
                         {
@@ -638,38 +639,58 @@ pub async fn run_client(config: &ClientConfig<'_>) -> Result<i32, ClientError> {
                     ResolverMode::Recursive => {
                         resolver.last_pacing_snapshot = None;
                         if resolver.pending_polls > 0 {
-                            let burst_max = path_poll_burst_max(resolver);
-                            if resolver.pending_polls > burst_max {
-                                let mut to_send = burst_max;
-                                send_poll_queries(
-                                    cnx,
-                                    &udp,
-                                    config,
-                                    &mut local_addr_storage,
-                                    &mut dns_id,
-                                    resolver,
-                                    &mut to_send,
-                                    &mut send_buf,
-                                )
-                                .await?;
-                                resolver.pending_polls = resolver
-                                    .pending_polls
-                                    .saturating_sub(burst_max)
-                                    .saturating_add(to_send);
+                            // Idle throttling: suppress polls until interval elapses, then allow 1
+                            let mut effective_polls = resolver.pending_polls;
+                            if is_idle && effective_polls > 0 {
+                                let now_for_idle = unsafe { picoquic_current_time() };
+                                if now_for_idle.saturating_sub(last_idle_poll_at)
+                                    < idle_poll_interval_us
+                                {
+                                    effective_polls = 0;
+                                } else {
+                                    effective_polls = 1;
+                                }
+                            }
+                            if effective_polls == 0 {
+                                // Discard accumulated demand-driven polls while idle-throttled
+                                resolver.pending_polls = 0;
                             } else {
-                                let mut pending = resolver.pending_polls;
-                                send_poll_queries(
-                                    cnx,
-                                    &udp,
-                                    config,
-                                    &mut local_addr_storage,
-                                    &mut dns_id,
-                                    resolver,
-                                    &mut pending,
-                                    &mut send_buf,
-                                )
-                                .await?;
-                                resolver.pending_polls = pending;
+                                let burst_max = path_poll_burst_max(resolver);
+                                if effective_polls > burst_max {
+                                    let mut to_send = burst_max;
+                                    send_poll_queries(
+                                        cnx,
+                                        &udp,
+                                        config,
+                                        &mut local_addr_storage,
+                                        &mut dns_id,
+                                        resolver,
+                                        &mut to_send,
+                                        &mut send_buf,
+                                    )
+                                    .await?;
+                                    resolver.pending_polls = resolver
+                                        .pending_polls
+                                        .saturating_sub(burst_max)
+                                        .saturating_add(to_send);
+                                } else {
+                                    let mut pending = effective_polls;
+                                    send_poll_queries(
+                                        cnx,
+                                        &udp,
+                                        config,
+                                        &mut local_addr_storage,
+                                        &mut dns_id,
+                                        resolver,
+                                        &mut pending,
+                                        &mut send_buf,
+                                    )
+                                    .await?;
+                                    resolver.pending_polls = pending;
+                                }
+                                if is_idle {
+                                    last_idle_poll_at = unsafe { picoquic_current_time() };
+                                }
                             }
                         }
                     }

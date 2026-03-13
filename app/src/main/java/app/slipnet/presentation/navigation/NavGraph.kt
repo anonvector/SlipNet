@@ -10,6 +10,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import app.slipnet.presentation.chain.EditChainScreen
 import app.slipnet.presentation.main.MainScreen
 import app.slipnet.presentation.profiles.EditProfileScreen
 import app.slipnet.presentation.scanner.DnsScannerScreen
@@ -41,7 +42,30 @@ fun NavGraph(
                 },
                 onNavigateToSettings = {
                     navController.navigate(NavRoutes.Settings.route)
+                },
+                onNavigateToAddChain = {
+                    navController.navigate(NavRoutes.AddChain.route)
+                },
+                onNavigateToEditChain = { chainId ->
+                    navController.navigate(NavRoutes.EditChain.createRoute(chainId))
                 }
+            )
+        }
+
+        composable(NavRoutes.AddChain.route) {
+            EditChainScreen(
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route = NavRoutes.EditChain.route,
+            arguments = listOf(
+                navArgument("chainId") { type = NavType.LongType }
+            )
+        ) {
+            EditChainScreen(
+                onNavigateBack = { navController.popBackStack() }
             )
         }
 

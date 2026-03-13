@@ -5,8 +5,10 @@ import android.content.Intent
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.repository.VpnRepositoryImpl
 import app.slipnet.domain.model.ConnectionState
+import app.slipnet.domain.model.ProfileChain
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
+import app.slipnet.domain.repository.ChainRepository
 import app.slipnet.domain.repository.ProfileRepository
 import app.slipnet.widget.VpnWidgetCompactProvider
 import app.slipnet.widget.VpnWidgetProvider
@@ -29,6 +31,7 @@ class VpnConnectionManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val vpnRepository: VpnRepositoryImpl,
     private val profileRepository: ProfileRepository,
+    private val chainRepository: ChainRepository,
     private val preferencesDataStore: PreferencesDataStore
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -42,6 +45,7 @@ class VpnConnectionManager @Inject constructor(
     val trafficStats: StateFlow<TrafficStats> = vpnRepository.trafficStats
 
     private var pendingProfile: ServerProfile? = null
+    private var pendingChain: ProfileChain? = null
 
     init {
         // Observe VPN repository state
@@ -119,6 +123,24 @@ class VpnConnectionManager @Inject constructor(
         val intent = Intent(context, SlipNetVpnService::class.java).apply {
             action = SlipNetVpnService.ACTION_CONNECT
             putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profile.id)
+        }
+        ContextCompat.startForegroundService(context, intent)
+    }
+
+    fun connectChain(chain: ProfileChain, firstProfile: ServerProfile) {
+        if (_connectionState.value is ConnectionState.Connected ||
+            _connectionState.value is ConnectionState.Connecting) {
+            return
+        }
+
+        pendingProfile = firstProfile
+        pendingChain = chain
+        _connectionState.value = ConnectionState.Connecting
+        _dnsWarning.value = null
+
+        val intent = Intent(context, SlipNetVpnService::class.java).apply {
+            action = SlipNetVpnService.ACTION_CONNECT
+            putExtra(SlipNetVpnService.EXTRA_CHAIN_ID, chain.id)
         }
         ContextCompat.startForegroundService(context, intent)
     }
