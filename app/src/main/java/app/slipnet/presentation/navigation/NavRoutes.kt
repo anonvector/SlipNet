@@ -18,6 +18,10 @@ sealed class NavRoutes(val route: String) {
             return if (params.isEmpty()) "dns_scanner" else "dns_scanner?${params.joinToString("&")}"
         }
     }
+    data object AddChain : NavRoutes("add_chain")
+    data object EditChain : NavRoutes("edit_chain/{chainId}") {
+        fun createRoute(chainId: Long) = "edit_chain/$chainId"
+    }
     data object ScanResults : NavRoutes("scan_results?profileId={profileId}&fromProfile={fromProfile}") {
         fun createRoute(profileId: Long? = null, fromProfile: Boolean = false): String {
             val params = mutableListOf<String>()

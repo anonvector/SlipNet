@@ -307,7 +307,7 @@ fun EditProfileScreen(
                             }
 
                             Text(
-                                text = "You can change DNS resolver settings. Other profile details are locked.",
+                                text = "You can change DNS settings. Other profile details are locked.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -459,6 +459,177 @@ fun EditProfileScreen(
                                     }
                                 }
                             }
+
+                            // DNS Query Size (locked profiles)
+                            if (uiState.isDnsttOrNoizBased) {
+                                var showMtuDialogLocked by remember { mutableStateOf(false) }
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { showMtuDialogLocked = true }
+                                        .padding(vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "DNS Query Size",
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+                                        Text(
+                                            text = if (uiState.dnsPayloadSize == 0) "Full capacity (fastest)"
+                                                   else "${uiState.dnsPayloadSize} bytes per query",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Icon(
+                                        Icons.Default.KeyboardArrowRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+
+                                if (showMtuDialogLocked) {
+                                    val mtuPresetsLocked = listOf(
+                                        0 to "Full capacity — fastest, largest queries",
+                                        100 to "Large — good balance",
+                                        80 to "Medium — less conspicuous",
+                                        60 to "Small — stealthier, slower",
+                                        50 to "Minimum — most stealthy, slowest"
+                                    )
+                                    val isCustomLocked = mtuPresetsLocked.none { it.first == uiState.dnsPayloadSize }
+                                    var customMtuTextLocked by remember { mutableStateOf(if (isCustomLocked) uiState.dnsPayloadSize.toString() else "") }
+                                    var useCustomLocked by remember { mutableStateOf(isCustomLocked) }
+                                    AlertDialog(
+                                        onDismissRequest = { showMtuDialogLocked = false },
+                                        title = { Text("DNS Query Size") },
+                                        text = {
+                                            Column {
+                                                Text(
+                                                    text = "Bytes of data per DNS query. Smaller values produce shorter, less suspicious queries at the cost of speed.",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.padding(bottom = 12.dp)
+                                                )
+                                                mtuPresetsLocked.forEach { (size, desc) ->
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clip(RoundedCornerShape(8.dp))
+                                                            .clickable {
+                                                                useCustomLocked = false
+                                                                viewModel.updateDnsPayloadSize(size)
+                                                                showMtuDialogLocked = false
+                                                            }
+                                                            .padding(vertical = 10.dp, horizontal = 8.dp),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        RadioButton(
+                                                            selected = !useCustomLocked && uiState.dnsPayloadSize == size,
+                                                            onClick = {
+                                                                useCustomLocked = false
+                                                                viewModel.updateDnsPayloadSize(size)
+                                                                showMtuDialogLocked = false
+                                                            }
+                                                        )
+                                                        Column(modifier = Modifier.padding(start = 8.dp)) {
+                                                            Text(text = if (size == 0) "Full" else "$size")
+                                                            Text(
+                                                                text = desc,
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .clickable { useCustomLocked = true }
+                                                        .padding(vertical = 10.dp, horizontal = 8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    RadioButton(
+                                                        selected = useCustomLocked,
+                                                        onClick = { useCustomLocked = true }
+                                                    )
+                                                    OutlinedTextField(
+                                                        value = customMtuTextLocked,
+                                                        onValueChange = { customMtuTextLocked = it.filter { c -> c.isDigit() }.take(3) },
+                                                        enabled = useCustomLocked,
+                                                        label = { Text("Custom") },
+                                                        placeholder = { Text("50–120") },
+                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                        singleLine = true,
+                                                        modifier = Modifier
+                                                            .padding(start = 8.dp)
+                                                            .fillMaxWidth()
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        confirmButton = {
+                                            if (useCustomLocked) {
+                                                TextButton(
+                                                    onClick = {
+                                                        val value = customMtuTextLocked.toIntOrNull()
+                                                        if (value != null && value in 50..120) {
+                                                            viewModel.updateDnsPayloadSize(value)
+                                                            showMtuDialogLocked = false
+                                                        }
+                                                    }
+                                                ) {
+                                                    Text("Apply")
+                                                }
+                                            }
+                                        },
+                                        dismissButton = {
+                                            TextButton(onClick = { showMtuDialogLocked = false }) {
+                                                Text("Cancel")
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+
+                            // Stealth mode (locked profiles, NoizDNS only)
+                            if (uiState.isNoizdnsBased) {
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Stealth mode",
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+                                        Text(
+                                            text = "Slower speed, harder to detect by DPI",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = uiState.noizdnsStealth,
+                                        onCheckedChange = { viewModel.updateNoizdnsStealth(it) }
+                                    )
+                                }
+                                if (uiState.noizdnsStealth) {
+                                    Text(
+                                        text = "Internet speed will be reduced.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -555,7 +726,7 @@ fun EditProfileScreen(
                 )
 
                 // Domain / SSH Server (hidden for DOH and Snowflake profiles)
-                if (!uiState.isDoh && !uiState.isSnowflake) {
+                if (!uiState.isDoh && !uiState.isSnowflake && !uiState.isSocks5) {
                     OutlinedTextField(
                         value = uiState.domain,
                         onValueChange = { viewModel.updateDomain(it) },
@@ -591,6 +762,48 @@ fun EditProfileScreen(
                             )
                         },
                         singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // SOCKS5 Proxy fields
+                if (uiState.isSocks5) {
+                    OutlinedTextField(
+                        value = uiState.domain,
+                        onValueChange = { viewModel.updateDomain(it) },
+                        label = { Text("SOCKS5 Server") },
+                        placeholder = { Text("proxy.example.com") },
+                        isError = uiState.domainError != null,
+                        supportingText = { Text(uiState.domainError ?: "Remote SOCKS5 proxy hostname or IP") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = uiState.socks5ServerPort,
+                        onValueChange = { viewModel.updateSocks5ServerPort(it) },
+                        label = { Text("Port") },
+                        placeholder = { Text("1080") },
+                        isError = uiState.socks5ServerPortError != null,
+                        supportingText = { Text(uiState.socks5ServerPortError ?: "SOCKS5 proxy port") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = uiState.socksUsername,
+                        onValueChange = { viewModel.updateSocksUsername(it) },
+                        label = { Text("Username (optional)") },
+                        placeholder = { Text("") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = uiState.socksPassword,
+                        onValueChange = { viewModel.updateSocksPassword(it) },
+                        label = { Text("Password (optional)") },
+                        placeholder = { Text("") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -958,9 +1171,9 @@ fun EditProfileScreen(
                     )
                 }
 
-                // Resolvers (not shown for SSH-only, DOH, or DNSTT with DoH transport)
+                // Resolvers (not shown for SSH-only, DOH, SOCKS5, or DNSTT with DoH transport)
                 val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake && !uiState.isNaiveBased &&
-                        !(uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH)
+                        !uiState.isSocks5 && !(uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH)
                 if (showResolvers) {
                     if (uiState.resolversHidden) {
                         // Hidden resolver: show toggle for custom override

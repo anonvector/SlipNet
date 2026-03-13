@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	slipnet [--dns RESOLVER] [--port PORT] slipnet://BASE64ENCODED...
+//	slipnet [--dns RESOLVER] [--port PORT] [--host HOST] slipnet://BASE64ENCODED...
 //
 // It decodes the slipnet:// URI, extracts connection parameters,
 // and starts a local SOCKS5 proxy tunneled through DNS.
@@ -48,23 +48,44 @@ type Profile struct {
 
 func parseURI(uri string) (*Profile, error) {
 	const scheme = "slipnet://"
-	if !strings.HasPrefix(uri, scheme) {
-		return nil, fmt.Errorf("invalid URI scheme, expected slipnet://")
+	const encScheme = "slipnet-enc://"
+
+	var encoded string
+	var encrypted bool
+
+	switch {
+	case strings.HasPrefix(uri, encScheme):
+		encoded = strings.TrimPrefix(uri, encScheme)
+		encrypted = true
+	case strings.HasPrefix(uri, scheme):
+		encoded = strings.TrimPrefix(uri, scheme)
+	default:
+		return nil, fmt.Errorf("invalid URI scheme, expected slipnet:// or slipnet-enc://")
 	}
 
-	encoded := strings.TrimPrefix(uri, scheme)
 	// Strip any whitespace/newlines from terminal line wrapping
 	encoded = strings.Join(strings.Fields(encoded), "")
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	rawBytes, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		// Try with padding
 		for len(encoded)%4 != 0 {
 			encoded += "="
 		}
-		decoded, err = base64.StdEncoding.DecodeString(encoded)
+		rawBytes, err = base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
 			return nil, fmt.Errorf("base64 decode failed: %v", err)
 		}
+	}
+
+	var decoded []byte
+	if encrypted {
+		plaintext, err := decryptConfig(rawBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt config: %v", err)
+		}
+		decoded = []byte(plaintext)
+	} else {
+		decoded = rawBytes
 	}
 
 	fields := strings.Split(string(decoded), "|")
@@ -188,8 +209,16 @@ func findServerFallback(tunnelDomain string) string {
 }
 
 func main() {
+	// Check for "scan" subcommand first
+	if len(os.Args) >= 2 && os.Args[1] == "scan" {
+		runScanCommand(os.Args[2:])
+		return
+	}
+
 	var portOverride int
 	var dnsOverride string
+	var utlsOverride string
+	var hostOverride string
 	var forceDirectMode bool
 	var uriParts []string
 
@@ -213,6 +242,20 @@ func main() {
 			} else {
 				log.Fatal("--port requires a value")
 			}
+		case "--host", "-host":
+			if i+1 < len(os.Args) {
+				hostOverride = os.Args[i+1]
+				i++
+			} else {
+				log.Fatal("--host requires a value (e.g., --host 0.0.0.0)")
+			}
+		case "--utls", "-utls":
+			if i+1 < len(os.Args) {
+				utlsOverride = os.Args[i+1]
+				i++
+			} else {
+				log.Fatal("--utls requires a value (e.g., --utls Chrome_120, --utls none)")
+			}
 		case "--direct", "-direct":
 			forceDirectMode = true
 		case "--version", "-version", "-v":
@@ -227,24 +270,41 @@ func main() {
 	}
 
 	if len(uriParts) == 0 {
-		printUsage()
-		os.Exit(1)
+		// No args — launch interactive menu (for double-click users)
+		runInteractive()
+		return
 	}
 
 	// Join all non-flag args in case terminal line-wrapping split the URI
 	uri := strings.TrimSpace(strings.Join(uriParts, ""))
+	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode)
+}
+
+// connectWithParams runs the tunnel connection with the given parameters.
+func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool) {
 	profile, err := parseURI(uri)
 	if err != nil {
 		log.Fatalf("Failed to parse URI: %v", err)
 	}
 
-	// Validate tunnel type — CLI only supports DNSTT and NoizDNS
+	if hostOverride != "" {
+		profile.Host = hostOverride
+	}
+
+	// Validate tunnel type
 	switch profile.TunnelType {
 	case "dnstt", "dnstt_ssh", "sayedns", "sayedns_ssh":
-		// supported
-	case "ss", "slipstream_ssh", "ssh", "doh", "snowflake", "naive_ssh", "naive":
+		// DNSTT/NoizDNS — handled below via noizdns/mobile
+	case "ss", "slipstream_ssh":
+		// Slipstream — handled via slipstream-client subprocess
+		if portOverride > 0 {
+			profile.Port = portOverride
+		}
+		connectSlipstream(profile, profile.Host, profile.Port)
+		return
+	case "ssh", "doh", "snowflake", "naive_ssh", "naive", "socks5":
 		log.Fatalf("This config uses tunnel type %q which is not supported by the CLI.\n"+
-			"SlipNet CLI only supports DNSTT and NoizDNS tunnel types.\n"+
+			"SlipNet CLI supports DNSTT, NoizDNS, and Slipstream tunnel types.\n"+
 			"Use the SlipNet app for other tunnel types.", profile.TunnelType)
 	default:
 		if profile.TunnelType != "" {
@@ -271,7 +331,6 @@ func main() {
 	directMode := false
 
 	if dnsOverride != "" {
-		// User specified custom DNS resolver
 		if !strings.Contains(dnsOverride, ":") && !strings.HasPrefix(dnsOverride, "https://") && !strings.HasPrefix(dnsOverride, "tls://") {
 			dnsOverride += ":53"
 		}
@@ -289,7 +348,6 @@ func main() {
 	if dnsOverride == "" {
 		fmt.Printf("  Checking DNS for %s...\n", profile.Domain)
 		if forceDirectMode {
-			// --direct: find the server IP and connect directly
 			serverIP := findAuthoritativeServer(profile.Domain)
 			if serverIP != "" {
 				fmt.Printf("  Found server at %s, using direct mode\n", serverIP)
@@ -298,12 +356,9 @@ func main() {
 				fmt.Printf("  Warning: could not auto-detect server IP, trying profile resolver\n")
 			}
 		} else {
-			// Auto-detect: check if DNS delegation works
 			nss, nsErr := net.LookupNS(profile.Domain)
 			if nsErr != nil {
 				fmt.Printf("  DNS delegation not available via public DNS\n")
-				// NS lookup already failed — skip it in findAuthoritativeServer
-				// and go straight to the fallback.
 				serverIP := findServerFallback(profile.Domain)
 				if serverIP != "" {
 					fmt.Printf("  Found server at %s, using direct mode\n", serverIP)
@@ -356,9 +411,13 @@ func main() {
 
 	client.SetAuthoritativeMode(authMode)
 
-	// Enable NoizDNS mode for sayedns profiles
 	if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
 		client.SetNoizMode(true)
+	}
+
+	if utlsOverride != "" {
+		client.SetUTLSFingerprint(utlsOverride)
+		fmt.Printf("  uTLS:       %s\n", utlsOverride)
 	}
 
 	if err := client.Start(); err != nil {
@@ -379,7 +438,6 @@ func main() {
 	fmt.Println()
 	fmt.Println("  Press Ctrl+C to disconnect.")
 
-	// Wait for interrupt signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
@@ -396,25 +454,202 @@ func main() {
 	}
 }
 
+func runScanCommand(args []string) {
+	var domain string
+	var ipsFile string
+	var singleIP string
+	var timeoutMs = 3000
+	var concurrency = 100
+	var port = 53
+	var e2eEnabled bool
+	var pubkey string
+	var noizdns bool
+	var e2eConcurrency = 3
+	var e2eTimeout = 15000
+	var configURI string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--domain", "-domain":
+			if i+1 < len(args) {
+				domain = args[i+1]
+				i++
+			}
+		case "--ips", "-ips":
+			if i+1 < len(args) {
+				ipsFile = args[i+1]
+				i++
+			}
+		case "--ip", "-ip":
+			if i+1 < len(args) {
+				singleIP = args[i+1]
+				i++
+			}
+		case "--timeout", "-timeout":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v > 0 {
+					timeoutMs = v
+				}
+				i++
+			}
+		case "--concurrency", "-concurrency":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v > 0 {
+					concurrency = v
+				}
+				i++
+			}
+		case "--port", "-port":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v > 0 {
+					port = v
+				}
+				i++
+			}
+		case "--e2e":
+			e2eEnabled = true
+		case "--pubkey", "-pubkey":
+			if i+1 < len(args) {
+				pubkey = args[i+1]
+				i++
+			}
+		case "--noizdns":
+			noizdns = true
+		case "--e2e-concurrency":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v > 0 {
+					e2eConcurrency = v
+				}
+				i++
+			}
+		case "--e2e-timeout":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v > 0 {
+					e2eTimeout = v
+				}
+				i++
+			}
+		case "--config", "-config":
+			if i+1 < len(args) {
+				configURI = args[i+1]
+				i++
+			}
+		case "--help", "-help", "-h":
+			printUsage()
+			os.Exit(0)
+		}
+	}
+
+	// If --config is provided, extract domain, pubkey, and noizdns from slipnet:// URI
+	if configURI != "" {
+		profile, err := parseURI(configURI)
+		if err != nil {
+			log.Fatalf("Failed to parse config URI: %v", err)
+		}
+		if domain == "" {
+			domain = profile.Domain
+		}
+		if pubkey == "" {
+			pubkey = profile.PublicKey
+		}
+		if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
+			noizdns = true
+		}
+		// If e2e flag not explicitly set but pubkey is available, enable it
+		if pubkey != "" && !e2eEnabled {
+			e2eEnabled = true
+		}
+	}
+
+	if domain == "" {
+		log.Fatal("scan requires --domain (e.g., --domain t.example.com)")
+	}
+	if ipsFile == "" && singleIP == "" {
+		log.Fatal("scan requires --ips FILE or --ip IP")
+	}
+
+	var resolvers []string
+	if singleIP != "" {
+		resolvers = []string{singleIP}
+	} else {
+		data, err := os.ReadFile(ipsFile)
+		if err != nil {
+			log.Fatalf("Failed to read IP list file: %v", err)
+		}
+		resolvers = LoadIPList(string(data))
+		if len(resolvers) == 0 {
+			log.Fatal("No valid IP addresses found in file")
+		}
+	}
+
+	var e2eConfig *E2EConfig
+	if e2eEnabled {
+		if pubkey == "" {
+			log.Fatal("E2E testing requires --pubkey or --config with a slipnet:// URI")
+		}
+		e2eConfig = &E2EConfig{
+			TunnelDomain: domain,
+			PublicKey:     pubkey,
+			NoizMode:     noizdns,
+			TimeoutMs:    e2eTimeout,
+			Concurrency:  e2eConcurrency,
+		}
+	}
+
+	RunScanner(resolvers, domain, port, timeoutMs, concurrency, e2eConfig)
+}
+
 func printUsage() {
-	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - DNS tunnel SOCKS5 proxy
+	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - DNS tunnel SOCKS5 proxy (DNSTT, NoizDNS, Slipstream)
 
 Usage:
   %s [options] slipnet://BASE64...
+  %[2]s [options] slipnet-enc://BASE64...
+  %[2]s scan [options] --domain DOMAIN --ips FILE
 
-Options:
+Options (connect):
   --dns HOST[:PORT]   Custom DNS resolver (e.g., --dns 1.1.1.1 or --dns <server-ip>)
   --direct            Connect directly to server (authoritative mode)
   --port PORT         Override local SOCKS5 proxy port (default: from profile)
+  --host HOST         Override local SOCKS5 proxy listen address (default: 127.0.0.1)
+                      Use 0.0.0.0 to allow connections from other devices on the network
+  --utls FINGERPRINT  Fix TLS fingerprint (default: random from distribution)
+                      Examples: Chrome_120, Firefox_120, iOS_14, random, none
+                      Weighted: "3*Chrome_120,1*Firefox_120"
   --version           Show version
   --help              Show this help
+
+Options (scan):
+  --domain DOMAIN     Tunnel domain to test (required unless --config given)
+  --ips FILE          File with resolver IPs, one per line (or use --ip for single)
+  --ip IP             Single resolver IP to scan
+  --timeout MS        Per-query timeout in ms (default: 3000)
+  --concurrency N     Parallel DNS scans (default: 100)
+  --port PORT         DNS port (default: 53)
+  --e2e               Run E2E tunnel test on 6/6 resolvers after DNS scan
+  --pubkey KEY        Server public key for E2E (required with --e2e)
+  --noizdns           Use NoizDNS mode for E2E (default: DNSTT)
+  --e2e-concurrency N Parallel E2E tests (default: 3)
+  --e2e-timeout MS    E2E HTTP timeout in ms (default: 15000)
+  --config URI        Extract domain/pubkey/mode from slipnet:// URI (auto-enables E2E)
 
 If no --dns is specified, the client auto-detects the server IP
 when DNS delegation isn't working.
 
 Examples:
   %[2]s slipnet://BASE64...
+  %[2]s --utls Chrome_120 slipnet://BASE64...
   %[2]s --dns 1.1.1.1 slipnet://BASE64...
   %[2]s --dns <server-ip> --direct --port 9050 slipnet://BASE64...
+  %[2]s --host 0.0.0.0 slipnet://BASE64...
+  %[2]s scan --domain t.example.com --ips resolvers.txt
+  %[2]s scan --domain t.example.com --ip 8.8.8.8
+  %[2]s scan --config slipnet://BASE64... --ips resolvers.txt
+  %[2]s scan --domain t.example.com --ips ips.txt --e2e --pubkey HEXKEY
 `, version, os.Args[0])
 }

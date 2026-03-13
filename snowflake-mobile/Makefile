@@ -1,7 +1,7 @@
 .PHONY: build clean
 
 build:
-	gomobile bind -target android/arm,android/arm64 -androidapi 21 \
+	gomobile bind -target android/arm,android/arm64,android/amd64 -androidapi 21 \
 		-o ../app/libs/snowflake.aar ./snowflake
 
 clean:

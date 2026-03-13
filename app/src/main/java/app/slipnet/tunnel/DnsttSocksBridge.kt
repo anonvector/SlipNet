@@ -57,6 +57,9 @@ object DnsttSocksBridge {
     private const val PRIMARY_DNS_HOST = "8.8.8.8"
     // Fallback if primary is unreachable through Dante
     private const val FALLBACK_DNS_HOST = "1.1.1.1"
+    // Last-resort localhost resolver — works if Dante allows localhost CONNECT.
+    // Tried before DoH (which bypasses the tunnel entirely).
+    private const val LOCALHOST_DNS_HOST = "127.0.0.53"
 
     private var dnsttHost: String = "127.0.0.1"
     private var dnsttPort: Int = 0
@@ -344,6 +347,19 @@ object DnsttSocksBridge {
                             }
                         } catch (e2: Exception) {
                             logd("DNS worker 1 fallback also failed: ${e2.message}")
+                        }
+                        // Both external DNS unreachable — try localhost resolver
+                        Log.w(TAG, "DNS worker 1 failed on $dnsFallbackHost, trying localhost $LOCALHOST_DNS_HOST")
+                        dnsTargetHost = LOCALHOST_DNS_HOST
+                        try {
+                            val localhostWorker = createDnsWorker()
+                            if (localhostWorker != null) {
+                                dnsWorkers[i] = localhostWorker
+                                logd("DNS worker 1/$dnsPoolSize ready → $dnsTargetHost:53 (localhost)")
+                                continue
+                            }
+                        } catch (e3: Exception) {
+                            logd("DNS worker 1 localhost also failed: ${e3.message}")
                             break
                         }
                     }
@@ -574,7 +590,7 @@ object DnsttSocksBridge {
 
         // Phase 3: Per-query fallback (old behavior — new connection per query)
         logd("FWD_UDP: all workers failed, falling back to per-query connection")
-        val tcpResult = forwardDnsTcpOneShot(payload)
+        val tcpResult = forwardDnsTcpOneShot(payload, dnsTargetHost)
         if (tcpResult != null) {
             recordDnsSuccess()
             tunnelTxBytes.addAndGet(payload.size.toLong())
@@ -582,6 +598,19 @@ object DnsttSocksBridge {
             return tcpResult
         }
         recordDnsFailure()
+
+        // Phase 3.5: Try localhost resolver (127.0.0.53) if not already the target.
+        // Works when Dante allows localhost CONNECT — avoids DoH which bypasses tunnel.
+        if (dnsTargetHost != LOCALHOST_DNS_HOST) {
+            logd("FWD_UDP: trying localhost resolver $LOCALHOST_DNS_HOST")
+            val localhostResult = forwardDnsTcpOneShot(payload, LOCALHOST_DNS_HOST)
+            if (localhostResult != null) {
+                recordDnsSuccess()
+                tunnelTxBytes.addAndGet(payload.size.toLong())
+                tunnelRxBytes.addAndGet(localhostResult.size.toLong())
+                return localhostResult
+            }
+        }
 
         // Phase 4: DoH fallback — always attempt, bypasses tunnel entirely
         val dohResult = forwardDnsDoH(payload)
@@ -941,7 +970,7 @@ object DnsttSocksBridge {
      * One-shot DNS-over-TCP through a new DNSTT connection (Phase 3 fallback).
      * Used when all persistent workers are dead and recreation failed.
      */
-    private fun forwardDnsTcpOneShot(payload: ByteArray): ByteArray? {
+    private fun forwardDnsTcpOneShot(payload: ByteArray, targetHost: String = dnsTargetHost): ByteArray? {
         var sock: Socket? = null
         try {
             sock = Socket()
@@ -954,13 +983,13 @@ object DnsttSocksBridge {
 
             if (!performSocksAuth(sockIn, sockOut)) return null
 
-            val dnsAddr = buildDnsTargetAddr(dnsTargetHost)
+            val dnsAddr = buildDnsTargetAddr(targetHost)
             val connectReq = byteArrayOf(0x05, 0x01, 0x00) + dnsAddr
             sockOut.write(connectReq)
             sockOut.flush()
 
             if (!readSocksConnectResponse(sockIn)) {
-                logd("DNS-TCP oneshot: CONNECT to $dnsTargetHost:53 failed")
+                logd("DNS-TCP oneshot: CONNECT to $targetHost:53 failed")
                 return null
             }
 
@@ -984,10 +1013,10 @@ object DnsttSocksBridge {
             val response = ByteArray(respLen)
             sockIn.readFully(response)
 
-            logd("DNS-TCP oneshot: $dnsTargetHost resolved (${response.size} bytes)")
+            logd("DNS-TCP oneshot: $targetHost resolved (${response.size} bytes)")
             return response
         } catch (e: Exception) {
-            logd("DNS-TCP oneshot: $dnsTargetHost failed: ${e.message}")
+            logd("DNS-TCP oneshot: $targetHost failed: ${e.message}")
             return null
         } finally {
             try { sock?.close() } catch (_: Exception) {}

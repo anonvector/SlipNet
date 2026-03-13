@@ -65,7 +65,8 @@ class ProfileMapper @Inject constructor(
             boundDeviceId = entity.boundDeviceId,
             noizdnsStealth = entity.noizdnsStealth,
             dnsPayloadSize = entity.dnsPayloadSize,
-            resolversHidden = entity.resolversHidden
+            resolversHidden = entity.resolversHidden,
+            socks5ServerPort = entity.socks5ServerPort
         )
     }
 
@@ -115,7 +116,8 @@ class ProfileMapper @Inject constructor(
             boundDeviceId = profile.boundDeviceId,
             noizdnsStealth = profile.noizdnsStealth,
             dnsPayloadSize = profile.dnsPayloadSize,
-            resolversHidden = profile.resolversHidden
+            resolversHidden = profile.resolversHidden,
+            socks5ServerPort = profile.socks5ServerPort
         )
     }
 

@@ -48,7 +48,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -70,7 +70,7 @@ jobs:
 
       - name: Verify OpenSSL installation
         run: |
-          for abi in arm64-v8a armeabi-v7a; do
+          for abi in arm64-v8a armeabi-v7a x86_64; do
             for lib in libssl.a libcrypto.a; do
               test -f ~/android-openssl/android-ssl/$abi/lib/$lib || { echo "Missing $abi/lib/$lib"; exit 1; }
             done

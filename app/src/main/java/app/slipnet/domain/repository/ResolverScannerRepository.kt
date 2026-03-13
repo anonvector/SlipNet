@@ -29,6 +29,11 @@ interface ResolverScannerRepository {
     fun parseResolverList(content: String): List<String>
 
     /**
+     * Parse a stream of text into a list of IP addresses (memory-efficient for large files)
+     */
+    fun parseResolverList(reader: java.io.BufferedReader): List<String>
+
+    /**
      * Generate random IPs from a country's CIDR ranges
      * @param context Android context to access assets
      * @param countryCode Country code (e.g. "ir", "cn", "ru")

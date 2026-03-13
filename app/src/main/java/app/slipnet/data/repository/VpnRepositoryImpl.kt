@@ -20,6 +20,7 @@ import app.slipnet.tunnel.SlipstreamSocksBridge
 import app.slipnet.tunnel.NaiveBridge
 import app.slipnet.tunnel.NaiveSocksBridge
 import app.slipnet.tunnel.SnowflakeBridge
+import app.slipnet.tunnel.Socks5ProxyBridge
 import app.slipnet.tunnel.SshTunnelBridge
 import app.slipnet.tunnel.TorSocksBridge
 import kotlinx.coroutines.CoroutineScope
@@ -393,9 +394,10 @@ class VpnRepositoryImpl @Inject constructor(
         }
 
         // Step 2: Start TorSocksBridge
+        // Tor SOCKS5 is always local — use 127.0.0.1 for upstream, proxyHost for listen
         val bridgeResult = TorSocksBridge.start(
             torSocksPort = torSocksPort,
-            torHost = proxyHost,
+            torHost = "127.0.0.1",
             listenPort = bridgePort,
             listenHost = proxyHost
         )
@@ -543,6 +545,10 @@ class VpnRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Stopping standalone NaiveProxy: bridge first, then NaiveProxy")
                 NaiveSocksBridge.stop()
                 NaiveBridge.stop()
+            }
+            TunnelType.SOCKS5 -> {
+                Log.d(TAG, "Stopping SOCKS5 proxy bridge")
+                Socks5ProxyBridge.stop()
             }
             null -> {
                 // Try to stop all just in case
@@ -735,6 +741,21 @@ class VpnRepositoryImpl @Inject constructor(
                 _trafficStats.value = TrafficStats(
                     bytesSent = DnsttSocksBridge.getTunnelTxBytes(),
                     bytesReceived = DnsttSocksBridge.getTunnelRxBytes()
+                )
+                return
+            }
+            TunnelType.SSH, TunnelType.DNSTT_SSH, TunnelType.NOIZDNS_SSH,
+            TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH -> {
+                _trafficStats.value = TrafficStats(
+                    bytesSent = SshTunnelBridge.getTunnelTxBytes(),
+                    bytesReceived = SshTunnelBridge.getTunnelRxBytes()
+                )
+                return
+            }
+            TunnelType.SOCKS5 -> {
+                _trafficStats.value = TrafficStats(
+                    bytesSent = Socks5ProxyBridge.getTunnelTxBytes(),
+                    bytesReceived = Socks5ProxyBridge.getTunnelRxBytes()
                 )
                 return
             }

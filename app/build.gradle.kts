@@ -47,7 +47,7 @@ val configEncryptionKey = localProperties.getProperty("CONFIG_ENCRYPTION_KEY", "
 // OpenSSL configuration
 val opensslVersion = "3.0.15"
 val opensslBaseDir = file("${System.getenv("HOME")}/android-openssl/android-ssl")
-val supportedAbis = listOf("arm64-v8a", "armeabi-v7a")
+val supportedAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
 
 // Check if OpenSSL is available for all ABIs
 fun isOpenSslAvailable(): Boolean {
@@ -134,7 +134,7 @@ android {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "armeabi-v7a")
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
             isUniversalApk = true
         }
     }
@@ -309,7 +309,7 @@ cargo {
     rustcCommand = "$cargoBin/rustc"
     module = "src/main/rust/slipstream-rust"
     libname = "slipstream"
-    targets = listOf("arm", "arm64")
+    targets = listOf("arm", "arm64", "x86_64")
     profile = cargoProfile
     rustupChannel = "stable"
     extraCargoBuildArguments = listOf(
@@ -376,7 +376,7 @@ cargo {
 // Make cargo build tasks depend on OpenSSL verification
 tasks.whenTaskAdded {
     when (name) {
-        "cargoBuildArm", "cargoBuildArm64" -> {
+        "cargoBuildArm", "cargoBuildArm64", "cargoBuildX86_64" -> {
             dependsOn("verifyOpenSsl")
         }
         "mergeFullDebugJniLibFolders", "mergeFullReleaseJniLibFolders",
