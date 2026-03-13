@@ -20,16 +20,13 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.FastOutLinearInEasing
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -54,6 +51,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Dns
@@ -69,6 +68,7 @@ import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Waves
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -76,6 +76,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -84,8 +86,13 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -94,6 +101,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -104,7 +112,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -153,6 +160,8 @@ fun MainScreen(
     onNavigateToAddProfile: (tunnelType: String) -> Unit,
     onNavigateToEditProfile: (Long) -> Unit,
     onNavigateToSettings: () -> Unit,
+    onNavigateToAddChain: () -> Unit = {},
+    onNavigateToEditChain: (Long) -> Unit = {},
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -442,115 +451,6 @@ fun MainScreen(
             Column(
                 horizontalAlignment = Alignment.End
             ) {
-                AnimatedVisibility(
-                    visible = showAddMenu,
-                    enter = scaleIn(
-                        animationSpec = tween(150, easing = FastOutSlowInEasing),
-                        transformOrigin = TransformOrigin(1f, 1f),
-                        initialScale = 0.8f
-                    ) + fadeIn(tween(100)) + expandVertically(
-                        animationSpec = tween(150, easing = FastOutSlowInEasing),
-                        expandFrom = Alignment.Top
-                    ),
-                    exit = scaleOut(
-                        animationSpec = tween(100, easing = FastOutLinearInEasing),
-                        transformOrigin = TransformOrigin(1f, 1f),
-                        targetScale = 0.8f
-                    ) + fadeOut(tween(75)) + shrinkVertically(
-                        animationSpec = tween(100, easing = FastOutLinearInEasing),
-                        shrinkTowards = Alignment.Top
-                    )
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        tonalElevation = 4.dp,
-                        modifier = Modifier.padding(bottom = 12.dp, end = 8.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .width(220.dp)
-                                .padding(vertical = 8.dp)
-                        ) {
-                            AddMenuOption(
-                                icon = Icons.Default.Dns,
-                                title = "DNSTT",
-                                description = "DNS tunnel (KCP + Noise)",
-                                onClick = {
-                                    showAddMenu = false
-                                    onNavigateToAddProfile("dnstt")
-                                }
-                            )
-                            AddMenuOption(
-                                icon = Icons.Default.VisibilityOff,
-                                title = "NoizDNS",
-                                description = "DPI-evasion DNS tunnel",
-                                onClick = {
-                                    showAddMenu = false
-                                    onNavigateToAddProfile(TunnelType.NOIZDNS.value)
-                                }
-                            )
-                            AddMenuOption(
-                                icon = Icons.Default.Waves,
-                                title = "Slipstream",
-                                description = "DNS tunnel (QUIC)",
-                                onClick = {
-                                    showAddMenu = false
-                                    onNavigateToAddProfile("slipstream")
-                                }
-                            )
-                            AddMenuOption(
-                                icon = Icons.Default.Lock,
-                                title = "SSH",
-                                description = "Direct SSH tunnel",
-                                onClick = {
-                                    showAddMenu = false
-                                    onNavigateToAddProfile("ssh")
-                                }
-                            )
-                            AddMenuOption(
-                                icon = Icons.Default.Language,
-                                title = "DOH",
-                                description = "DNS over HTTPS",
-                                onClick = {
-                                    showAddMenu = false
-                                    onNavigateToAddProfile("doh")
-                                }
-                            )
-                            if (BuildConfig.INCLUDE_NAIVE) {
-                                AddMenuOption(
-                                    icon = Icons.Default.Shield,
-                                    title = "NaiveProxy",
-                                    description = "Chromium HTTPS tunnel",
-                                    onClick = {
-                                        showAddMenu = false
-                                        onNavigateToAddProfile("naive")
-                                    }
-                                )
-                            }
-                            if (BuildConfig.INCLUDE_TOR) {
-                                AddMenuOption(
-                                    icon = TorIcon,
-                                    title = "Tor",
-                                    description = "Connect via Tor network",
-                                    onClick = {
-                                        showAddMenu = false
-                                        onNavigateToAddProfile("snowflake")
-                                    }
-                                )
-                            }
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                            AddMenuOption(
-                                icon = Icons.Default.FileDownload,
-                                title = "Import",
-                                description = "",
-                                onClick = {
-                                    showAddMenu = false
-                                    showImportDialog = true
-                                }
-                            )
-                        }
-                    }
-                }
                 FloatingActionButton(
                     onClick = { showAddMenu = !showAddMenu },
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -578,103 +478,161 @@ fun MainScreen(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { paddingValues ->
+        val hasChains = uiState.chains.isNotEmpty()
+        var selectedTab by remember { mutableIntStateOf(0) }
+        // Reset to profiles tab when chains are deleted
+        if (!hasChains && selectedTab == 1) selectedTab = 0
+        // Auto-switch to chains tab when a chain is connected
+        LaunchedEffect(uiState.connectedChainId) {
+            if (uiState.connectedChainId != null && hasChains) selectedTab = 1
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // ── Profile List ────────────────────────────────────────
-            when {
-                uiState.isLoading -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
+            Column(modifier = Modifier.fillMaxSize()) {
+                // ── Tab Row (only when chains exist) ────────────────────
+                if (hasChains) {
+                    SingleChoiceSegmentedButtonRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
                     ) {
-                        androidx.compose.material3.CircularProgressIndicator()
+                        SegmentedButton(
+                            selected = selectedTab == 0,
+                            onClick = { selectedTab = 0 },
+                            shape = SegmentedButtonDefaults.itemShape(0, 2)
+                        ) { Text("Profiles") }
+                        SegmentedButton(
+                            selected = selectedTab == 1,
+                            onClick = { selectedTab = 1 },
+                            shape = SegmentedButtonDefaults.itemShape(1, 2)
+                        ) { Text("Chains") }
                     }
                 }
-                uiState.profiles.isEmpty() -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(32.dp)
+
+                // ── Tab Content ─────────────────────────────────────────
+                when {
+                    selectedTab == 1 && hasChains -> {
+                        // ── Chains Tab ──────────────────────────────────
+                        LazyColumn(
+                            contentPadding = PaddingValues(
+                                start = 16.dp, end = 16.dp,
+                                top = 8.dp,
+                                bottom = 200.dp + navBarPadding.calculateBottomPadding()
+                            ),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxSize()
                         ) {
-                            Text(
-                                text = "No profiles yet",
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = "Tap + to add your first profile",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            items(
+                                items = uiState.chains,
+                                key = { "chain_${it.id}" }
+                            ) { chain ->
+                                ChainListItem(
+                                    chain = chain,
+                                    profiles = uiState.profiles,
+                                    isConnected = uiState.connectedChainId == chain.id,
+                                    onClick = { viewModel.connectChain(chain) },
+                                    onEditClick = { onNavigateToEditChain(chain.id) },
+                                    onDeleteClick = { viewModel.deleteChain(chain) }
+                                )
+                            }
                         }
                     }
-                }
-                else -> {
-                    val lazyListState = rememberLazyListState()
-                    val reorderableLazyListState = rememberReorderableLazyListState(lazyListState) { from, to ->
-                        viewModel.moveProfile(from.index, to.index)
+                    uiState.isLoading -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            androidx.compose.material3.CircularProgressIndicator()
+                        }
                     }
-
-                    LazyColumn(
-                        state = lazyListState,
-                        contentPadding = PaddingValues(
-                            start = 16.dp, end = 16.dp,
-                            top = 8.dp,
-                            bottom = 200.dp + navBarPadding.calculateBottomPadding()
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        items(
-                            items = uiState.profiles,
-                            key = { it.id }
-                        ) { profile ->
-                            val isConnected = uiState.connectedProfileId == profile.id
-
-                            ReorderableItem(reorderableLazyListState, key = profile.id) { isDragging ->
-                                val elevation = if (isDragging) 8.dp else 0.dp
-
-                                ProfileListItem(
-                                    profile = profile,
-                                    isSelected = profile.isActive,
-                                    isConnected = isConnected,
-                                    pingResult = uiState.pingResults[profile.id],
-                                    onClick = { viewModel.setActiveProfile(profile) },
-                                    onEditClick = { onNavigateToEditProfile(profile.id) },
-                                    onDeleteClick = {
-                                        if (isConnected) {
-                                            scope.launch {
-                                                snackbarHostState.showSnackbar(
-                                                    "Disconnect VPN before deleting this profile"
-                                                )
-                                            }
-                                        } else {
-                                            profileToDelete = profile
-                                        }
-                                    },
-                                    onExportClick = {
-                                        exportLockProfile = profile
-                                        exportLockEnabled = false
-                                        exportLockPassword = ""
-                                        exportLockMode = "export"
-                                    },
-                                    onShareQrClick = {
-                                        exportLockProfile = profile
-                                        exportLockEnabled = false
-                                        exportLockPassword = ""
-                                        exportLockMode = "qr"
-                                    },
-                                    modifier = Modifier
-                                        .longPressDraggableHandle()
-                                        .shadow(elevation, RoundedCornerShape(12.dp))
-                                        .zIndex(if (isDragging) 1f else 0f)
+                    uiState.profiles.isEmpty() -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.padding(32.dp)
+                            ) {
+                                Text(
+                                    text = "No profiles yet",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
                                 )
+                                Text(
+                                    text = "Tap + to add your first profile",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    else -> {
+                        // ── Profiles Tab ────────────────────────────────
+                        val lazyListState = rememberLazyListState()
+                        val reorderableLazyListState = rememberReorderableLazyListState(lazyListState) { from, to ->
+                            viewModel.moveProfile(from.index, to.index)
+                        }
+
+                        LazyColumn(
+                            state = lazyListState,
+                            contentPadding = PaddingValues(
+                                start = 16.dp, end = 16.dp,
+                                top = 8.dp,
+                                bottom = 200.dp + navBarPadding.calculateBottomPadding()
+                            ),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(
+                                items = uiState.profiles,
+                                key = { it.id }
+                            ) { profile ->
+                                val isConnected = uiState.connectedProfileId == profile.id
+
+                                ReorderableItem(reorderableLazyListState, key = profile.id) { isDragging ->
+                                    val elevation = if (isDragging) 8.dp else 0.dp
+
+                                    ProfileListItem(
+                                        profile = profile,
+                                        isSelected = profile.isActive,
+                                        isConnected = isConnected,
+                                        pingResult = uiState.pingResults[profile.id],
+                                        onClick = { viewModel.setActiveProfile(profile) },
+                                        onEditClick = { onNavigateToEditProfile(profile.id) },
+                                        onDeleteClick = {
+                                            if (isConnected) {
+                                                scope.launch {
+                                                    snackbarHostState.showSnackbar(
+                                                        "Disconnect VPN before deleting this profile"
+                                                    )
+                                                }
+                                            } else {
+                                                profileToDelete = profile
+                                            }
+                                        },
+                                        onExportClick = {
+                                            exportLockProfile = profile
+                                            exportLockEnabled = false
+                                            exportLockPassword = ""
+                                            exportLockMode = "export"
+                                        },
+                                        onShareQrClick = {
+                                            exportLockProfile = profile
+                                            exportLockEnabled = false
+                                            exportLockPassword = ""
+                                            exportLockMode = "qr"
+                                        },
+                                        modifier = Modifier
+                                            .longPressDraggableHandle()
+                                            .shadow(elevation, RoundedCornerShape(12.dp))
+                                            .zIndex(if (isDragging) 1f else 0f)
+                                    )
+                                }
                             }
                         }
                     }
@@ -699,16 +657,116 @@ fun MainScreen(
                     .padding(bottom = navBarPadding.calculateBottomPadding())
             )
 
-            // Scrim to dismiss FAB menu
+            // Bottom sheet for adding profiles
             if (showAddMenu) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable(
-                            indication = null,
-                            interactionSource = remember { MutableInteractionSource() }
-                        ) { showAddMenu = false }
-                )
+                val sheetState = rememberModalBottomSheetState()
+                ModalBottomSheet(
+                    onDismissRequest = { showAddMenu = false },
+                    sheetState = sheetState,
+                    dragHandle = null
+                ) {
+                    Text(
+                        text = "New Profile",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(start = 24.dp, top = 20.dp, bottom = 8.dp)
+                    )
+                    AddMenuOption(
+                        icon = Icons.Default.Dns,
+                        title = "DNSTT",
+                        description = "DNS tunnel (KCP + Noise)",
+                        onClick = {
+                            showAddMenu = false
+                            onNavigateToAddProfile("dnstt")
+                        }
+                    )
+                    AddMenuOption(
+                        icon = Icons.Default.VisibilityOff,
+                        title = "NoizDNS",
+                        description = "DPI-evasion DNS tunnel",
+                        onClick = {
+                            showAddMenu = false
+                            onNavigateToAddProfile(TunnelType.NOIZDNS.value)
+                        }
+                    )
+                    AddMenuOption(
+                        icon = Icons.Default.Waves,
+                        title = "Slipstream",
+                        description = "DNS tunnel (QUIC)",
+                        onClick = {
+                            showAddMenu = false
+                            onNavigateToAddProfile("slipstream")
+                        }
+                    )
+                    AddMenuOption(
+                        icon = Icons.Default.Lock,
+                        title = "SSH",
+                        description = "Direct SSH tunnel",
+                        onClick = {
+                            showAddMenu = false
+                            onNavigateToAddProfile("ssh")
+                        }
+                    )
+                    AddMenuOption(
+                        icon = Icons.Default.Language,
+                        title = "DOH",
+                        description = "DNS over HTTPS",
+                        onClick = {
+                            showAddMenu = false
+                            onNavigateToAddProfile("doh")
+                        }
+                    )
+                    AddMenuOption(
+                        icon = Icons.Default.Share,
+                        title = "SOCKS5",
+                        description = "Remote SOCKS5 proxy",
+                        onClick = {
+                            showAddMenu = false
+                            onNavigateToAddProfile("socks5")
+                        }
+                    )
+                    if (BuildConfig.INCLUDE_NAIVE) {
+                        AddMenuOption(
+                            icon = Icons.Default.Shield,
+                            title = "NaiveProxy",
+                            description = "Chromium HTTPS tunnel",
+                            onClick = {
+                                showAddMenu = false
+                                onNavigateToAddProfile("naive")
+                            }
+                        )
+                    }
+                    if (BuildConfig.INCLUDE_TOR) {
+                        AddMenuOption(
+                            icon = TorIcon,
+                            title = "Tor",
+                            description = "Connect via Tor network",
+                            onClick = {
+                                showAddMenu = false
+                                onNavigateToAddProfile("snowflake")
+                            }
+                        )
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    AddMenuOption(
+                        icon = Icons.Default.Link,
+                        title = "Chain",
+                        description = "Chain multiple profiles",
+                        onClick = {
+                            showAddMenu = false
+                            onNavigateToAddChain()
+                        }
+                    )
+                    AddMenuOption(
+                        icon = Icons.Default.FileDownload,
+                        title = "Import",
+                        description = "",
+                        onClick = {
+                            showAddMenu = false
+                            showImportDialog = true
+                        }
+                    )
+                    Spacer(Modifier.height(24.dp))
+                }
             }
         }
     }
@@ -983,6 +1041,38 @@ fun MainScreen(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        // SSH security warning when sharing with root credentials
+                        if (profile.sshUsername.equals("root", ignoreCase = true) &&
+                            profile.tunnelType in listOf(
+                                TunnelType.SSH, TunnelType.DNSTT_SSH,
+                                TunnelType.SLIPSTREAM_SSH, TunnelType.NOIZDNS_SSH,
+                                TunnelType.NAIVE_SSH
+                            )
+                        ) {
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Warning,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Text(
+                                        text = "This profile contains SSH credentials. Avoid using a root account or password auth — anyone with this profile can access your server. Use a restricted user with key-based authentication instead.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                }
+                            }
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -1253,6 +1343,76 @@ fun MainScreen(
                 }
             }
         )
+    }
+}
+
+// ── ChainListItem ───────────────────────────────────────────────────────
+
+@Composable
+private fun ChainListItem(
+    chain: app.slipnet.domain.model.ProfileChain,
+    profiles: List<ServerProfile>,
+    isConnected: Boolean = false,
+    onClick: () -> Unit,
+    onEditClick: () -> Unit,
+    onDeleteClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val layerNames = chain.profileIds.mapNotNull { id ->
+        profiles.find { it.id == id }?.let { "${it.name} (${it.tunnelType.displayName})" }
+    }
+
+    val borderColor = if (isConnected) ConnectedGreen else null
+    val containerColor = if (isConnected) ConnectedGreen.copy(alpha = 0.08f)
+        else MaterialTheme.colorScheme.secondaryContainer
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (borderColor != null) Modifier.border(2.dp, borderColor, RoundedCornerShape(12.dp))
+                else Modifier
+            )
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = containerColor
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = chain.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = layerNames.joinToString(" \u2192 "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
+                    maxLines = 2
+                )
+            }
+            IconButton(onClick = onEditClick) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Edit chain",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(onClick = onDeleteClick) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Delete chain",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
     }
 }
 

@@ -1,5 +1,7 @@
 # SlipNet
 
+> **SlipNet is NOT available on any app store.** Any version you find on Google Play, the Apple App Store, or any other marketplace is **not published by us** and may be outdated, modified, or unsafe. The only official sources are this GitHub repository and our [Telegram channel](https://t.me/SlipNet_app).
+
 <p align="center">
   <img src="imgs/icon.png" alt="SlipNet Logo" width="200">
 </p>
@@ -161,7 +163,7 @@ SlipNet includes a cross-platform CLI client for **macOS**, **Linux**, and **Win
 
 ### Download
 
-Pre-built binaries are available on the [Releases](https://github.com/anonvector/SlipNet/releases) page:
+Pre-built binaries are available on the Releases page:
 
 | Platform | Binary |
 |----------|--------|
