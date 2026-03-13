@@ -92,7 +92,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -103,6 +102,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.hilt.navigation.compose.hiltViewModel
+import app.slipnet.domain.model.ResolverStatus
 import app.slipnet.tunnel.GeoBypassCountry
 
 private val WorkingGreen = Color(0xFF4CAF50)
@@ -120,27 +120,11 @@ fun DnsScannerScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    val context = LocalContext.current
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        uri?.let {
-            try {
-                val fileName = try {
-                    context.contentResolver.query(it, null, null, null, null)?.use { cursor ->
-                        val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                        if (cursor.moveToFirst() && nameIndex >= 0) cursor.getString(nameIndex) else null
-                    }
-                } catch (_: Exception) { null }
-                context.contentResolver.openInputStream(it)?.use { inputStream ->
-                    val content = inputStream.bufferedReader().readText()
-                    viewModel.importList(content, fileName)
-                }
-            } catch (e: Exception) {
-                // Error handled in ViewModel
-            }
-        }
+        uri?.let { viewModel.importList(it) }
     }
 
     LaunchedEffect(uiState.error) {
@@ -244,7 +228,10 @@ fun DnsScannerScreen(
                 workingCount = if (uiState.scanMode == ScanMode.SIMPLE) {
                     uiState.scannerState.results.count { it.e2eTestResult?.success == true }
                 } else {
-                    uiState.scannerState.workingCount
+                    uiState.scannerState.results.count {
+                        it.status == ResolverStatus.WORKING &&
+                            (it.tunnelTestResult?.score ?: 0) >= 1
+                    }
                 },
                 scanMode = uiState.scanMode,
                 onStartScan = { viewModel.startScan() },

@@ -346,12 +346,18 @@ fun ScanResultsScreen(
                 }
             } else {
                 if (uiState.scannerState.isScanning || uiState.scannerState.scannedCount > 0) {
+                    val workingWithScore = remember(uiState.scannerState.results) {
+                        uiState.scannerState.results.count {
+                            it.status == ResolverStatus.WORKING &&
+                                (it.tunnelTestResult?.score ?: 0) >= 1
+                        }
+                    }
                     ResultsProgressSection(
                         isScanning = uiState.scannerState.isScanning,
                         progress = uiState.scannerState.progress,
                         totalCount = uiState.scannerState.totalCount,
                         scannedCount = uiState.scannerState.scannedCount,
-                        workingCount = uiState.scannerState.workingCount,
+                        workingCount = workingWithScore,
                         onStopScan = { viewModel.stopScan() },
                         onResumeScan = { viewModel.resumeScan() },
                         e2eSupported = uiState.e2eSupported,

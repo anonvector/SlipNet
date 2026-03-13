@@ -19,6 +19,7 @@ import app.slipnet.tunnel.ResolverConfig
 import app.slipnet.tunnel.SlipstreamBridge
 import com.jcraft.jsch.JSch
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -86,31 +87,80 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         return cachedTierBoundaries
     }
 
-    private val ipv4Regex = Regex("""\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b""")
-
     override fun parseResolverList(content: String): List<String> {
-        // Extract all valid IPv4 addresses from any text format
+        return parseResolverList(java.io.BufferedReader(java.io.StringReader(content)))
+    }
+
+    override fun parseResolverList(reader: java.io.BufferedReader): List<String> {
         val seen = mutableSetOf<String>()
         val result = mutableListOf<String>()
-        for (match in ipv4Regex.findAll(content)) {
-            val ip = match.groupValues[1]
-            if (isValidIpAddress(ip) && seen.add(ip)) {
-                result.add(ip)
-            }
+        reader.forEachLine { line ->
+            extractIpsFromLine(line, seen, result)
         }
         return result
     }
 
-    private fun isValidIpAddress(ip: String): Boolean {
-        return try {
-            val parts = ip.split(".")
-            if (parts.size != 4) return false
-            parts.all { part ->
-                val num = part.toIntOrNull() ?: return@all false
-                num in 0..255
+    /**
+     * Extract all valid IPv4 addresses from a single line without regex.
+     * Scans for digit sequences separated by dots (e.g. "1.2.3.4").
+     */
+    private fun extractIpsFromLine(line: String, seen: MutableSet<String>, out: MutableList<String>) {
+        var i = 0
+        val len = line.length
+        while (i < len) {
+            // Skip to the start of a potential IP (first digit not preceded by a word char)
+            if (!line[i].isDigit()) { i++; continue }
+            if (i > 0 && (line[i - 1].isLetterOrDigit() || line[i - 1] == '.')) { i++; continue }
+
+            val start = i
+            var dots = 0
+            var octetStart = i
+            var valid = true
+
+            while (i < len && (line[i].isDigit() || line[i] == '.')) {
+                if (line[i] == '.') {
+                    if (!validateOctet(line, octetStart, i)) { valid = false; break }
+                    dots++
+                    if (dots > 3) { valid = false; break }
+                    octetStart = i + 1
+                }
+                i++
             }
-        } catch (e: Exception) {
-            false
+
+            // Check trailing char isn't a word char (boundary check)
+            if (i < len && (line[i].isLetterOrDigit())) { valid = false }
+
+            if (valid && dots == 3 && octetStart < i && validateOctet(line, octetStart, i)) {
+                val ip = normalizeIp(line, start, i)
+                if (seen.add(ip)) out.add(ip)
+            }
+        }
+    }
+
+    /** Validate an octet substring [from, to) is 0-255. Allows leading zeros (e.g. "006"). */
+    private fun validateOctet(s: String, from: Int, to: Int): Boolean {
+        val len = to - from
+        if (len == 0 || len > 3) return false
+        var num = 0
+        for (j in from until to) {
+            num = num * 10 + (s[j] - '0')
+        }
+        return num in 0..255
+    }
+
+    /** Normalize an IP substring by stripping leading zeros from each octet (e.g. "006.132.048.001" → "6.132.48.1"). */
+    private fun normalizeIp(s: String, from: Int, to: Int): String {
+        val raw = s.substring(from, to)
+        val parts = raw.split(".")
+        return parts.joinToString(".") { it.trimStart('0').ifEmpty { "0" } }
+    }
+
+    private fun isValidIpAddress(ip: String): Boolean {
+        val parts = ip.split(".")
+        if (parts.size != 4) return false
+        return parts.all { part ->
+            val num = part.toIntOrNull() ?: return@all false
+            num in 0..255
         }
     }
 
@@ -176,25 +226,24 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             )
         }
 
-        // Test NS delegation + glue record (queries NS for parent zone)
-        val nsSupport = testNsDelegation(host, port, testDomain, timeoutMs)
+        // Run all tunnel compatibility tests in parallel
+        val nsDeferred = async { testNsDelegation(host, port, testDomain, timeoutMs) }
+        val txtDeferred = async { testRecordType(host, port, parentDomain, DNS_TYPE_TXT, timeoutMs) }
+        val rndDeferred = async {
+            testRandomSubdomain(host, port, testDomain, timeoutMs)
+                || testRandomSubdomain(host, port, testDomain, timeoutMs)
+        }
+        val tunnelRealismDeferred = async { testTunnelRealism(host, port, testDomain, timeoutMs) }
+        val ednsDeferred = async { probeEdnsMaxPayload(host, port, testDomain, timeoutMs) }
+        val nxdomainDeferred = async { testNxdomainCorrect(host, port, timeoutMs) }
 
-        // Test TXT record support (against the parent zone)
-        val txtSupport = testRecordType(host, port, parentDomain, DNS_TYPE_TXT, timeoutMs)
-
-        // Test random subdomain resolution (two attempts, pass if either succeeds)
-        val randomSubdomain = testRandomSubdomain(host, port, testDomain, timeoutMs)
-            || testRandomSubdomain(host, port, testDomain, timeoutMs)
-
-        // Test tunnel realism: send a dnstt-style long base32 TXT query to detect DPI
-        val tunnelRealism = testTunnelRealism(host, port, testDomain, timeoutMs)
-
-        // Test EDNS0 payload size support (probe 512, 900, 1232)
-        val ednsMaxPayload = probeEdnsMaxPayload(host, port, testDomain, timeoutMs)
+        val nsSupport = nsDeferred.await()
+        val txtSupport = txtDeferred.await()
+        val randomSubdomain = rndDeferred.await()
+        val tunnelRealism = tunnelRealismDeferred.await()
+        val ednsMaxPayload = ednsDeferred.await()
         val edns0Support = ednsMaxPayload > 0
-
-        // Test NXDOMAIN correctness (detects DNS hijacking)
-        val nxdomainCorrect = testNxdomainCorrect(host, port, timeoutMs)
+        val nxdomainCorrect = nxdomainDeferred.await()
 
         val responseTime = System.currentTimeMillis() - startTime
 
