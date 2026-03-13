@@ -348,7 +348,7 @@ See [LICENSE](./LICENSE) for the full legal terms.
 
 **"SlipNet"** is the reserved project name.
 
-Use of the project name, logo, or branding in derivative works or republished versions is **strictly prohibited** without explicit written permission from the maintainers. This applies even if you have modified or forked the code.
+Use of the project name, logo, or branding in derivative works or republished versions is **strictly prohibited** without explicit written permission from the owner. This applies even if you have modified or forked the code.
 
 ## Distribution Notice
 
