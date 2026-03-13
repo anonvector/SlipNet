@@ -10,17 +10,17 @@ A fast, modern VPN client featuring DNS tunneling with support for multiple prot
 
 > **This is a legitimate source-available anti-censorship tool** designed to help users in countries with internet censorship access the free internet. It is comparable to [Tor](https://www.torproject.org/), [Psiphon](https://psiphon.ca/), [Outline VPN](https://getoutline.org/) (Google Jigsaw), and [dnstt](https://www.bamsoftware.com/software/dnstt/). This project does not target, exploit, or attack any systems — it is a client-side privacy tool used voluntarily by end users.
 
-## Community
-
-Join our Telegram channel for updates, support, and discussions:
-
-[![Telegram](https://img.shields.io/badge/Telegram-@SlipNet__app-blue?logo=telegram)](https://t.me/SlipNet_app)
-
 ## Donate
 
 If you want to support development:
 
 - **USDT (BEP-20)**: ``
+
+## Community
+
+Join our Telegram channel for updates, support, and discussions:
+
+[![Telegram](https://img.shields.io/badge/Telegram-@SlipNet__app-blue?logo=telegram)](https://t.me/SlipNet_app)
 
 ## Tunnel Types
 
