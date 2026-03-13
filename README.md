@@ -10,12 +10,6 @@ A fast, modern VPN client featuring DNS tunneling with support for multiple prot
 
 > **This is a legitimate source-available anti-censorship tool** designed to help users in countries with internet censorship access the free internet. It is comparable to [Tor](https://www.torproject.org/), [Psiphon](https://psiphon.ca/), [Outline VPN](https://getoutline.org/) (Google Jigsaw), and [dnstt](https://www.bamsoftware.com/software/dnstt/). This project does not target, exploit, or attack any systems — it is a client-side privacy tool used voluntarily by end users.
 
-## Desktop GUI (Mac, Windows, Linux)
-
-**Prefer a point-and-click interface?** [**SlipStreamGUI**](https://github.com/mirzaaghazadeh/SlipStreamGUI) is a modern, cross-platform GUI client — no terminal required. It uses this project's binaries (SlipNet CLI) under the hood. Download, install, and connect with a few clicks.
-
-[![SlipStreamGUI](https://img.shields.io/badge/Download-SlipStreamGUI-green?style=for-the-badge)](https://github.com/mirzaaghazadeh/SlipStreamGUI/releases/latest)
-
 ## Community
 
 Join our Telegram channel for updates, support, and discussions:
