@@ -860,6 +860,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             }
             if (noizMode) {
                 newClient.setNoizMode(true)
+                newClient.setDeviceManufacturer(android.os.Build.MANUFACTURER)
             }
             client = newClient
             newClient.start()
