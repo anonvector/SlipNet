@@ -1,6 +1,7 @@
 package app.slipnet.tunnel
 
 import android.net.VpnService
+import android.os.Build
 import app.slipnet.util.AppLog as Log
 import mobile.Mobile
 import mobile.DnsttClient
@@ -111,6 +112,7 @@ object DnsttBridge {
             }
             if (noizMode) {
                 newClient.setNoizMode(true)
+                newClient.setDeviceManufacturer(Build.MANUFACTURER)
                 if (stealthMode) {
                     newClient.setStealthMode(true)
                 }

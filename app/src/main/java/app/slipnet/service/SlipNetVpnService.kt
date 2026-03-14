@@ -66,6 +66,8 @@ class SlipNetVpnService : VpnService() {
         private const val VPN_ADDRESS = "10.255.255.1"
         private const val VPN_ROUTE = "0.0.0.0"
         private const val DEFAULT_DNS = "8.8.8.8"
+        private const val WAKELOCK_TIMEOUT_MS = 10 * 60 * 1000L  // 10 minutes (Chinese OEM ROMs kill indefinite WakeLocks)
+        private const val WAKELOCK_RENEW_INTERVAL_MS = 9 * 60 * 1000L  // renew 1 min before expiry
         private const val HEALTH_CHECK_INTERVAL_MS = 15000L
         private const val QUIC_DOWN_THRESHOLD = 2 // Reconnect after 2 checks (~30s) with QUIC down
         private const val SSH_PROBE_INTERVAL = 2 // Probe SSH session every 2 health checks (~30s)
@@ -148,6 +150,7 @@ class SlipNetVpnService : VpnService() {
 
     // WifiLock to prevent Wi-Fi radio from entering low-power mode when screen is off
     private var wifiLock: WifiManager.WifiLock? = null
+    private var wakeLockRenewJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -283,26 +286,28 @@ class SlipNetVpnService : VpnService() {
 
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
 
-            // Acquire WakeLock to keep CPU awake for the entire VPN session
+            // Acquire WakeLock with timeout (Chinese OEM ROMs kill indefinite WakeLocks)
             if (wakeLock == null) {
                 wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SlipNet:VpnWakeLock").apply {
                     setReferenceCounted(false)
-                    acquire()
+                    acquire(WAKELOCK_TIMEOUT_MS)
                 }
-                Log.d(TAG, "WakeLock acquired")
+                Log.d(TAG, "WakeLock acquired (${WAKELOCK_TIMEOUT_MS / 60000}min timeout)")
             }
+            startWakeLockRenewal()
 
-            // Acquire WifiLock to keep Wi-Fi radio active when screen is off
+            // Acquire WifiLock to keep Wi-Fi radio active when screen is off.
+            // Chinese OEMs (Xiaomi, Huawei, etc.) kill apps using WIFI_MODE_FULL_LOW_LATENCY,
+            // so fall back to WIFI_MODE_FULL on those devices.
             if (wifiLock == null) {
                 val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
                 @Suppress("DEPRECATION")
-                wifiLock = wifiManager?.createWifiLock(
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-                        WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                    else
-                        WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                    "SlipNet:VpnWifiLock"
-                )?.apply {
+                val wifiMode = when {
+                    isChineseOem() -> WifiManager.WIFI_MODE_FULL
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                    else -> WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wifiManager?.createWifiLock(wifiMode, "SlipNet:VpnWifiLock")?.apply {
                     setReferenceCounted(false)
                     acquire()
                 }
@@ -474,19 +479,19 @@ class SlipNetVpnService : VpnService() {
             if (wakeLock == null) {
                 wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "SlipNet:VpnWakeLock").apply {
                     setReferenceCounted(false)
-                    acquire()
+                    acquire(WAKELOCK_TIMEOUT_MS)
                 }
             }
+            startWakeLockRenewal()
             if (wifiLock == null) {
                 val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
                 @Suppress("DEPRECATION")
-                wifiLock = wifiManager?.createWifiLock(
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q)
-                        android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                    else
-                        android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                    "SlipNet:VpnWifiLock"
-                )?.apply {
+                val wifiMode = when {
+                    isChineseOem() -> android.net.wifi.WifiManager.WIFI_MODE_FULL
+                    android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q -> android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                    else -> android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wifiManager?.createWifiLock(wifiMode, "SlipNet:VpnWifiLock")?.apply {
                     setReferenceCounted(false)
                     acquire()
                 }
@@ -3917,6 +3922,8 @@ class SlipNetVpnService : VpnService() {
 
     /** Release WakeLock and WifiLock if held. */
     private fun releaseLocks() {
+        wakeLockRenewJob?.cancel()
+        wakeLockRenewJob = null
         wakeLock?.let {
             if (it.isHeld) {
                 it.release()
@@ -3931,6 +3938,31 @@ class SlipNetVpnService : VpnService() {
             }
         }
         wifiLock = null
+    }
+
+    /** Periodically re-acquires the WakeLock before it expires. */
+    private fun startWakeLockRenewal() {
+        wakeLockRenewJob?.cancel()
+        wakeLockRenewJob = serviceScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                kotlinx.coroutines.delay(WAKELOCK_RENEW_INTERVAL_MS)
+                wakeLock?.let {
+                    if (it.isHeld) {
+                        it.acquire(WAKELOCK_TIMEOUT_MS)
+                        Log.d(TAG, "WakeLock renewed")
+                    }
+                }
+            }
+        }
+    }
+
+    /** Chinese OEM ROMs aggressively kill apps using high-power WifiLock modes. */
+    private fun isChineseOem(): Boolean {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        return manufacturer in listOf(
+            "xiaomi", "redmi", "poco", "huawei", "honor",
+            "oppo", "vivo", "realme", "oneplus", "meizu", "zte", "lenovo"
+        )
     }
 
     /**
