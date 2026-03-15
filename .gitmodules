@@ -13,6 +13,3 @@
 [submodule "lyrebird"]
 	path = lyrebird
 	url = https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird.git
-[submodule "noizdns"]
-	path = noizdns
-	url = https://github.com/anonvector/noizdns.git
