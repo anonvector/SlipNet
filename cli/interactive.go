@@ -52,7 +52,8 @@ func runInteractive() {
 		fmt.Println("║  2) DNS Scanner                                  ║")
 		fmt.Println("║  3) DNS Scanner + E2E Test                       ║")
 		fmt.Println("║  4) Quick Scan (single IP)                       ║")
-		fmt.Println("║  5) Help                                         ║")
+		fmt.Println("║  5) Verify Scanner (challenge-response)          ║")
+		fmt.Println("║  6) Help                                         ║")
 		fmt.Println("║  0) Exit                                         ║")
 		fmt.Println("║                                                  ║")
 		fmt.Println("╚══════════════════════════════════════════════════╝")
@@ -70,6 +71,8 @@ func runInteractive() {
 		case "4":
 			interactiveQuickScan()
 		case "5":
+			interactiveVerifyScan()
+		case "6":
 			printUsage()
 			waitExit()
 		case "0", "q", "exit":
@@ -127,6 +130,42 @@ func interactiveConnectWithURI(uri string) {
 	directStr := promptDefault("  Direct mode? (y/N)", "n")
 	forceDirectMode := strings.HasPrefix(strings.ToLower(directStr), "y")
 
+	fmt.Println()
+	fmt.Println("  DNS query size (smaller = stealthier, slower):")
+	fmt.Println("    0) Full capacity (fastest, default)")
+	fmt.Println("    1) 100 bytes — large, good balance")
+	fmt.Println("    2) 80 bytes  — medium, less conspicuous")
+	fmt.Println("    3) 60 bytes  — small, stealthier")
+	fmt.Println("    4) 50 bytes  — minimum, most stealthy")
+	fmt.Println("    5) Custom")
+	fmt.Println()
+	qsChoice := promptDefault("  Select", "0")
+	var querySize int
+	switch qsChoice {
+	case "0", "":
+		// full capacity
+	case "1":
+		querySize = 100
+	case "2":
+		querySize = 80
+	case "3":
+		querySize = 60
+	case "4":
+		querySize = 50
+	case "5":
+		custom := prompt("  Enter size in bytes (>= 50): ")
+		if v, err := strconv.Atoi(custom); err == nil && v >= 50 {
+			querySize = v
+		} else {
+			fmt.Println("  Invalid value, using full capacity.")
+		}
+	default:
+		// Try parsing as a direct number
+		if v, err := strconv.Atoi(qsChoice); err == nil && v >= 50 {
+			querySize = v
+		}
+	}
+
 	// Build args and invoke the existing connect logic
 	var args []string
 	if dnsOverride != "" {
@@ -137,6 +176,9 @@ func interactiveConnectWithURI(uri string) {
 	}
 	if forceDirectMode {
 		args = append(args, "--direct")
+	}
+	if querySize > 0 {
+		args = append(args, "--query-size", strconv.Itoa(querySize))
 	}
 	args = append(args, "--port", strconv.Itoa(profile.Port))
 	args = append(args, uri)
@@ -315,6 +357,130 @@ func interactiveQuickScan() {
 	waitExit()
 }
 
+func interactiveVerifyScan() {
+	fmt.Println()
+	fmt.Println("  ── Verify Scanner (challenge-response) ──────────")
+	fmt.Println()
+	fmt.Println("  Requires SlipGate running on the server.")
+	fmt.Println("  Repeats multiple rounds to filter unreliable resolvers.")
+	fmt.Println()
+	fmt.Println("  Requires the server public key (from slipnet:// config")
+	fmt.Println("  or --pubkey) to authenticate responses.")
+	fmt.Println("  Optionally request a specific response size to test")
+	fmt.Println("  resolver packet size limits.")
+	fmt.Println()
+
+	var args []string
+
+	// Config URI or manual domain + pubkey
+	configURI := promptDefault("  slipnet:// config (or blank to enter manually)", "")
+	if configURI != "" && isSlipnetURI(configURI) {
+		args = append(args, "--config", configURI, "--verify")
+	} else {
+		domain := prompt("  Tunnel domain (e.g. t.example.com): ")
+		if domain == "" {
+			fmt.Println("  Domain is required.")
+			waitExit()
+			return
+		}
+		pubkey := prompt("  Server public key (hex): ")
+		if pubkey == "" {
+			fmt.Println("  Public key is required for verify mode.")
+			waitExit()
+			return
+		}
+		args = append(args, "--domain", domain, "--pubkey", pubkey, "--verify")
+	}
+
+	// Rounds
+	roundsStr := promptDefault("  Rounds", "5")
+	if v, _ := strconv.Atoi(roundsStr); v > 0 {
+		args = append(args, "--rounds", roundsStr)
+	}
+
+	// IP source
+	fmt.Println()
+	fmt.Println("  IP source:")
+	fmt.Println("    1) File (one IP per line)")
+	fmt.Println("    2) Paste IPs")
+	fmt.Println()
+	ipChoice := prompt("  Select: ")
+
+	switch ipChoice {
+	case "1":
+		filePath := prompt("  File path: ")
+		filePath = strings.Trim(filePath, "\"' ")
+		if filePath == "" {
+			fmt.Println("  File path is required.")
+			waitExit()
+			return
+		}
+		if !filepath.IsAbs(filePath) {
+			if cwd, err := os.Getwd(); err == nil {
+				filePath = filepath.Join(cwd, filePath)
+			}
+		}
+		args = append(args, "--ips", filePath)
+
+	case "2":
+		fmt.Println("  Paste IPs (one per line, empty line to finish):")
+		var ips []string
+		for {
+			line := prompt("  ")
+			if line == "" {
+				break
+			}
+			for _, part := range strings.Split(line, ",") {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					ips = append(ips, part)
+				}
+			}
+		}
+		if len(ips) == 0 {
+			fmt.Println("  No IPs entered.")
+			waitExit()
+			return
+		}
+		tmpFile, err := os.CreateTemp("", "slipnet-ips-*.txt")
+		if err != nil {
+			fmt.Printf("  Error creating temp file: %v\n", err)
+			waitExit()
+			return
+		}
+		tmpFile.WriteString(strings.Join(ips, "\n"))
+		tmpFile.Close()
+		defer os.Remove(tmpFile.Name())
+		args = append(args, "--ips", tmpFile.Name())
+
+	default:
+		fmt.Println("  Invalid choice.")
+		waitExit()
+		return
+	}
+
+	// Response size
+	respSize := promptDefault("  Response size in bytes (blank = server default)", "")
+	if v, err := strconv.Atoi(respSize); err == nil && v > 0 {
+		args = append(args, "--response-size", respSize)
+	}
+
+	// Optional settings
+	fmt.Println()
+	concurrency := promptDefault("  Concurrency", "100")
+	if v, _ := strconv.Atoi(concurrency); v > 0 {
+		args = append(args, "--concurrency", concurrency)
+	}
+	timeout := promptDefault("  Timeout (ms)", "3000")
+	if v, _ := strconv.Atoi(timeout); v > 0 {
+		args = append(args, "--timeout", timeout)
+	}
+
+	fmt.Println()
+	runScanCommand(args)
+	waitExit()
+}
+
 // runConnectFromArgs runs the connect flow with the given CLI args.
 // This avoids re-parsing os.Args and allows the interactive menu to
 // call the connect logic directly.
@@ -324,6 +490,7 @@ func runConnectFromArgs(args []string) {
 	var dnsOverride string
 	var utlsOverride string
 	var forceDirectMode bool
+	var querySize int
 	var uriParts []string
 
 	for i := 0; i < len(args); i++ {
@@ -351,6 +518,14 @@ func runConnectFromArgs(args []string) {
 				utlsOverride = args[i+1]
 				i++
 			}
+		case "--query-size":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v >= 50 {
+					querySize = v
+				}
+				i++
+			}
 		case "--direct", "-direct":
 			forceDirectMode = true
 		default:
@@ -364,7 +539,7 @@ func runConnectFromArgs(args []string) {
 	}
 
 	uri := strings.TrimSpace(strings.Join(uriParts, ""))
-	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode)
+	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize)
 }
 
 func clearScreen() {

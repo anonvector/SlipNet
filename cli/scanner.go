@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -513,6 +516,228 @@ func isTimeout(err error) bool {
 	}
 	netErr, ok := err.(net.Error)
 	return ok && netErr.Timeout()
+}
+
+// --- Verification scan ---
+
+// testVerify sends a nonce via DNS TXT query and verifies the
+// HMAC-SHA256(pubkey, nonce) response from the server.
+// Uses _ck. prefix (SlipGate format) with optional response size.
+// Falls back to nzv. prefix (NoizDNS format) if _ck. fails.
+// responseSize=0 means use server default (MTU).
+func testVerify(host string, port int, testDomain string, timeoutMs int, pubkey []byte, responseSize int) bool {
+	// Generate random 16-byte nonce
+	nonce := make([]byte, 16)
+	for i := range nonce {
+		nonce[i] = byte(rand.IntN(256))
+	}
+	nonceHex := hex.EncodeToString(nonce)
+
+	// Build query: _ck.[<size>.]<nonceHex>.<testDomain>
+	var query string
+	if responseSize > 0 {
+		query = fmt.Sprintf("_ck.%d.%s.%s", responseSize, nonceHex, testDomain)
+	} else {
+		query = "_ck." + nonceHex + "." + testDomain
+	}
+
+	resp, err := dnsQuery(host, port, query, dnsTypeTXT, timeoutMs, nil)
+	if err != nil || resp == nil {
+		// Fallback to nzv. prefix (NoizDNS server)
+		query = "nzv." + nonceHex + "." + testDomain
+		resp, err = dnsQuery(host, port, query, dnsTypeTXT, timeoutMs, nil)
+		if err != nil || resp == nil {
+			return false
+		}
+	}
+
+	if len(resp) < 12 {
+		return false
+	}
+	rcode := int(resp[3]) & 0x0F
+	if rcode != 0 {
+		return false
+	}
+
+	txtData := extractTXTData(resp)
+	if txtData == "" {
+		return false
+	}
+
+	// Compute expected HMAC-SHA256(pubkey, nonce)
+	mac := hmac.New(sha256.New, pubkey)
+	mac.Write(nonce)
+	expected := hex.EncodeToString(mac.Sum(nil))
+
+	// Response may be padded (SlipGate pads to MTU/requested size)
+	// HMAC is always the first 64 hex characters
+	if len(txtData) >= 64 {
+		return txtData[:64] == expected
+	}
+	return txtData == expected
+}
+
+// extractTXTData extracts the concatenated TXT character-strings from
+// the first TXT answer record in a DNS response.
+func extractTXTData(resp []byte) string {
+	if len(resp) < 12 {
+		return ""
+	}
+	ancount := int(binary.BigEndian.Uint16(resp[6:8]))
+	if ancount == 0 {
+		return ""
+	}
+
+	offset := 12
+	qdcount := int(binary.BigEndian.Uint16(resp[4:6]))
+	for i := 0; i < qdcount && offset < len(resp); i++ {
+		offset = skipDNSName(resp, offset)
+		offset += 4 // QTYPE + QCLASS
+	}
+
+	for i := 0; i < ancount && offset < len(resp); i++ {
+		offset = skipDNSName(resp, offset)
+		if offset+10 > len(resp) {
+			return ""
+		}
+		rtype := binary.BigEndian.Uint16(resp[offset : offset+2])
+		rdlen := int(binary.BigEndian.Uint16(resp[offset+8 : offset+10]))
+		offset += 10
+		if rtype == dnsTypeTXT && rdlen > 0 && offset+rdlen <= len(resp) {
+			var sb strings.Builder
+			end := offset + rdlen
+			for offset < end {
+				strLen := int(resp[offset])
+				offset++
+				if offset+strLen > end {
+					break
+				}
+				sb.Write(resp[offset : offset+strLen])
+				offset += strLen
+			}
+			return sb.String()
+		}
+		offset += rdlen
+	}
+	return ""
+}
+
+// RunVerifyScanner sends HMAC-authenticated verification queries through
+// each resolver and iteratively filters out resolvers that fail. Only
+// resolvers that pass every round are reported as verified.
+func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, rounds int, pubkey []byte, responseSize int) {
+	fmt.Println()
+	fmt.Println("╔══════════════════════════════════════════════════╗")
+	fmt.Println("║          SlipNet Verify Scanner                  ║")
+	fmt.Println("╚══════════════════════════════════════════════════╝")
+	fmt.Println()
+	fmt.Printf("  Domain:      %s\n", testDomain)
+	fmt.Printf("  Resolvers:   %d\n", len(resolvers))
+	fmt.Printf("  Rounds:      %d\n", rounds)
+	fmt.Printf("  Concurrency: %d\n", concurrency)
+	fmt.Printf("  Timeout:     %dms\n", timeoutMs)
+	if responseSize > 0 {
+		fmt.Printf("  Resp. size:  %d bytes\n", responseSize)
+	}
+	fmt.Println()
+
+	startTime := time.Now()
+	current := make([]string, len(resolvers))
+	copy(current, resolvers)
+
+	probeTimeout := timeoutMs
+	if probeTimeout > 1500 {
+		probeTimeout = 1500
+	}
+
+	for round := 1; round <= rounds; round++ {
+		fmt.Printf("  ── Round %d/%d (%d resolvers) ──\n", round, rounds, len(current))
+
+		var mu sync.Mutex
+		var passed []string
+		var scanned int64
+		var dead int64
+		total := int64(len(current))
+
+		sem := make(chan struct{}, concurrency)
+		var wg sync.WaitGroup
+
+		for _, ip := range current {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(host string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				// Basic query gate: skip verify if resolver is dead
+				sub := randomLabel(8)
+				parent := getParentDomain(testDomain)
+				resp, err := dnsQuery(host, port, sub+"."+parent, dnsTypeA, probeTimeout, nil)
+				if err != nil || resp == nil {
+					atomic.AddInt64(&dead, 1)
+					n := atomic.AddInt64(&scanned, 1)
+					if n%10 == 0 || n == total {
+						mu.Lock()
+						pCount := len(passed)
+						mu.Unlock()
+						fmt.Printf("\r  Scanning... %d/%d  (passed: %d)", n, total, pCount)
+					}
+					return
+				}
+
+				ok := testVerify(host, port, testDomain, timeoutMs, pubkey, responseSize)
+				n := atomic.AddInt64(&scanned, 1)
+
+				if ok {
+					mu.Lock()
+					passed = append(passed, host)
+					mu.Unlock()
+				}
+
+				if n%10 == 0 || n == total {
+					p := atomic.LoadInt64(&scanned) // approximate
+					mu.Lock()
+					pCount := len(passed)
+					mu.Unlock()
+					fmt.Printf("\r  Scanning... %d/%d  (passed: %d)", p, total, pCount)
+				}
+			}(ip)
+		}
+		wg.Wait()
+
+		mu.Lock()
+		passCount := len(passed)
+		mu.Unlock()
+		deadCount := atomic.LoadInt64(&dead)
+		fmt.Printf("\r  Scanning... %d/%d  (passed: %d, skipped: %d)\n", total, total, passCount, deadCount)
+
+		if passCount == 0 {
+			fmt.Println()
+			fmt.Println("  No resolvers passed. Stopping.")
+			return
+		}
+
+		current = passed
+		fmt.Println()
+	}
+
+	elapsed := time.Since(startTime)
+
+	fmt.Println("  ── Verified Resolvers ────────────────────────────")
+	fmt.Println()
+	fmt.Printf("  %d/%d resolvers passed all %d rounds (%s)\n",
+		len(current), len(resolvers), rounds, elapsed.Round(time.Millisecond))
+	fmt.Println()
+
+	for _, ip := range current {
+		fmt.Printf("  %s\n", ip)
+	}
+	fmt.Println()
+
+	if len(current) > 0 {
+		fmt.Printf("  Copy-paste ready:\n  %s\n", strings.Join(current, ","))
+		fmt.Println()
+	}
 }
 
 // LoadIPList parses a text file/string into a list of IP addresses.
