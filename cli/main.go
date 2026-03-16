@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	slipnet [--dns RESOLVER] [--port PORT] [--host HOST] slipnet://BASE64ENCODED...
+//	slipnet [--dns RESOLVER] [--port PORT] [--host HOST] [--query-size BYTES] slipnet://BASE64ENCODED...
 //
 // It decodes the slipnet:// URI, extracts connection parameters,
 // and starts a local SOCKS5 proxy tunneled through DNS.
@@ -12,6 +12,7 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -28,22 +29,29 @@ import (
 // version is set at build time via -ldflags "-X main.version=..."
 var version = "dev"
 
-// Profile fields (v16 pipe-delimited format)
+// Profile fields (v18 pipe-delimited format)
 type Profile struct {
-	Version      string
-	TunnelType   string // "sayedns" = NoizDNS, "dnstt" = DNSTT
-	Name         string
-	Domain       string
-	Resolvers    string // e.g. "8.8.8.8:53:0"
-	AuthMode     bool
-	KeepAlive    int
-	CC           string // congestion control: bbr, dcubic
-	Port         int    // local SOCKS5 port
-	Host         string // local SOCKS5 host
-	GSO          bool
-	PublicKey    string
-	DNSTransport string // udp, tcp, tls (DoT), https (DoH)
-	DoHURL       string
+	Version       string
+	TunnelType    string // "sayedns" = NoizDNS, "dnstt" = DNSTT, "ssh", "socks5", etc.
+	Name          string
+	Domain        string
+	Resolvers     string // e.g. "8.8.8.8:53:0"
+	AuthMode      bool
+	KeepAlive     int
+	CC            string // congestion control: bbr, dcubic
+	Port          int    // local SOCKS5 port
+	Host          string // local SOCKS5 host
+	GSO           bool
+	PublicKey     string
+	SOCKSUser     string
+	SOCKSPass     string
+	SSHEnabled    bool
+	SSHUser       string
+	SSHPass       string
+	SSHPort       int
+	SSHHost       string
+	DNSTransport  string // udp, tcp, tls (DoT), https (DoH)
+	DoHURL        string
 }
 
 func parseURI(uri string) (*Profile, error) {
@@ -123,13 +131,30 @@ func parseURI(uri string) (*Profile, error) {
 	}
 	p.PublicKey = fields[11]
 
-	// DNS transport (field index 22 in v16)
-	if len(fields) > 22 && fields[22] != "" {
-		p.DNSTransport = fields[22]
+	// SOCKS credentials (fields 12-13)
+	if len(fields) > 13 {
+		p.SOCKSUser = fields[12]
+		p.SOCKSPass = fields[13]
 	}
-	// DoH URL (field index 21 in v16)
+	// SSH fields (14-19)
+	if len(fields) > 19 {
+		p.SSHEnabled = fields[14] == "1"
+		p.SSHUser = fields[15]
+		p.SSHPass = fields[16]
+		if v, err := strconv.Atoi(fields[17]); err == nil && v > 0 {
+			p.SSHPort = v
+		} else {
+			p.SSHPort = 22
+		}
+		p.SSHHost = fields[19]
+	}
+	// DoH URL (field 21)
 	if len(fields) > 21 && fields[21] != "" {
 		p.DoHURL = fields[21]
+	}
+	// DNS transport (field 22)
+	if len(fields) > 22 && fields[22] != "" {
+		p.DNSTransport = fields[22]
 	}
 
 	return p, nil
@@ -220,6 +245,7 @@ func main() {
 	var utlsOverride string
 	var hostOverride string
 	var forceDirectMode bool
+	var querySize int
 	var uriParts []string
 
 	for i := 1; i < len(os.Args); i++ {
@@ -256,6 +282,17 @@ func main() {
 			} else {
 				log.Fatal("--utls requires a value (e.g., --utls Chrome_120, --utls none)")
 			}
+		case "--query-size":
+			if i+1 < len(os.Args) {
+				v, err := strconv.Atoi(os.Args[i+1])
+				if err != nil || v < 50 {
+					log.Fatal("--query-size requires a value >= 50 (bytes)")
+				}
+				querySize = v
+				i++
+			} else {
+				log.Fatal("--query-size requires a value (e.g., --query-size 100)")
+			}
 		case "--direct", "-direct":
 			forceDirectMode = true
 		case "--version", "-version", "-v":
@@ -277,11 +314,11 @@ func main() {
 
 	// Join all non-flag args in case terminal line-wrapping split the URI
 	uri := strings.TrimSpace(strings.Join(uriParts, ""))
-	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode)
+	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize)
 }
 
 // connectWithParams runs the tunnel connection with the given parameters.
-func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool) {
+func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool, querySize int) {
 	profile, err := parseURI(uri)
 	if err != nil {
 		log.Fatalf("Failed to parse URI: %v", err)
@@ -302,9 +339,21 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		}
 		connectSlipstream(profile, profile.Host, profile.Port)
 		return
-	case "ssh", "doh", "snowflake", "naive_ssh", "naive", "socks5":
+	case "ssh", "direct_ssh":
+		if portOverride > 0 {
+			profile.Port = portOverride
+		}
+		connectSSHTunnel(profile)
+		return
+	case "socks5", "direct_socks":
+		if portOverride > 0 {
+			profile.Port = portOverride
+		}
+		connectSOCKS5(profile)
+		return
+	case "doh", "snowflake", "naive":
 		log.Fatalf("This config uses tunnel type %q which is not supported by the CLI.\n"+
-			"SlipNet CLI supports DNSTT, NoizDNS, and Slipstream tunnel types.\n"+
+			"SlipNet CLI supports DNSTT, NoizDNS, Slipstream, SSH, and SOCKS5 tunnel types.\n"+
 			"Use the SlipNet app for other tunnel types.", profile.TunnelType)
 	default:
 		if profile.TunnelType != "" {
@@ -393,6 +442,9 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		transport = "udp"
 	}
 	fmt.Printf("  Transport:  %s\n", transport)
+	if querySize > 0 {
+		fmt.Printf("  Query Size: %d bytes\n", querySize)
+	}
 	fmt.Printf("  Auth Mode:  %v\n", authMode)
 	if len(profile.PublicKey) > 16 {
 		fmt.Printf("  Public Key: %s...%s\n", profile.PublicKey[:8], profile.PublicKey[len(profile.PublicKey)-8:])
@@ -413,6 +465,10 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 
 	if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
 		client.SetNoizMode(true)
+	}
+
+	if querySize > 0 {
+		client.SetMaxPayload(querySize)
 	}
 
 	if utlsOverride != "" {
@@ -467,6 +523,9 @@ func runScanCommand(args []string) {
 	var e2eConcurrency = 3
 	var e2eTimeout = 15000
 	var configURI string
+	var verifyMode bool
+	var verifyRounds = 5
+	var responseSize int
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -534,6 +593,24 @@ func runScanCommand(args []string) {
 				}
 				i++
 			}
+		case "--verify", "-verify":
+			verifyMode = true
+		case "--rounds", "-rounds":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v > 0 {
+					verifyRounds = v
+				}
+				i++
+			}
+		case "--response-size", "-response-size":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v > 0 {
+					responseSize = v
+				}
+				i++
+			}
 		case "--config", "-config":
 			if i+1 < len(args) {
 				configURI = args[i+1]
@@ -587,6 +664,18 @@ func runScanCommand(args []string) {
 		}
 	}
 
+	if verifyMode {
+		if pubkey == "" {
+			log.Fatal("verify mode requires --pubkey or --config with a slipnet:// URI")
+		}
+		pubkeyBytes, err := hex.DecodeString(pubkey)
+		if err != nil {
+			log.Fatalf("invalid pubkey hex: %v", err)
+		}
+		RunVerifyScanner(resolvers, domain, port, timeoutMs, concurrency, verifyRounds, pubkeyBytes, responseSize)
+		return
+	}
+
 	var e2eConfig *E2EConfig
 	if e2eEnabled {
 		if pubkey == "" {
@@ -605,7 +694,7 @@ func runScanCommand(args []string) {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - DNS tunnel SOCKS5 proxy (DNSTT, NoizDNS, Slipstream)
+	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - Tunnel proxy (DNSTT, NoizDNS, Slipstream, SSH, SOCKS5)
 
 Usage:
   %s [options] slipnet://BASE64...
@@ -621,6 +710,9 @@ Options (connect):
   --utls FINGERPRINT  Fix TLS fingerprint (default: random from distribution)
                       Examples: Chrome_120, Firefox_120, iOS_14, random, none
                       Weighted: "3*Chrome_120,1*Firefox_120"
+  --query-size BYTES  Max DNS query payload size in bytes (default: full capacity)
+                      Lower values produce smaller queries for restrictive networks
+                      Minimum: 50. Presets: 100 (large), 80 (medium), 60 (small), 50 (minimum)
   --version           Show version
   --help              Show this help
 
@@ -637,6 +729,11 @@ Options (scan):
   --e2e-concurrency N Parallel E2E tests (default: 3)
   --e2e-timeout MS    E2E HTTP timeout in ms (default: 15000)
   --config URI        Extract domain/pubkey/mode from slipnet:// URI (auto-enables E2E)
+  --verify            Verify mode: HMAC challenge-response to authenticate the server
+                      Requires --pubkey or --config to provide the server's public key
+  --rounds N          Number of verification rounds (default: 5, used with --verify)
+  --response-size N   Request server to pad response to N bytes (used with --verify)
+                      Tests resolver's ability to handle large DNS responses
 
 If no --dns is specified, the client auto-detects the server IP
 when DNS delegation isn't working.
@@ -646,10 +743,13 @@ Examples:
   %[2]s --utls Chrome_120 slipnet://BASE64...
   %[2]s --dns 1.1.1.1 slipnet://BASE64...
   %[2]s --dns <server-ip> --direct --port 9050 slipnet://BASE64...
+  %[2]s --query-size 80 slipnet://BASE64...
   %[2]s --host 0.0.0.0 slipnet://BASE64...
   %[2]s scan --domain t.example.com --ips resolvers.txt
   %[2]s scan --domain t.example.com --ip 8.8.8.8
   %[2]s scan --config slipnet://BASE64... --ips resolvers.txt
   %[2]s scan --domain t.example.com --ips ips.txt --e2e --pubkey HEXKEY
+  %[2]s scan --config slipnet://BASE64... --ips resolvers.txt --verify
+  %[2]s scan --domain t.example.com --pubkey HEXKEY --ips resolvers.txt --verify --rounds 3
 `, version, os.Args[0])
 }
