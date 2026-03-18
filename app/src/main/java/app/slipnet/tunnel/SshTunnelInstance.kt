@@ -130,7 +130,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
     fun configure(cipher: String?, compression: Boolean, maxChannels: Int) {
         configCipher = cipher
         configCompression = compression
-        configMaxChannels = maxChannels.coerceIn(4, 64)
+        configMaxChannels = maxChannels.coerceIn(1, 64)
         channelSemaphore = Semaphore(configMaxChannels)
         Log.i(TAG, "Configured: cipher=${cipher ?: "auto"}, compression=$compression, maxChannels=$configMaxChannels")
     }

@@ -48,7 +48,10 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
@@ -147,8 +150,9 @@ fun ScanResultsScreen(
             ScoreFilter.entries.find { it.name == prefs.getString("score_filter", null) } ?: ScoreFilter.SCORE_2_PLUS
         )
     }
-    var showSortFilter by remember { mutableStateOf(prefs.getBoolean("show_sort_filter", true)) }
-    var showAllWorking by remember { mutableStateOf(prefs.getBoolean("show_all_working", false)) }
+    var showSortMenu by remember { mutableStateOf(false) }
+    var showFilterMenu by remember { mutableStateOf(false) }
+    var showAllWorking by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
     // null = no dialog, "copy" or "export" = pending action
@@ -656,69 +660,117 @@ fun ScanResultsScreen(
                 }
             }
 
-            // Sort & filter bar — always visible once scan has started
+            // Compact sort/filter bar — always visible once scan has started
             if (uiState.scannerState.scannedCount > 0) {
-                Column(modifier = Modifier.padding(bottom = navBarPadding.calculateBottomPadding())) {
-                    // Toggle handle
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                showSortFilter = !showSortFilter
-                                prefs.edit().putBoolean("show_sort_filter", showSortFilter).apply()
-                            }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(bottom = navBarPadding.calculateBottomPadding()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = if (showSortFilter) Icons.Default.KeyboardArrowDown
-                                          else Icons.Default.KeyboardArrowUp,
-                            contentDescription = if (showSortFilter) "Hide sort & filter" else "Show sort & filter",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .size(20.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    AnimatedVisibility(visible = showSortFilter) {
-                        Column {
-                            SortControlBar(
-                                sortOption = sortOption,
-                                onSortOptionChange = {
-                                    sortOption = it
-                                    prefs.edit().putString("sort_option", it.name).apply()
-                                    viewModel.updateE2eSortOption(E2eSortOption.valueOf(it.name))
+                        // Sort dropdown
+                        Box {
+                            FilterChip(
+                                selected = sortOption != SortOption.NONE,
+                                onClick = { showSortMenu = true },
+                                label = {
+                                    Text(when (sortOption) {
+                                        SortOption.NONE -> "Sort"
+                                        SortOption.SPEED -> "Speed"
+                                        SortOption.IP -> "IP"
+                                        SortOption.SCORE -> "Score"
+                                        SortOption.E2E_SPEED -> "E2E"
+                                    })
                                 },
-                                scoreFilter = scoreFilter,
-                                onScoreFilterChange = {
-                                    scoreFilter = it
-                                    prefs.edit().putString("score_filter", it.name).apply()
-                                    viewModel.updateE2eMinScore(it.minScore)
+                                trailingIcon = {
+                                    Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(16.dp))
                                 },
-                                hideScoreFilter = false
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.primary,
+                                    selectedTrailingIconColor = MaterialTheme.colorScheme.primary
+                                )
                             )
-                            if (uiState.scanMode == ScanMode.SIMPLE) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        "Show all working",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Switch(
-                                        checked = showAllWorking,
-                                        onCheckedChange = {
-                                            showAllWorking = it
-                                            prefs.edit().putBoolean("show_all_working", it).apply()
-                                        }
+                            DropdownMenu(
+                                expanded = showSortMenu,
+                                onDismissRequest = { showSortMenu = false }
+                            ) {
+                                listOf(
+                                    SortOption.NONE to "None",
+                                    SortOption.SPEED to "Speed",
+                                    SortOption.IP to "IP",
+                                    SortOption.SCORE to "Score",
+                                    SortOption.E2E_SPEED to "E2E"
+                                ).forEach { (option, label) ->
+                                    DropdownMenuItem(
+                                        text = { Text(label) },
+                                        onClick = {
+                                            sortOption = option
+                                            prefs.edit().putString("sort_option", option.name).apply()
+                                            viewModel.updateE2eSortOption(E2eSortOption.valueOf(option.name))
+                                            showSortMenu = false
+                                        },
+                                        leadingIcon = if (sortOption == option) ({
+                                            Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp))
+                                        }) else null
                                     )
                                 }
                             }
+                        }
+
+                        // Score filter dropdown
+                        Box {
+                            FilterChip(
+                                selected = true,
+                                onClick = { showFilterMenu = true },
+                                label = { Text("Score ${scoreFilter.label}") },
+                                trailingIcon = {
+                                    Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(16.dp))
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.secondary,
+                                    selectedTrailingIconColor = MaterialTheme.colorScheme.secondary
+                                )
+                            )
+                            DropdownMenu(
+                                expanded = showFilterMenu,
+                                onDismissRequest = { showFilterMenu = false }
+                            ) {
+                                ScoreFilter.entries.forEach { filter ->
+                                    DropdownMenuItem(
+                                        text = { Text("Score ${filter.label}") },
+                                        onClick = {
+                                            scoreFilter = filter
+                                            prefs.edit().putString("score_filter", filter.name).apply()
+                                            viewModel.updateE2eMinScore(filter.minScore)
+                                            showFilterMenu = false
+                                        },
+                                        leadingIcon = if (scoreFilter == filter) ({
+                                            Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp))
+                                        }) else null
+                                    )
+                                }
+                            }
+                        }
+
+                        // All working chip (simple mode only)
+                        if (uiState.scanMode == ScanMode.SIMPLE) {
+                            FilterChip(
+                                selected = showAllWorking,
+                                onClick = { showAllWorking = !showAllWorking },
+                                label = { Text("All working") },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.tertiary
+                                )
+                            )
                         }
                     }
                 }
@@ -760,159 +812,14 @@ private enum class ScoreFilter(val label: String, val minScore: Int) {
     SCORE_2_PLUS("2+", 2),
     SCORE_3_PLUS("3+", 3),
     SCORE_4_PLUS("4+", 4),
-    SCORE_5_PLUS("5+", 5)
+    SCORE_5_PLUS("5+", 5),
+    SCORE_6("6/6", 6)
 }
 
 private enum class SortOption {
     NONE, SPEED, IP, SCORE, E2E_SPEED
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SortControlBar(
-    sortOption: SortOption,
-    onSortOptionChange: (SortOption) -> Unit,
-    scoreFilter: ScoreFilter,
-    onScoreFilterChange: (ScoreFilter) -> Unit,
-    hideScoreFilter: Boolean = false,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            // Sort row
-            Row(
-                modifier = Modifier
-                    .horizontalScroll(rememberScrollState())
-                    .padding(start = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Sort:",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                FilterChip(
-                    selected = sortOption == SortOption.SPEED,
-                    onClick = {
-                        onSortOptionChange(if (sortOption == SortOption.SPEED) SortOption.NONE else SortOption.SPEED)
-                    },
-                    label = { Text("Speed") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Speed,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.primary,
-                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary
-                    )
-                )
-
-                FilterChip(
-                    selected = sortOption == SortOption.IP,
-                    onClick = {
-                        onSortOptionChange(if (sortOption == SortOption.IP) SortOption.NONE else SortOption.IP)
-                    },
-                    label = { Text("IP") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Dns,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.primary,
-                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary
-                    )
-                )
-
-                FilterChip(
-                    selected = sortOption == SortOption.SCORE,
-                    onClick = {
-                        onSortOptionChange(if (sortOption == SortOption.SCORE) SortOption.NONE else SortOption.SCORE)
-                    },
-                    label = { Text("Score") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Star,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.primary,
-                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary
-                    )
-                )
-
-                FilterChip(
-                    selected = sortOption == SortOption.E2E_SPEED,
-                    onClick = {
-                        onSortOptionChange(if (sortOption == SortOption.E2E_SPEED) SortOption.NONE else SortOption.E2E_SPEED)
-                    },
-                    label = { Text("E2E") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Speed,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.tertiary,
-                        selectedLeadingIconColor = MaterialTheme.colorScheme.tertiary
-                    )
-                )
-            }
-
-            // Filter row (hidden in simple mode)
-            if (!hideScoreFilter) {
-                Row(
-                    modifier = Modifier
-                        .horizontalScroll(rememberScrollState())
-                        .padding(start = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Filter:",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    ScoreFilter.entries.forEach { filter ->
-                        FilterChip(
-                            selected = scoreFilter == filter,
-                            onClick = { onScoreFilterChange(filter) },
-                            label = { Text(filter.label) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.secondary
-                            )
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun ResultsProgressSection(

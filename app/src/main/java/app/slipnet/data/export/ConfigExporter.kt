@@ -14,8 +14,8 @@ import javax.inject.Singleton
  * Single profile format: slipnet://[base64-encoded-profile]
  * Multiple profiles: one URI per line
  *
- * Encoded profile format v17 (pipe-delimited):
- * v17|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId|resolversHidden|hiddenResolvers
+ * Encoded profile format v18 (pipe-delimited):
+ * v18|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId|resolversHidden|hiddenResolvers|noizdnsStealth|dnsPayloadSize|socks5ServerPort
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -25,7 +25,7 @@ class ConfigExporter @Inject constructor() {
     companion object {
         const val SCHEME = "slipnet://"
         const val ENCRYPTED_SCHEME = "slipnet-enc://"
-        const val VERSION = "17"
+        const val VERSION = "18"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -147,7 +147,10 @@ class ConfigExporter @Inject constructor() {
             if (profile.allowSharing) "1" else "0",
             profile.boundDeviceId,
             if (hideResolvers) "1" else "0",
-            hiddenResolvers
+            hiddenResolvers,
+            if (profile.noizdnsStealth) "1" else "0",
+            profile.dnsPayloadSize.toString(),
+            profile.socks5ServerPort.toString()
         ).joinToString(FIELD_DELIMITER)
     }
 

@@ -99,12 +99,14 @@ interface ResolverScannerRepository {
     suspend fun detectTransparentProxy(testDomain: String, timeoutMs: Long = 2000): Boolean
 
     /**
-     * Test a single resolver end-to-end by establishing a real tunnel and sending an HTTP request.
+     * Test a single resolver end-to-end by establishing a real tunnel.
      * @param resolverHost The resolver IP address
      * @param resolverPort The resolver port
      * @param profile The server profile (determines tunnel type)
-     * @param testUrl The URL to request through the tunnel
+     * @param testUrl The URL to request through the tunnel (only used when fullVerification=true)
      * @param timeoutMs Total timeout per resolver
+     * @param fullVerification When false, stops after SOCKS5 handshake (fast scan mode).
+     *        When true, also performs HTTP/SSH verification through the tunnel.
      * @param onPhaseUpdate Callback for phase progress updates
      */
     suspend fun testResolverE2e(
@@ -113,6 +115,7 @@ interface ResolverScannerRepository {
         profile: ServerProfile,
         testUrl: String,
         timeoutMs: Long,
+        fullVerification: Boolean = false,
         onPhaseUpdate: (String) -> Unit
     ): E2eTestResult
 
@@ -125,6 +128,7 @@ interface ResolverScannerRepository {
         profile: ServerProfile,
         testUrl: String,
         timeoutMs: Long,
+        fullVerification: Boolean = false,
         onPhaseUpdate: (String, String) -> Unit
     ): Flow<Pair<String, E2eTestResult>>
 
@@ -139,6 +143,7 @@ interface ResolverScannerRepository {
         profile: ServerProfile,
         testUrl: String,
         timeoutMs: Long,
+        fullVerification: Boolean = false,
         onPhaseUpdate: (String) -> Unit
     ): E2eTestResult
 

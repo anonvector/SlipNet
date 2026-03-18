@@ -81,6 +81,9 @@ sealed class ImportResult {
  * Decoded profile format v17 (extends v16 with hidden resolvers):
  * v17|..same as v16..|resolversHidden|hiddenResolvers
  *
+ * Decoded profile format v18 (extends v17 with stealth mode, DNS payload size, SOCKS5 port):
+ * v18|..same as v17..|noizdnsStealth|dnsPayloadSize|socks5ServerPort
+ *
  */
 @Singleton
 class ConfigImporter @Inject constructor() {
@@ -99,6 +102,7 @@ class ConfigImporter @Inject constructor() {
         private const val MODE_SNOWFLAKE = "snowflake"
         private const val MODE_NAIVE_SSH = "naive_ssh"
         private const val MODE_NAIVE = "naive"
+        private const val MODE_SOCKS5 = "socks5"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -119,7 +123,8 @@ class ConfigImporter @Inject constructor() {
         private const val V15_FIELD_COUNT = 33
         private const val V16_FIELD_COUNT = 36
         private const val V17_FIELD_COUNT = 38
-        private const val CURRENT_MAX_VERSION = 17
+        private const val V18_FIELD_COUNT = 41
+        private const val CURRENT_MAX_VERSION = 18
     }
 
     fun parseAndImport(input: String, localDeviceId: String = ""): ImportResult {
@@ -246,12 +251,13 @@ class ConfigImporter @Inject constructor() {
             "15" -> parseProfileV15(fields, lineNum)
             "16" -> parseProfileV16(fields, lineNum)
             "17" -> parseProfileV17(fields, lineNum)
+            "18" -> parseProfileV18(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 17) {
-                    parseProfileV17(fields, lineNum)
+                if (versionNum != null && versionNum > 18) {
+                    parseProfileV18(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -335,6 +341,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -417,6 +424,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -504,6 +512,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -594,6 +603,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -696,6 +706,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -798,6 +809,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -896,6 +908,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1005,6 +1018,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1135,6 +1149,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1267,6 +1282,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1406,6 +1422,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1546,6 +1563,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1703,6 +1721,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SNOWFLAKE -> TunnelType.SNOWFLAKE
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
+            MODE_SOCKS5 -> TunnelType.SOCKS5
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1890,6 +1909,29 @@ class ConfigImporter @Inject constructor() {
 
         val profile = baseResult.profile.copy(
             resolversHidden = resolversHidden
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV18(fields: List<String>, lineNum: Int): ProfileParseResult {
+        // v18 extends v17 with 3 new fields; fall back to v17 parser for the base fields
+        if (fields.size < V17_FIELD_COUNT) {
+            return ProfileParseResult.Error("Line $lineNum: Invalid v18 format (expected at least $V17_FIELD_COUNT fields, got ${fields.size})")
+        }
+
+        val baseResult = parseProfileV17(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // Extract v18 fields (positions 38-40), defaulting if absent
+        val noizdnsStealth = if (fields.size > 38) fields[38] == "1" else false
+        val dnsPayloadSize = if (fields.size > 39) fields[39].toIntOrNull() ?: 0 else 0
+        val socks5ServerPort = if (fields.size > 40) fields[40].toIntOrNull() ?: 1080 else 1080
+
+        val profile = baseResult.profile.copy(
+            noizdnsStealth = noizdnsStealth,
+            dnsPayloadSize = dnsPayloadSize,
+            socks5ServerPort = socks5ServerPort
         )
 
         return ProfileParseResult.Success(profile)

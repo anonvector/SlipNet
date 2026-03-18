@@ -246,6 +246,7 @@ func main() {
 	var hostOverride string
 	var forceDirectMode bool
 	var querySize int
+	var queryPadding int
 	var uriParts []string
 
 	for i := 1; i < len(os.Args); i++ {
@@ -293,6 +294,17 @@ func main() {
 			} else {
 				log.Fatal("--query-size requires a value (e.g., --query-size 100)")
 			}
+		case "--query-padding":
+			if i+1 < len(os.Args) {
+				v, err := strconv.Atoi(os.Args[i+1])
+				if err != nil || v < 0 {
+					log.Fatal("--query-padding requires a value >= 0 (bytes)")
+				}
+				queryPadding = v
+				i++
+			} else {
+				log.Fatal("--query-padding requires a value (e.g., --query-padding 20)")
+			}
 		case "--direct", "-direct":
 			forceDirectMode = true
 		case "--version", "-version", "-v":
@@ -314,11 +326,11 @@ func main() {
 
 	// Join all non-flag args in case terminal line-wrapping split the URI
 	uri := strings.TrimSpace(strings.Join(uriParts, ""))
-	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize)
+	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize, queryPadding)
 }
 
 // connectWithParams runs the tunnel connection with the given parameters.
-func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool, querySize int) {
+func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool, querySize int, queryPadding int) {
 	profile, err := parseURI(uri)
 	if err != nil {
 		log.Fatalf("Failed to parse URI: %v", err)
@@ -337,7 +349,7 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		if portOverride > 0 {
 			profile.Port = portOverride
 		}
-		connectSlipstream(profile, profile.Host, profile.Port)
+		connectSlipstream(profile, profile.Host, profile.Port, querySize)
 		return
 	case "ssh", "direct_ssh":
 		if portOverride > 0 {
@@ -470,10 +482,18 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	if querySize > 0 {
 		client.SetMaxPayload(querySize)
 	}
+	if queryPadding > 0 {
+		client.SetQueryPadding(queryPadding)
+	}
 
 	if utlsOverride != "" {
 		client.SetUTLSFingerprint(utlsOverride)
 		fmt.Printf("  uTLS:       %s\n", utlsOverride)
+	}
+
+	if profile.SOCKSUser != "" {
+		client.SetSocksCredentials(profile.SOCKSUser, profile.SOCKSPass)
+		fmt.Printf("  SOCKS5 Auth: enabled (injected automatically)\n")
 	}
 
 	if err := client.Start(); err != nil {
@@ -488,9 +508,6 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	fmt.Println()
 	fmt.Println("  Or use with curl:")
 	fmt.Printf("    curl --socks5-hostname %s https://ifconfig.me\n", listenAddr)
-	fmt.Println()
-	fmt.Println("  If the server requires SOCKS5 authentication:")
-	fmt.Printf("    curl --socks5-hostname user:pass@%s https://ifconfig.me\n", listenAddr)
 	fmt.Println()
 	fmt.Println("  Press Ctrl+C to disconnect.")
 
@@ -524,7 +541,7 @@ func runScanCommand(args []string) {
 	var e2eTimeout = 15000
 	var configURI string
 	var verifyMode bool
-	var verifyRounds = 5
+	var verifyRounds = 3
 	var responseSize int
 
 	for i := 0; i < len(args); i++ {
@@ -646,14 +663,10 @@ func runScanCommand(args []string) {
 	if domain == "" {
 		log.Fatal("scan requires --domain (e.g., --domain t.example.com)")
 	}
-	if ipsFile == "" && singleIP == "" {
-		log.Fatal("scan requires --ips FILE or --ip IP")
-	}
-
 	var resolvers []string
 	if singleIP != "" {
 		resolvers = []string{singleIP}
-	} else {
+	} else if ipsFile != "" {
 		data, err := os.ReadFile(ipsFile)
 		if err != nil {
 			log.Fatalf("Failed to read IP list file: %v", err)
@@ -662,6 +675,9 @@ func runScanCommand(args []string) {
 		if len(resolvers) == 0 {
 			log.Fatal("No valid IP addresses found in file")
 		}
+	} else {
+		resolvers = LoadIPList(string(defaultResolverList))
+		fmt.Printf("  Using built-in resolver list (%d IPs)\n", len(resolvers))
 	}
 
 	if verifyMode {
@@ -713,6 +729,10 @@ Options (connect):
   --query-size BYTES  Max DNS query payload size in bytes (default: full capacity)
                       Lower values produce smaller queries for restrictive networks
                       Minimum: 50. Presets: 100 (large), 80 (medium), 60 (small), 50 (minimum)
+  --query-padding N   Add 0–N random padding bytes to each query via EDNS0 (RFC 7830)
+                      Randomizes query wire size to avoid fixed-size fingerprinting
+                      Use with --query-size for both small AND randomly-sized queries
+                      Example: --query-size 50 --query-padding 20  →  50–70 byte queries
   --version           Show version
   --help              Show this help
 
@@ -731,7 +751,7 @@ Options (scan):
   --config URI        Extract domain/pubkey/mode from slipnet:// URI (auto-enables E2E)
   --verify            Verify mode: HMAC challenge-response to authenticate the server
                       Requires --pubkey or --config to provide the server's public key
-  --rounds N          Number of verification rounds (default: 5, used with --verify)
+  --rounds N          Number of verification rounds (default: 3, used with --verify)
   --response-size N   Request server to pad response to N bytes (used with --verify)
                       Tests resolver's ability to handle large DNS responses
 

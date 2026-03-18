@@ -1155,7 +1155,7 @@ class EditProfileViewModel @Inject constructor(
                     torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else "",
                     dnsttAuthoritative = if (state.isDnsttOrNoizBased) state.dnsttAuthoritative else false,
                     noizdnsStealth = if (state.isNoizdnsBased) state.noizdnsStealth else false,
-                    dnsPayloadSize = if (state.isDnsttOrNoizBased) state.dnsPayloadSize else 0,
+                    dnsPayloadSize = if (state.isDnsttOrNoizBased || state.isSlipstreamBased) state.dnsPayloadSize else 0,
                     naivePort = if (state.isNaiveBased) (state.naivePort.toIntOrNull() ?: 443) else 443,
                     naiveUsername = if (state.isNaiveBased) state.naiveUsername.trim() else "",
                     naivePassword = if (state.isNaiveBased) state.naivePassword else "",

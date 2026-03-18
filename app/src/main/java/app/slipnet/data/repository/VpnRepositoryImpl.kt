@@ -670,7 +670,8 @@ class VpnRepositoryImpl @Inject constructor(
             debugPoll = debugLogging,
             debugStreams = debugLogging,
             idlePollIntervalMs = 10000,
-            idleTimeoutMs = 120000
+            idleTimeoutMs = 120000,
+            maxQuerySize = profile.dnsPayloadSize
         )
         if (result.isFailure) {
             val exception = result.exceptionOrNull()

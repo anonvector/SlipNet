@@ -102,6 +102,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.hilt.navigation.compose.hiltViewModel
+import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ResolverStatus
 import app.slipnet.tunnel.GeoBypassCountry
 
@@ -243,6 +244,7 @@ fun DnsScannerScreen(
             ConfigurationSection(
                 testDomain = uiState.testDomain,
                 isProfileLocked = isProfileLocked,
+                dnsTransport = uiState.profile?.dnsTransport ?: DnsTransport.UDP,
                 scanPort = uiState.scanPort,
                 timeoutMs = uiState.timeoutMs,
                 concurrency = uiState.concurrency,
@@ -252,6 +254,7 @@ fun DnsScannerScreen(
                 e2eTimeoutMs = uiState.e2eTimeoutMs,
                 e2eConcurrency = uiState.e2eConcurrency,
                 showTestUrl = uiState.profileId != null,
+                e2eFullVerification = uiState.e2eFullVerification,
                 onTestDomainChange = { viewModel.updateTestDomain(it) },
                 onScanPortChange = { viewModel.updateScanPort(it) },
                 onTimeoutChange = { viewModel.updateTimeout(it) },
@@ -260,7 +263,8 @@ fun DnsScannerScreen(
                 onExpandNeighborsChange = { viewModel.updateExpandNeighbors(it) },
                 onTestUrlChange = { viewModel.updateTestUrl(it) },
                 onE2eTimeoutChange = { viewModel.updateE2eTimeout(it) },
-                onE2eConcurrencyChange = { viewModel.updateE2eConcurrency(it) }
+                onE2eConcurrencyChange = { viewModel.updateE2eConcurrency(it) },
+                onE2eFullVerificationChange = { viewModel.updateE2eFullVerification(it) }
             )
 
             // Resolver List
@@ -491,15 +495,17 @@ private fun ScanModeToggle(
 private fun ConfigurationSection(
     testDomain: String,
     isProfileLocked: Boolean = false,
+    dnsTransport: DnsTransport = DnsTransport.UDP,
     scanPort: String,
     timeoutMs: String,
     concurrency: String,
     shuffleList: Boolean = false,
     expandNeighbors: Boolean = true,
     testUrl: String = "",
-    e2eTimeoutMs: String = "9000",
+    e2eTimeoutMs: String = "15000",
     e2eConcurrency: String = "3",
     showTestUrl: Boolean = false,
+    e2eFullVerification: Boolean = false,
     onTestDomainChange: (String) -> Unit,
     onScanPortChange: (String) -> Unit,
     onTimeoutChange: (String) -> Unit,
@@ -508,7 +514,8 @@ private fun ConfigurationSection(
     onExpandNeighborsChange: (Boolean) -> Unit = {},
     onTestUrlChange: (String) -> Unit = {},
     onE2eTimeoutChange: (String) -> Unit = {},
-    onE2eConcurrencyChange: (String) -> Unit = {}
+    onE2eConcurrencyChange: (String) -> Unit = {},
+    onE2eFullVerificationChange: (Boolean) -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -588,6 +595,25 @@ private fun ConfigurationSection(
                 )
             }
 
+            if (dnsTransport == DnsTransport.TCP) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Dns,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Scanning over TCP",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -649,23 +675,46 @@ private fun ConfigurationSection(
             }
 
             if (showTestUrl) {
-                OutlinedTextField(
-                    value = testUrl,
-                    onValueChange = onTestUrlChange,
-                    label = { Text("Test URL (E2E)") },
-                    placeholder = { Text("http://www.gstatic.com/generate_204") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.NetworkCheck,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    },
-                    supportingText = { Text("URL for tunnel connectivity test") },
-                    singleLine = true,
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
-                )
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "HTTP/SSH verification",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "Skip HTTP check (saves ~1–5s per resolver). Tunnel proof still required.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = e2eFullVerification,
+                        onCheckedChange = onE2eFullVerificationChange
+                    )
+                }
+                if (e2eFullVerification) {
+                    OutlinedTextField(
+                        value = testUrl,
+                        onValueChange = onTestUrlChange,
+                        label = { Text("Test URL (E2E)") },
+                        placeholder = { Text("http://www.gstatic.com/generate_204") },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.NetworkCheck,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        },
+                        supportingText = { Text("URL for tunnel connectivity test") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
                 OutlinedTextField(
                     value = e2eTimeoutMs,
                     onValueChange = { onE2eTimeoutChange(it.filter { c -> c.isDigit() }) },

@@ -36,6 +36,9 @@ pub struct ClientConfig<'a> {
     pub debug_streams: bool,
     pub idle_poll_interval_ms: u64,
     pub idle_timeout_ms: u64,
+    /// Optional cap on the DNS query payload size (bytes).
+    /// 0 means no cap (use maximum for the domain).
+    pub max_query_size: u32,
 }
 
 pub use runtime::{
