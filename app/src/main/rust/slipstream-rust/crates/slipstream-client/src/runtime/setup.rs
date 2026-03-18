@@ -4,7 +4,7 @@ use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 #[cfg(target_os = "android")]
 use std::os::unix::io::AsRawFd;
 use tokio::net::{lookup_host, TcpListener as TokioTcpListener, UdpSocket as TokioUdpSocket};
-use tracing::warn;
+use tracing::{info, warn};
 
 pub(crate) fn compute_mtu(domain_len: usize) -> Result<u32, ClientError> {
     if domain_len >= 240 {

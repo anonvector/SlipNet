@@ -166,6 +166,34 @@ func interactiveConnectWithURI(uri string) {
 		}
 	}
 
+	var queryPadding int
+	if querySize > 0 {
+		fmt.Println()
+		fmt.Println("  Random query padding (adds 0–N bytes to each query to vary size):")
+		fmt.Println("    0) None (default)")
+		fmt.Println("    1) 20 bytes  — 50–70 byte range when combined with size 50")
+		fmt.Println("    2) Custom")
+		fmt.Println()
+		qpChoice := promptDefault("  Select", "0")
+		switch qpChoice {
+		case "0", "":
+			// none
+		case "1":
+			queryPadding = 20
+		case "2":
+			custom := prompt("  Enter max padding bytes (> 0): ")
+			if v, err := strconv.Atoi(custom); err == nil && v > 0 {
+				queryPadding = v
+			} else {
+				fmt.Println("  Invalid value, no padding.")
+			}
+		default:
+			if v, err := strconv.Atoi(qpChoice); err == nil && v > 0 {
+				queryPadding = v
+			}
+		}
+	}
+
 	// Build args and invoke the existing connect logic
 	var args []string
 	if dnsOverride != "" {
@@ -179,6 +207,9 @@ func interactiveConnectWithURI(uri string) {
 	}
 	if querySize > 0 {
 		args = append(args, "--query-size", strconv.Itoa(querySize))
+	}
+	if queryPadding > 0 {
+		args = append(args, "--query-padding", strconv.Itoa(queryPadding))
 	}
 	args = append(args, "--port", strconv.Itoa(profile.Port))
 	args = append(args, uri)
@@ -251,6 +282,7 @@ func interactiveScan(withE2E bool) {
 	fmt.Println("  IP source:")
 	fmt.Println("    1) File (one IP per line)")
 	fmt.Println("    2) Paste IPs")
+	fmt.Println("    3) Built-in list")
 	fmt.Println()
 	ipChoice := prompt("  Select: ")
 
@@ -303,6 +335,9 @@ func interactiveScan(withE2E bool) {
 		tmpFile.Close()
 		defer os.Remove(tmpFile.Name())
 		args = append(args, "--ips", tmpFile.Name())
+
+	case "3":
+		// No --ips flag — runScanCommand falls back to built-in list
 
 	default:
 		fmt.Println("  Invalid choice.")
@@ -393,7 +428,7 @@ func interactiveVerifyScan() {
 	}
 
 	// Rounds
-	roundsStr := promptDefault("  Rounds", "5")
+	roundsStr := promptDefault("  Rounds", "3")
 	if v, _ := strconv.Atoi(roundsStr); v > 0 {
 		args = append(args, "--rounds", roundsStr)
 	}
@@ -403,6 +438,7 @@ func interactiveVerifyScan() {
 	fmt.Println("  IP source:")
 	fmt.Println("    1) File (one IP per line)")
 	fmt.Println("    2) Paste IPs")
+	fmt.Println("    3) Built-in list")
 	fmt.Println()
 	ipChoice := prompt("  Select: ")
 
@@ -452,6 +488,9 @@ func interactiveVerifyScan() {
 		tmpFile.Close()
 		defer os.Remove(tmpFile.Name())
 		args = append(args, "--ips", tmpFile.Name())
+
+	case "3":
+		// No --ips flag — runScanCommand falls back to built-in list
 
 	default:
 		fmt.Println("  Invalid choice.")
@@ -539,7 +578,7 @@ func runConnectFromArgs(args []string) {
 	}
 
 	uri := strings.TrimSpace(strings.Join(uriParts, ""))
-	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize)
+	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize, 0)
 }
 
 func clearScreen() {

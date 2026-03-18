@@ -1,8 +1,10 @@
 package app.slipnet.service
 
 import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.LinkProperties
@@ -112,6 +114,7 @@ class SlipNetVpnService : VpnService() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var lastNetworkAddresses: Set<String> = emptySet()
     private var reconnectDebounceJob: Job? = null
+    private var networkLostJob: Job? = null
     private var connectJob: Job? = null
     private var disconnectJob: Job? = null
     private var stateObserverJob: Job? = null
@@ -151,6 +154,12 @@ class SlipNetVpnService : VpnService() {
     // WifiLock to prevent Wi-Fi radio from entering low-power mode when screen is off
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLockRenewJob: Job? = null
+
+    // Doze mode receiver to detect idle state exits
+    private var dozeReceiver: BroadcastReceiver? = null
+
+    // DNS servers tracked for the current network (detects DNS changes during handoff)
+    private var lastNetworkDnsServers: Set<String> = emptySet()
 
     override fun onCreate() {
         super.onCreate()
@@ -1959,6 +1968,31 @@ class SlipNetVpnService : VpnService() {
         vpnRepository.setCurrentTunnelType(sshTunnelType)
         currentTunnelType = sshTunnelType
 
+        // Step 4.5: Probe DNS transport before committing to the full SSH connect.
+        // Verifies that DNS responses are reaching this device by waiting for the SSH
+        // banner through DNSTT. If nothing arrives within the probe window, DNS
+        // responses are filtered — fail fast instead of wasting 30 s and ~75 MB of
+        // upload from QUIC retransmissions. The timeout is intentionally generous
+        // (20 s) to accommodate the multiple DNS round-trips dnstt needs to complete
+        // its own handshake on heavily restricted or high-latency networks.
+        Log.i(TAG, "Probing DNSTT transport (up to 20 s)…")
+        val probeOk = withContext(Dispatchers.IO) {
+            probeDnsttTransport("127.0.0.1", actualDnsttPort, timeoutMs = 20_000)
+        }
+        if (!probeOk) {
+            val tunnelName = if (isNoizdns) "NoizDNS" else "DNSTT"
+            Log.e(TAG, "$tunnelName transport probe failed — DNS responses may be filtered by the network")
+            connectionManager.onVpnError("DNS tunnel not responding. DNS responses may be filtered. Try a different resolver or profile.")
+            DnsttBridge.stopClient()
+            vpnInterface?.close()
+            vpnInterface = null
+            DnsttBridge.setVpnService(null)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+        Log.i(TAG, "DNSTT transport probe passed — proceeding with SSH")
+
         // Step 5: Start SSH tunnel through DNSTT
         // DNSTT is a raw TCP tunnel — JSch connects directly to its local port
         configureSshBridge()
@@ -2524,6 +2558,10 @@ class SlipNetVpnService : VpnService() {
         // Start health monitoring and network change detection
         startHealthCheck()
         registerNetworkCallback()
+        registerDozeReceiver()
+
+        // Tell Android which physical networks the VPN uses for seamless failover
+        updateUnderlyingNetworks()
 
         // Update notification to connected state
         observeConnectionState()
@@ -2575,6 +2613,55 @@ class SlipNetVpnService : VpnService() {
 
             Log.w(TAG, "QUIC connection not ready after $maxAttempts attempts (${maxAttempts * delayMs}ms)")
             false
+        }
+    }
+
+    /**
+     * Probes the DNSTT/NoizDNS transport by opening a raw TCP connection and waiting for
+     * the first byte from the remote end (SSH server banner).
+     *
+     * DNSTT is a raw TCP forwarder: it carries data through DNS queries (upload) and
+     * DNS responses (download). Receiving any byte from the SSH server proves that
+     * DNS responses are actually reaching this device — i.e., the transport is
+     * bidirectional. A timeout here means DNS responses are being filtered or dropped
+     * by the network, and the subsequent SSH connect would also fail after 30 s while
+     * generating ~75 MB of upload from QUIC retransmissions.
+     *
+     * Exception handling:
+     *  - SocketTimeoutException → probe window elapsed, DNS responses blocked → false
+     *  - SocketException (reset, broken pipe) → DNSTT dropped the connection, DNS likely broken → false
+     *  - ConnectException → DNSTT port unreachable (should not happen after waitForProxyReady) → fail open (true)
+     *  - Any other exception → unexpected, fail open so SSH can surface a more specific error
+     */
+    private fun probeDnsttTransport(host: String, port: Int, timeoutMs: Int): Boolean {
+        Log.i(TAG, "DNSTT transport probe: $host:$port timeout=${timeoutMs}ms")
+        val socket = java.net.Socket()
+        return try {
+            socket.connect(java.net.InetSocketAddress(host, port), timeoutMs)
+            socket.soTimeout = timeoutMs
+            val b = socket.getInputStream().read()
+            val ok = b != -1
+            Log.i(TAG, "DNSTT transport probe: ${if (ok) "data received — transport OK" else "EOF from server"}")
+            ok
+        } catch (e: java.net.SocketTimeoutException) {
+            Log.w(TAG, "DNSTT transport probe: timed out after ${timeoutMs}ms — DNS responses likely filtered")
+            false
+        } catch (e: java.net.ConnectException) {
+            // Port not reachable — DNSTT may not be bound yet despite waitForProxyReady;
+            // fail open so SSH surfaces a more specific error.
+            Log.w(TAG, "DNSTT transport probe: connect exception (failing open): ${e.message}")
+            true
+        } catch (e: java.net.SocketException) {
+            // Connection reset or broken pipe: DNSTT accepted the connection but dropped
+            // it, most likely because the DNS tunnel is not responding.
+            Log.w(TAG, "DNSTT transport probe: socket exception — ${e.message}")
+            false
+        } catch (e: Exception) {
+            // Unexpected error (security policy, OOM, etc.) — fail open.
+            Log.w(TAG, "DNSTT transport probe: unexpected error (failing open): ${e.message}")
+            true
+        } finally {
+            try { socket.close() } catch (_: Exception) {}
         }
     }
 
@@ -2846,6 +2933,83 @@ class SlipNetVpnService : VpnService() {
     }
 
     /**
+     * Update the VPN's underlying networks for seamless handover.
+     * Tells Android which physical networks the VPN uses, enabling
+     * automatic failover during WiFi↔cellular switches without full reconnection.
+     */
+    @Suppress("DEPRECATION")
+    private fun updateUnderlyingNetworks() {
+        try {
+            val cm = connectivityManager ?: return
+            val networks = cm.allNetworks
+                .mapNotNull { network ->
+                    val caps = cm.getNetworkCapabilities(network) ?: return@mapNotNull null
+                    if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) {
+                        network
+                    } else null
+                }
+                .sortedByDescending { network ->
+                    val caps = cm.getNetworkCapabilities(network)
+                    when {
+                        caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> 3
+                        caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> 2
+                        caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> 1
+                        else -> 0
+                    }
+                }
+                .toTypedArray()
+
+            setUnderlyingNetworks(if (networks.isNotEmpty()) networks else null)
+            Log.d(TAG, "Updated underlying networks: ${networks.size} available")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update underlying networks", e)
+        }
+    }
+
+    /**
+     * Register a BroadcastReceiver to detect when the device exits Doze mode.
+     * Doze suspends network access — when it lifts, connections may be stale
+     * and need immediate refresh.
+     */
+    private fun registerDozeReceiver() {
+        if (dozeReceiver != null) return
+        dozeReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                if (pm.isDeviceIdleMode) {
+                    Log.d(TAG, "Device entered Doze mode")
+                } else {
+                    Log.i(TAG, "Device exited Doze mode — checking connection health")
+                    // Update underlying networks immediately (network state may have changed in Doze)
+                    updateUnderlyingNetworks()
+                    // Debounced reconnect to refresh stale connections
+                    debouncedReconnect("doze mode exit")
+                }
+            }
+        }
+        @Suppress("UnspecifiedRegisterReceiverFlag")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(dozeReceiver, IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED), Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(dozeReceiver, IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED))
+        }
+        Log.d(TAG, "Doze mode receiver registered")
+    }
+
+    private fun unregisterDozeReceiver() {
+        dozeReceiver?.let {
+            try {
+                unregisterReceiver(it)
+                Log.d(TAG, "Doze mode receiver unregistered")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to unregister Doze receiver", e)
+            }
+        }
+        dozeReceiver = null
+    }
+
+    /**
      * Register for network connectivity changes to detect when we need to reconnect.
      */
     private fun registerNetworkCallback() {
@@ -2865,6 +3029,13 @@ class SlipNetVpnService : VpnService() {
 
             override fun onAvailable(network: Network) {
                 Log.d(TAG, "Network available: $network")
+                // A network arrived — cancel any pending "no network" disconnect
+                networkLostJob?.cancel()
+                networkLostJob = null
+
+                // Always update underlying networks so the VPN can use the new network
+                updateUnderlyingNetworks()
+
                 if (System.currentTimeMillis() - registeredAt < quietPeriodMs) {
                     Log.d(TAG, "Initial network detected: $network (quiet period, no reconnection)")
                     currentNetwork = network
@@ -2885,9 +3056,22 @@ class SlipNetVpnService : VpnService() {
 
             override fun onLost(network: Network) {
                 Log.d(TAG, "Network lost: $network")
+                // Update underlying networks to remove the lost network
+                updateUnderlyingNetworks()
+
                 if (network == currentNetwork) {
                     currentNetwork = null
                     lastNetworkAddresses = emptySet()
+                    lastNetworkDnsServers = emptySet()
+
+                    // Wait briefly for a replacement network (e.g. WiFi → cellular handoff).
+                    // If no network arrives within the window, treat as full connectivity loss.
+                    networkLostJob?.cancel()
+                    networkLostJob = serviceScope.launch {
+                        delay(3000)
+                        Log.w(TAG, "No network available after loss of $network — reporting tunnel failure")
+                        handleTunnelFailure("network lost")
+                    }
                 }
             }
 
@@ -2895,19 +3079,26 @@ class SlipNetVpnService : VpnService() {
                 // Network capabilities changed - check if we still have internet
                 val hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
                 Log.d(TAG, "Network capabilities changed: $network, hasInternet=$hasInternet")
+                // Refresh underlying networks (capabilities like VALIDATED may have changed)
+                updateUnderlyingNetworks()
             }
 
             override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
-                // Link properties changed - check for IP address changes
+                // Link properties changed - check for IP address and DNS server changes
                 val newAddresses = linkProperties.linkAddresses
                     .mapNotNull { it.address?.hostAddress }
                     .toSet()
 
-                Log.d(TAG, "Link properties changed: $network, addresses=$newAddresses")
+                val newDnsServers = linkProperties.dnsServers
+                    .mapNotNull { it.hostAddress }
+                    .toSet()
 
-                // Skip IP change detection during quiet period
+                Log.d(TAG, "Link properties changed: $network, addresses=$newAddresses, dns=$newDnsServers")
+
+                // Skip change detection during quiet period
                 if (System.currentTimeMillis() - registeredAt < quietPeriodMs) {
                     lastNetworkAddresses = newAddresses
+                    lastNetworkDnsServers = newDnsServers
                     return
                 }
 
@@ -2918,7 +3109,13 @@ class SlipNetVpnService : VpnService() {
                     Log.i(TAG, "IP addresses changed: added=$added, removed=$removed")
                     debouncedReconnect("IP address change")
                 }
+                // If DNS servers changed (common during WiFi↔cellular handoff), reconnect
+                else if (lastNetworkDnsServers.isNotEmpty() && newDnsServers != lastNetworkDnsServers) {
+                    Log.i(TAG, "DNS servers changed: ${lastNetworkDnsServers} → $newDnsServers")
+                    debouncedReconnect("DNS server change")
+                }
                 lastNetworkAddresses = newAddresses
+                lastNetworkDnsServers = newDnsServers
             }
 
             private fun updateTrackedAddresses(network: Network) {
@@ -2927,7 +3124,10 @@ class SlipNetVpnService : VpnService() {
                     lastNetworkAddresses = linkProps?.linkAddresses
                         ?.mapNotNull { it.address?.hostAddress }
                         ?.toSet() ?: emptySet()
-                    Log.d(TAG, "Updated tracked addresses: $lastNetworkAddresses")
+                    lastNetworkDnsServers = linkProps?.dnsServers
+                        ?.mapNotNull { it.hostAddress }
+                        ?.toSet() ?: emptySet()
+                    Log.d(TAG, "Updated tracked addresses: $lastNetworkAddresses, dns: $lastNetworkDnsServers")
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to get link properties", e)
                 }
@@ -2959,6 +3159,9 @@ class SlipNetVpnService : VpnService() {
      * Waits 2s before triggering reconnection in case more changes come in.
      */
     private fun debouncedReconnect(reason: String) {
+        // A reconnect supersedes any pending "network lost" disconnect
+        networkLostJob?.cancel()
+        networkLostJob = null
         reconnectDebounceJob?.cancel()
         reconnectDebounceJob = serviceScope.launch {
             Log.d(TAG, "Debouncing reconnect for: $reason")
@@ -2968,9 +3171,10 @@ class SlipNetVpnService : VpnService() {
     }
 
     /**
-     * Handle network change by restarting the QUIC connection.
-     * The Rust client has built-in reconnection logic, but we need to force it
-     * when the network changes because the underlying sockets become stale.
+     * Handle network change by restarting the tunnel connection.
+     * Keeps HevSocks5Tunnel (tun2socks) running during the proxy restart to minimize
+     * the traffic gap. The TUN interface stays alive and tun2socks buffers/retries
+     * connections until the new proxy is ready.
      */
     private fun handleNetworkChange(reason: String = "unknown") {
         serviceScope.launch {
@@ -2983,6 +3187,9 @@ class SlipNetVpnService : VpnService() {
 
             try {
                 Log.i(TAG, "Handling network change ($reason) - restarting connection")
+
+                // Update underlying networks immediately for the new network
+                updateUnderlyingNetworks()
 
                 // Stop health check during reconnection
                 healthCheckJob?.cancel()
@@ -2998,16 +3205,21 @@ class SlipNetVpnService : VpnService() {
                 val savedChainId = currentChainId
                 val wasChain = activeChainLayers.isNotEmpty()
 
-                // Stop current tunnels on IO to avoid blocking Main with Thread.sleep
+                // Stop proxy on IO but keep HevSocks5Tunnel (tun2socks) running.
+                // The TUN interface stays alive and tun2socks will retry connections
+                // once the new proxy is ready, minimizing the traffic interruption gap.
                 withContext(Dispatchers.IO) {
-                    if (!isProxyOnly) {
-                        HevSocks5Tunnel.stop()
-                    }
                     stopCurrentProxy()
                 }
 
-                // Chain reconnection: re-execute the full chain
+                // Chain reconnection: re-execute the full chain.
+                // Chains rebuild the VPN interface, so stop tun2socks first.
                 if (wasChain && savedChainId > 0) {
+                    if (!isProxyOnly) {
+                        withContext(Dispatchers.IO) {
+                            try { HevSocks5Tunnel.stop() } catch (_: Exception) {}
+                        }
+                    }
                     Log.i(TAG, "Reconnecting chain $savedChainId after network change")
                     val chain = chainRepository.getChainById(savedChainId)
                     if (chain == null) {
@@ -3425,20 +3637,11 @@ class SlipNetVpnService : VpnService() {
                     }
                 }
 
-                // Restart tun2socks with existing VPN interface (skip in proxy-only mode)
+                // HevSocks5Tunnel (tun2socks) was kept running — it will automatically
+                // reconnect to the new proxy on the same port. No restart needed.
+                // In proxy-only mode, just mark as connected again.
                 if (isProxyOnly) {
-                    // In proxy-only mode, just mark as connected again
                     vpnRepository.setProxyConnected(profile)
-                } else {
-                    vpnInterface?.let { pfd ->
-                        // All tunnel types now have user-facing SOCKS5 on proxyPort
-                        val tun2socksResult = vpnRepository.startTun2Socks(profile, pfd)
-                        if (tun2socksResult.isFailure) {
-                            Log.e(TAG, "Failed to restart tun2socks", tun2socksResult.exceptionOrNull())
-                            handleTunnelFailure("failed to reconnect after network change")
-                            return@launch
-                        }
-                    }
                 }
 
                 // Wait for tunnel to be re-established
@@ -3487,6 +3690,9 @@ class SlipNetVpnService : VpnService() {
 
                 // Restart health check
                 startHealthCheck()
+
+                // Refresh underlying networks after successful reconnection
+                updateUnderlyingNetworks()
 
                 // Clear kill switch state and restore connected notification
                 if (isKillSwitchActive) {
@@ -3649,9 +3855,16 @@ class SlipNetVpnService : VpnService() {
             .setSession("SlipNet VPN")
             .setMtu(mtu)
             .addAddress(VPN_ADDRESS, 32)
-            .addRoute(VPN_ROUTE, 0)
             .addDnsServer(dnsServer)
             .setBlocking(false)
+
+        // DoH mode: only route DNS traffic through the VPN so local network
+        // (mDNS, Cast, SMB, LAN) and app traffic (VoIP, push) bypass it entirely.
+        if (currentTunnelType == TunnelType.DOH) {
+            builder.addRoute(dnsServer, 32)
+        } else {
+            builder.addRoute(VPN_ROUTE, 0)
+        }
 
         val needsSelfExclusion = currentTunnelType == TunnelType.DNSTT ||
                 currentTunnelType == TunnelType.NOIZDNS ||
@@ -3805,6 +4018,8 @@ class SlipNetVpnService : VpnService() {
         // to stop/start, leading to "port already in use" on the next connect.
         reconnectDebounceJob?.cancel()
         reconnectDebounceJob = null
+        networkLostJob?.cancel()
+        networkLostJob = null
         isReconnecting = false
 
         // Cancel state observer to prevent stale stopSelf() calls
@@ -3979,14 +4194,18 @@ class SlipNetVpnService : VpnService() {
         healthCheckJob?.cancel()
         healthCheckJob = null
 
-        // Cancel any pending reconnect
+        // Cancel any pending reconnect / network-loss timer
         reconnectDebounceJob?.cancel()
         reconnectDebounceJob = null
+        networkLostJob?.cancel()
+        networkLostJob = null
         isReconnecting = false
 
-        // Unregister network callback (must be on main thread)
+        // Unregister network callback and Doze receiver
         unregisterNetworkCallback()
+        unregisterDozeReceiver()
         lastNetworkAddresses = emptySet()
+        lastNetworkDnsServers = emptySet()
 
         // Stop native tunnels on IO thread to avoid ANR
         // These operations can block waiting for threads to stop
@@ -4037,6 +4256,8 @@ class SlipNetVpnService : VpnService() {
         connectJob = null
         reconnectDebounceJob?.cancel()
         reconnectDebounceJob = null
+        networkLostJob?.cancel()
+        networkLostJob = null
         isReconnecting = false
         stateObserverJob?.cancel()
         stateObserverJob = null
@@ -4123,14 +4344,18 @@ class SlipNetVpnService : VpnService() {
         autoReconnectJob = null
         isAutoReconnecting = false
 
-        // Cancel any pending reconnect
+        // Cancel any pending reconnect / network-loss timer
         reconnectDebounceJob?.cancel()
         reconnectDebounceJob = null
+        networkLostJob?.cancel()
+        networkLostJob = null
         isReconnecting = false
 
-        // Unregister network callback
+        // Unregister network callback and Doze receiver
         unregisterNetworkCallback()
+        unregisterDozeReceiver()
         lastNetworkAddresses = emptySet()
+        lastNetworkDnsServers = emptySet()
 
         // Stop HTTP proxy
         try {

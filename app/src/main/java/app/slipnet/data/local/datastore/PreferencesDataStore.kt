@@ -306,7 +306,7 @@ class PreferencesDataStore @Inject constructor(
 
     suspend fun setSshMaxChannels(count: Int) {
         dataStore.edit { prefs ->
-            prefs[Keys.SSH_MAX_CHANNELS] = count.coerceIn(4, 64)
+            prefs[Keys.SSH_MAX_CHANNELS] = count.coerceIn(1, 64)
             prefs[Keys.SSH_MAX_CHANNELS_CUSTOM] = true
         }
     }
@@ -676,6 +676,39 @@ class PreferencesDataStore @Inject constructor(
 
     suspend fun clearScanSession() = withContext(Dispatchers.IO) {
         scanSessionFile.delete()
+    }
+
+    // ── Reset All Settings ─────────────────────────────────────────────
+
+    /**
+     * Clears all user-configurable settings back to defaults.
+     * Preserves: active profile, last connected profile, first-launch flag,
+     * cumulative stats, and update checker state.
+     */
+    suspend fun resetAllSettings() {
+        dataStore.edit { prefs ->
+            // Snapshot values we want to keep
+            val activeProfile = prefs[Keys.ACTIVE_PROFILE_ID]
+            val lastProfile = prefs[Keys.LAST_CONNECTED_PROFILE_ID]
+            val firstLaunch = prefs[Keys.FIRST_LAUNCH_DONE]
+            val bytesSent = prefs[Keys.TOTAL_BYTES_SENT]
+            val bytesReceived = prefs[Keys.TOTAL_BYTES_RECEIVED]
+            val connectionTime = prefs[Keys.TOTAL_CONNECTION_TIME]
+            val skippedUpdate = prefs[Keys.SKIPPED_UPDATE_VERSION]
+            val lastUpdateCheck = prefs[Keys.LAST_UPDATE_CHECK_TIME]
+
+            prefs.clear()
+
+            // Restore preserved values
+            activeProfile?.let { prefs[Keys.ACTIVE_PROFILE_ID] = it }
+            lastProfile?.let { prefs[Keys.LAST_CONNECTED_PROFILE_ID] = it }
+            firstLaunch?.let { prefs[Keys.FIRST_LAUNCH_DONE] = it }
+            bytesSent?.let { prefs[Keys.TOTAL_BYTES_SENT] = it }
+            bytesReceived?.let { prefs[Keys.TOTAL_BYTES_RECEIVED] = it }
+            connectionTime?.let { prefs[Keys.TOTAL_CONNECTION_TIME] = it }
+            skippedUpdate?.let { prefs[Keys.SKIPPED_UPDATE_VERSION] = it }
+            lastUpdateCheck?.let { prefs[Keys.LAST_UPDATE_CHECK_TIME] = it }
+        }
     }
 
     // ── Update Checker ──────────────────────────────────────────────────

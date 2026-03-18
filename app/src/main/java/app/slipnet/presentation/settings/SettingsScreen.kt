@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material.icons.filled.SettingsEthernet
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
@@ -132,6 +133,7 @@ fun SettingsScreen(
     var showAboutDialog by remember { mutableStateOf(false) }
     var showRemoteDnsDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
+    var showResetSettingsDialog by remember { mutableStateOf(false) }
 
     // Proxy settings - local state for port text fields to avoid cursor jumps from async DataStore round-trip
     var proxyPort by remember { mutableStateOf(uiState.proxyListenPort.toString()) }
@@ -548,8 +550,8 @@ fun SettingsScreen(
                     title = "Max Channels",
                     subtitle = if (!uiState.sshMaxChannelsIsCustom) "Auto (adapts per tunnel type)" else null,
                     value = uiState.sshMaxChannels,
-                    valueRange = 4f..64f,
-                    steps = 14,
+                    valueRange = 1f..64f,
+                    steps = 63,
                     valueFormatter = { "${it.roundToInt()}" },
                     onValueChange = { viewModel.setSshMaxChannels(it.roundToInt()) },
                     onReset = if (uiState.sshMaxChannelsIsCustom) {{ viewModel.resetSshMaxChannelsToAuto() }} else null
@@ -579,6 +581,16 @@ fun SettingsScreen(
                     description = "Enable verbose logging for troubleshooting",
                     checked = uiState.debugLogging,
                     onCheckedChange = { viewModel.setDebugLogging(it) }
+                )
+            }
+
+            // Reset Settings
+            SettingsSection(title = "Reset") {
+                ClickableSettingItem(
+                    icon = Icons.Default.RestartAlt,
+                    title = "Reset all settings",
+                    description = "Restore all settings to their default values",
+                    onClick = { showResetSettingsDialog = true }
                 )
             }
 
@@ -1025,6 +1037,30 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showSshCipherDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Reset Settings Confirmation Dialog
+    if (showResetSettingsDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetSettingsDialog = false },
+            title = { Text("Reset all settings?") },
+            text = {
+                Text("This will restore all settings to their default values. Your profiles and connection stats will not be affected.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.resetAllSettings()
+                    showResetSettingsDialog = false
+                }) {
+                    Text("Reset", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetSettingsDialog = false }) {
                     Text("Cancel")
                 }
             }

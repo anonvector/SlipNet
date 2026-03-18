@@ -461,7 +461,7 @@ fun EditProfileScreen(
                             }
 
                             // DNS Query Size (locked profiles)
-                            if (uiState.isDnsttOrNoizBased) {
+                            if (uiState.isDnsttOrNoizBased || uiState.isSlipstreamBased) {
                                 var showMtuDialogLocked by remember { mutableStateOf(false) }
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                 Row(
@@ -479,16 +479,26 @@ fun EditProfileScreen(
                                             style = MaterialTheme.typography.bodyLarge
                                         )
                                         Text(
-                                            text = if (uiState.dnsPayloadSize == 0) "Full capacity (fastest)"
+                                            text = if (uiState.noizdnsStealth) "Overridden by stealth mode"
+                                                   else if (uiState.dnsPayloadSize == 0) "Full capacity (fastest)"
                                                    else "${uiState.dnsPayloadSize} bytes per query",
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = if (uiState.noizdnsStealth) MaterialTheme.colorScheme.primary
+                                                    else MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     Icon(
                                         Icons.Default.KeyboardArrowRight,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (uiState.noizdnsStealth) {
+                                    Text(
+                                        text = "Stealth mode sets query size to 50 bytes and adds 0–20 bytes of random padding per query, so each DNS query is randomly sized between 50–70 bytes.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
                                     )
                                 }
 
@@ -987,8 +997,8 @@ fun EditProfileScreen(
                     }
                 }
 
-                // DNS MTU selector (DNSTT/NoizDNS only)
-                if (uiState.isDnsttOrNoizBased) {
+                // DNS MTU selector (DNSTT/NoizDNS/Slipstream)
+                if (uiState.isDnsttOrNoizBased || uiState.isSlipstreamBased) {
                     var showMtuDialog by remember { mutableStateOf(false) }
                     Row(
                         modifier = Modifier
@@ -1005,16 +1015,26 @@ fun EditProfileScreen(
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Text(
-                                text = if (uiState.dnsPayloadSize == 0) "Full capacity (fastest)"
+                                text = if (uiState.noizdnsStealth) "Overridden by stealth mode"
+                                       else if (uiState.dnsPayloadSize == 0) "Full capacity (fastest)"
                                        else "${uiState.dnsPayloadSize} bytes per query",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (uiState.noizdnsStealth) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Icon(
                             Icons.Default.KeyboardArrowRight,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (uiState.noizdnsStealth) {
+                        Text(
+                            text = "Stealth mode sets query size to 50 bytes and adds 0–20 bytes of random padding per query, so each DNS query is randomly sized between 50–70 bytes.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
                         )
                     }
 
@@ -1820,54 +1840,40 @@ fun EditProfileScreen(
                 }
 
                 // Server setup guide
-                if (uiState.isNoizdnsBased || uiState.isNaiveBased) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(12.dp))
 
-                    val guideUrl = when {
-                        uiState.isNoizdnsBased -> "https://github.com/anonvector/noizdns-deploy"
-                        uiState.isNaiveBased -> "https://github.com/anonvector/slipgate"
-                        else -> null
-                    }
-                    val guideLabel = when {
-                        uiState.isNoizdnsBased -> "NoizDNS Server Setup Guide"
-                        uiState.isNaiveBased -> "NaiveProxy Server Setup Guide"
-                        else -> null
-                    }
-                    if (guideUrl != null && guideLabel != null) {
-                        Surface(
-                            onClick = {
-                                val intent = android.content.Intent(
-                                    android.content.Intent.ACTION_VIEW,
-                                    android.net.Uri.parse(guideUrl)
-                                )
-                                context.startActivity(intent)
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 14.dp, horizontal = 16.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Default.OpenInNew,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Text(
-                                    guideLabel,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
+                Surface(
+                    onClick = {
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse("https://github.com/anonvector/slipgate")
+                        )
+                        context.startActivity(intent)
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 14.dp, horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.OpenInNew,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            "Server Setup Guide",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
 

@@ -398,6 +398,13 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    // Reset All Settings
+    fun resetAllSettings() {
+        viewModelScope.launch {
+            preferencesDataStore.resetAllSettings()
+        }
+    }
+
     // ── Update Checker ──────────────────────────────────────────────────
 
     var availableUpdate: app.slipnet.util.AppUpdate? = null

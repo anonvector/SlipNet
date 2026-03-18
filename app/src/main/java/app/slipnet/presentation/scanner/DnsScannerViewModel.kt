@@ -74,13 +74,13 @@ data class DnsScannerUiState(
     val cidrGroups: List<CidrGroup> = emptyList(),
     val selectedOctets: Set<Int> = emptySet(),
     val shuffleList: Boolean = true,
-    val expandNeighbors: Boolean = true,
+    val expandNeighbors: Boolean = false,
     val showResumeDialog: Boolean = false,
     val transparentProxyDetected: Boolean = false,
     // E2E tunnel test state
     val e2eScannerState: E2eScannerState = E2eScannerState(),
     val testUrl: String = "http://www.gstatic.com/generate_204",
-    val e2eTimeoutMs: String = "10000",
+    val e2eTimeoutMs: String = "15000",
     val isVpnActive: Boolean = false,
     val profile: ServerProfile? = null,
     // Simple scan mode
@@ -88,7 +88,8 @@ data class DnsScannerUiState(
     val simpleModeE2eState: SimpleModeE2eState = SimpleModeE2eState(),
     val e2eMinScore: Int = 2,
     val e2eSortOption: E2eSortOption = E2eSortOption.NONE,
-    val e2eConcurrency: String = "3"
+    val e2eConcurrency: String = "3",
+    val e2eFullVerification: Boolean = false
 ) {
     companion object {
         const val MAX_SELECTED_RESOLVERS = 8
@@ -1441,7 +1442,8 @@ class DnsScannerViewModel @Inject constructor(
             launchE2eWorkers(
                 queue = queue, profile = profile,
                 testUrl = _uiState.value.testUrl,
-                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 10000L,
+                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 15000L,
+                fullVerification = _uiState.value.e2eFullVerification,
                 startTestedCount = startTestedCount, startPassedCount = startPassedCount,
                 onActiveChanged = { transform -> updateSimpleModeActive(transform) },
                 onResult = { host, result, tested, passed ->
@@ -1716,7 +1718,8 @@ class DnsScannerViewModel @Inject constructor(
             launchE2eWorkers(
                 queue = queue2, profile = profile,
                 testUrl = _uiState.value.testUrl,
-                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 10000L,
+                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 15000L,
+                fullVerification = _uiState.value.e2eFullVerification,
                 startTestedCount = 0, startPassedCount = 0,
                 onActiveChanged = { transform -> updateSimpleModeActive(transform) },
                 onResult = { host, result, tested, passed ->
@@ -1784,6 +1787,10 @@ class DnsScannerViewModel @Inject constructor(
         saveScannerSettings()
     }
 
+    fun updateE2eFullVerification(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(e2eFullVerification = enabled)
+    }
+
     /** Effective E2E concurrency, clamped by tunnel type limits. */
     private fun effectiveE2eConcurrency(): Int {
         val profile = _uiState.value.profile ?: return 1
@@ -1807,6 +1814,7 @@ class DnsScannerViewModel @Inject constructor(
         profile: ServerProfile,
         testUrl: String,
         e2eTimeout: Long,
+        fullVerification: Boolean,
         startTestedCount: Int,
         startPassedCount: Int,
         onActiveChanged: (transform: (Map<String, String>) -> Map<String, String>) -> Unit,
@@ -1829,12 +1837,14 @@ class DnsScannerViewModel @Inject constructor(
                             scannerRepository.testResolverE2eIsolated(
                                 resolverHost = host, resolverPort = port,
                                 profile = profile, testUrl = testUrl, timeoutMs = e2eTimeout,
+                                fullVerification = fullVerification,
                                 onPhaseUpdate = { phase -> onActiveChanged { it + (host to phase) } }
                             )
                         } else {
                             scannerRepository.testResolverE2e(
                                 resolverHost = host, resolverPort = port,
                                 profile = profile, testUrl = testUrl, timeoutMs = e2eTimeout,
+                                fullVerification = fullVerification,
                                 onPhaseUpdate = { phase -> onActiveChanged { it + (host to phase) } }
                             )
                         }
@@ -2018,7 +2028,8 @@ class DnsScannerViewModel @Inject constructor(
             launchE2eWorkers(
                 queue = queue, profile = profile,
                 testUrl = _uiState.value.testUrl,
-                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 10000L,
+                e2eTimeout = _uiState.value.e2eTimeoutMs.toLongOrNull() ?: 15000L,
+                fullVerification = _uiState.value.e2eFullVerification,
                 startTestedCount = startTestedCount, startPassedCount = startPassedCount,
                 onActiveChanged = { transform -> updateE2eActive(transform) },
                 onResult = { host, result, tested, passed ->

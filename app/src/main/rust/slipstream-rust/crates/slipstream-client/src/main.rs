@@ -60,6 +60,8 @@ struct Args {
     debug_streams: bool,
     #[arg(long = "idle-poll-interval", default_value_t = 2000)]
     idle_poll_interval: u64,
+    #[arg(long = "query-size", default_value_t = 0)]
+    query_size: u32,
 }
 
 fn main() {
@@ -191,6 +193,17 @@ fn main() {
         idle_poll_override.unwrap_or(args.idle_poll_interval)
     };
 
+    let query_size = if cli_provided(&matches, "query_size") {
+        args.query_size
+    } else {
+        let qs_override = parse_query_size(&sip003_env.plugin_options)
+            .unwrap_or_else(|err| {
+                tracing::error!("SIP003 env error: {}", err);
+                std::process::exit(2);
+            });
+        qs_override.unwrap_or(args.query_size)
+    };
+
     let config = ClientConfig {
         tcp_listen_host: &tcp_listen_host,
         tcp_listen_port,
@@ -204,6 +217,7 @@ fn main() {
         debug_streams: args.debug_streams,
         idle_poll_interval_ms: idle_poll_interval,
         idle_timeout_ms: 0, // 0 = use picoquic default
+        max_query_size: query_size,
     };
 
     let runtime = Builder::new_current_thread()
@@ -372,6 +386,20 @@ fn parse_keep_alive_interval(options: &[sip003::Sip003Option]) -> Result<Option<
             let parsed = value
                 .parse::<u16>()
                 .map_err(|_| format!("Invalid keep-alive-interval value: {}", value))?;
+            last = Some(parsed);
+        }
+    }
+    Ok(last)
+}
+
+fn parse_query_size(options: &[sip003::Sip003Option]) -> Result<Option<u32>, String> {
+    let mut last = None;
+    for option in options {
+        if option.key == "query-size" {
+            let value = option.value.trim();
+            let parsed = value
+                .parse::<u32>()
+                .map_err(|_| format!("Invalid query-size value: {}", value))?;
             last = Some(parsed);
         }
     }

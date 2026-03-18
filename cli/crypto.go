@@ -3,12 +3,8 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"encoding/hex"
 	"fmt"
 )
-
-// configKey is set at build time via -ldflags "-X main.configKey=HEX..."
-var configKey string
 
 const (
 	encFormatVersion byte = 0x01
@@ -19,12 +15,12 @@ const (
 // decryptConfig decrypts an AES-256-GCM encrypted config blob.
 // Format: [version(1)][iv(12)][ciphertext+tag(variable)]
 func decryptConfig(data []byte) (string, error) {
-	if configKey == "" {
+	key := configKeyBytes()
+	if key == nil {
 		return "", fmt.Errorf("encrypted configs not supported in this build (no config key)")
 	}
 
-	key, err := hex.DecodeString(configKey)
-	if err != nil || len(key) != 32 {
+	if len(key) != 32 {
 		return "", fmt.Errorf("invalid config key")
 	}
 

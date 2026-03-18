@@ -710,7 +710,8 @@ class MainViewModel @Inject constructor(
                 resolverPort = resolver.port,
                 profile = profile,
                 testUrl = E2E_TEST_URL,
-                timeoutMs = E2E_TIMEOUT_MS
+                timeoutMs = E2E_TIMEOUT_MS,
+                fullVerification = true
             ) { phase ->
                 // Update UI with current phase while test runs
                 _uiState.value = _uiState.value.copy(

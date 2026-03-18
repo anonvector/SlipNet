@@ -118,7 +118,7 @@ type SlipstreamProcess struct {
 }
 
 // StartSlipstream spawns the slipstream-client binary.
-func StartSlipstream(profile *Profile, listenHost string, listenPort int) (*SlipstreamProcess, error) {
+func StartSlipstream(profile *Profile, listenHost string, listenPort int, querySize int) (*SlipstreamProcess, error) {
 	binPath, err := findSlipstreamBinary()
 	if err != nil {
 		return nil, err
@@ -161,6 +161,9 @@ func StartSlipstream(profile *Profile, listenHost string, listenPort int) (*Slip
 	if profile.GSO {
 		args = append(args, "--gso")
 	}
+	if querySize > 0 {
+		args = append(args, "--query-size", fmt.Sprintf("%d", querySize))
+	}
 
 	cmd := exec.Command(binPath, args...)
 	cmd.Stdout = os.Stdout
@@ -193,7 +196,7 @@ func (p *SlipstreamProcess) Stop() {
 }
 
 // connectSlipstream handles the Slipstream connection flow.
-func connectSlipstream(profile *Profile, listenHost string, listenPort int) {
+func connectSlipstream(profile *Profile, listenHost string, listenPort int, querySize int) {
 	fmt.Println()
 	fmt.Println("╔══════════════════════════════════════════════════╗")
 	fmt.Printf("║          SlipNet CLI  %-25s  ║\n", version)
@@ -206,13 +209,16 @@ func connectSlipstream(profile *Profile, listenHost string, listenPort int) {
 	if profile.CC != "" {
 		fmt.Printf("  CC:         %s\n", profile.CC)
 	}
+	if querySize > 0 {
+		fmt.Printf("  Query Size: %d bytes\n", querySize)
+	}
 
 	listenAddr := fmt.Sprintf("%s:%d", listenHost, listenPort)
 	fmt.Printf("  SOCKS5:     %s\n", listenAddr)
 	fmt.Println()
 	fmt.Println("  Starting Slipstream tunnel...")
 
-	proc, err := StartSlipstream(profile, listenHost, listenPort)
+	proc, err := StartSlipstream(profile, listenHost, listenPort, querySize)
 	if err != nil {
 		fmt.Printf("\n  Error: %v\n", err)
 		return
