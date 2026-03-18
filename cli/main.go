@@ -491,7 +491,10 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		fmt.Printf("  uTLS:       %s\n", utlsOverride)
 	}
 
-	if profile.SOCKSUser != "" {
+	// Only inject SOCKS5 auth for pure SOCKS5 tunnel types.
+	// dnstt_ssh/sayedns_ssh carry raw SSH, not SOCKS5.
+	isSocks5Tunnel := profile.TunnelType == "dnstt" || profile.TunnelType == "sayedns" || profile.TunnelType == ""
+	if profile.SOCKSUser != "" && isSocks5Tunnel {
 		client.SetSocksCredentials(profile.SOCKSUser, profile.SOCKSPass)
 		fmt.Printf("  SOCKS5 Auth: enabled (injected automatically)\n")
 	}
