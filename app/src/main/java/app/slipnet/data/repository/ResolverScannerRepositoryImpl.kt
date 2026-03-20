@@ -178,12 +178,13 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         host: String,
         port: Int,
         testDomain: String,
-        timeoutMs: Long
+        timeoutMs: Long,
+        querySize: Int
     ): ResolverScanResult = withContext(Dispatchers.IO) {
         val startTime = SystemClock.elapsedRealtime()
 
         try {
-            scanResolverDnsTunnel(host, port, testDomain, timeoutMs, startTime)
+            scanResolverDnsTunnel(host, port, testDomain, timeoutMs, startTime, querySize)
         } catch (e: Exception) {
             val responseTime = SystemClock.elapsedRealtime() - startTime
             ResolverScanResult(
@@ -204,7 +205,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         port: Int,
         testDomain: String,
         timeoutMs: Long,
-        startTime: Long
+        startTime: Long,
+        querySize: Int = 0
     ): ResolverScanResult = withContext(Dispatchers.IO) {
         // For tunnel subdomains like "t.example.com", queries hit the DNSTT server
         // which can't answer generic DNS queries. Use the parent zone for basic/NS/TXT
@@ -235,7 +237,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             testRandomSubdomain(host, port, testDomain, timeoutMs)
                 || testRandomSubdomain(host, port, testDomain, timeoutMs)
         }
-        val tunnelRealismDeferred = async { testTunnelRealism(host, port, testDomain, timeoutMs) }
+        val tunnelRealismDeferred = async { testTunnelRealism(host, port, testDomain, timeoutMs, querySize) }
         val ednsDeferred = async { probeEdnsMaxPayload(host, port, testDomain, timeoutMs) }
         val nxdomainDeferred = async { testNxdomainCorrect(host, port, timeoutMs) }
 
@@ -328,12 +330,23 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         host: String,
         port: Int,
         testDomain: String,
-        timeoutMs: Long
+        timeoutMs: Long,
+        querySize: Int = 0
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             // Generate a random payload roughly the size dnstt/Slipstream would use
             // (80-120 bytes → ~130-192 base32 chars, split into 57-char DNS labels).
-            val payloadBytes = ByteArray(100).also { Random.nextBytes(it) }
+            // When querySize is set, scale down so the probe stays within budget.
+            val randLen = if (querySize >= 50) {
+                val suffixLen = testDomain.length + 2 // "." separator + root label
+                val overhead = 12 + 4 + suffixLen     // header + qtype/qclass + domain suffix
+                val available = (querySize - overhead).coerceAtLeast(10)
+                // base32 expands 5 bytes → 8 chars; labels add ~1 byte per 57 chars
+                (available * 5 / 9).coerceIn(5, 100)
+            } else {
+                100
+            }
+            val payloadBytes = ByteArray(randLen).also { Random.nextBytes(it) }
             val base32Sub = base32Encode(payloadBytes)
             val dotified = dotifyBase32(base32Sub)
             val queryDomain = "$dotified.$testDomain"
@@ -706,6 +719,206 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         return "${(ip shr 24) and 0xFF}.${(ip shr 16) and 0xFF}.${(ip shr 8) and 0xFF}.${ip and 0xFF}"
     }
 
+    override suspend fun verifyResolver(
+        host: String,
+        port: Int,
+        testDomain: String,
+        pubkey: ByteArray,
+        timeoutMs: Long,
+        probeCount: Int,
+        passThreshold: Int,
+        responseSize: Int
+    ): Int = withContext(Dispatchers.IO) {
+        var passed = 0
+        val maxFailures = probeCount - passThreshold
+        var failures = 0
+        for (i in 1..probeCount) {
+            if (verifyResolverOnce(host, port, testDomain, pubkey, timeoutMs, responseSize)) {
+                passed++
+            } else {
+                failures++
+                if (failures > maxFailures) break // can't reach threshold anymore
+            }
+        }
+        passed
+    }
+
+    private fun verifyResolverOnce(
+        host: String,
+        port: Int,
+        testDomain: String,
+        pubkey: ByteArray,
+        timeoutMs: Long,
+        responseSize: Int = 1232
+    ): Boolean {
+        return try {
+            // 1. Generate random 16-byte nonce
+            val nonce = ByteArray(16).also { Random.nextBytes(it) }
+
+            // Encode desired response size in nonce[14:16] (big-endian uint16).
+            // Zero means "use server default" — always write explicitly so random
+            // bytes don't accidentally look like a valid size to the server.
+            if (responseSize in 200..4096) {
+                nonce[14] = (responseSize shr 8).toByte()
+                nonce[15] = (responseSize and 0xFF).toByte()
+            } else {
+                nonce[14] = 0
+                nonce[15] = 0
+            }
+
+            // 2. Client proof: HMAC-SHA256(pubkey, nonce)[:16]
+            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac.init(javax.crypto.spec.SecretKeySpec(pubkey, "HmacSHA256"))
+            val proof = mac.doFinal(nonce).copyOf(16)
+
+            // 3. Encode nonce||proof as lowercase base32 (no padding) → 52 chars
+            val payload = nonce + proof
+            val encoded = buildString {
+                val alpha = "abcdefghijklmnopqrstuvwxyz234567"
+                var buffer = 0; var bitsLeft = 0
+                for (b in payload) {
+                    buffer = (buffer shl 8) or (b.toInt() and 0xFF); bitsLeft += 8
+                    while (bitsLeft >= 5) { bitsLeft -= 5; append(alpha[(buffer shr bitsLeft) and 0x1F]) }
+                }
+                if (bitsLeft > 0) append(alpha[(buffer shl (5 - bitsLeft)) and 0x1F])
+            }
+
+            // 4. Query: <encoded>.<testDomain> TXT with EDNS0 — clamp to at least 1232
+            // (dnsflagday standard) so resolvers don't truncate. The actual desired
+            // size is encoded in the nonce above for the server to read directly.
+            val ednsSize = if (responseSize > 1232) responseSize else 1232
+            val queryDomain = "$encoded.$testDomain"
+            val queryPacket = buildDnsQueryWithEdns0(queryDomain, DNS_TYPE_TXT, ednsSize)
+            val serverAddress = InetAddress.getByName(host)
+            var socket: DatagramSocket? = null
+            val responseBytes: ByteArray
+            val responseLen: Int
+            try {
+                socket = DatagramSocket()
+                socket.soTimeout = timeoutMs.toInt().coerceIn(500, 30000)
+                socket.send(DatagramPacket(queryPacket, queryPacket.size, serverAddress, port))
+                val buf = ByteArray(4096)
+                val pkt = DatagramPacket(buf, buf.size)
+                socket.receive(pkt)
+                responseBytes = buf
+                responseLen = pkt.length
+            } finally {
+                socket?.close()
+            }
+
+            // 5. Check RCODE == 0
+            if (responseLen < 12 || (responseBytes[3].toInt() and 0x0F) != 0) return false
+
+            // 6. Extract raw binary TXT data from first answer record
+            val rawData = extractFirstTxtRawData(responseBytes, responseLen) ?: return false
+            if (rawData.size < 32) return false
+
+            // 7. First 32 bytes = HMAC-SHA256(pubkey, nonce || 0x01)
+            val decoded = rawData.copyOf(32)
+
+            // 8. Verify
+            val mac2 = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac2.init(javax.crypto.spec.SecretKeySpec(pubkey, "HmacSHA256"))
+            mac2.update(nonce)
+            mac2.update(byteArrayOf(0x01))
+            val expected = mac2.doFinal()
+
+            // Constant-time compare
+            if (decoded.size != expected.size) return false
+            var diff = 0
+            for (i in decoded.indices) diff = diff or (decoded[i].toInt() xor expected[i].toInt())
+            diff == 0
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Extract concatenated TXT character-strings from the first TXT answer record. */
+    private fun extractFirstTxtData(response: ByteArray, length: Int): String? {
+        if (length < 12) return null
+        val anCount = ((response[6].toInt() and 0xFF) shl 8) or (response[7].toInt() and 0xFF)
+        if (anCount == 0) return null
+        val qdCount = ((response[4].toInt() and 0xFF) shl 8) or (response[5].toInt() and 0xFF)
+        var offset = 12
+        for (i in 0 until qdCount) {
+            offset = skipDnsName(response, offset, length) ?: return null
+            offset += 4
+            if (offset > length) return null
+        }
+        for (i in 0 until anCount) {
+            offset = skipDnsName(response, offset, length) ?: return null
+            if (offset + 10 > length) return null
+            val rrType = ((response[offset].toInt() and 0xFF) shl 8) or (response[offset + 1].toInt() and 0xFF)
+            val rdLen = ((response[offset + 8].toInt() and 0xFF) shl 8) or (response[offset + 9].toInt() and 0xFF)
+            offset += 10
+            if (rrType == DNS_TYPE_TXT && rdLen > 0 && offset + rdLen <= length) {
+                val sb = StringBuilder()
+                var pos = offset
+                val end = offset + rdLen
+                while (pos < end) {
+                    val strLen = response[pos].toInt() and 0xFF
+                    pos++
+                    if (pos + strLen > end) break
+                    sb.append(String(response, pos, strLen, Charsets.US_ASCII))
+                    pos += strLen
+                }
+                return sb.toString()
+            }
+            offset += rdLen
+        }
+        return null
+    }
+
+    /** Extract raw binary TXT data from the first TXT answer record. */
+    private fun extractFirstTxtRawData(response: ByteArray, length: Int): ByteArray? {
+        if (length < 12) return null
+        val anCount = ((response[6].toInt() and 0xFF) shl 8) or (response[7].toInt() and 0xFF)
+        if (anCount == 0) return null
+        val qdCount = ((response[4].toInt() and 0xFF) shl 8) or (response[5].toInt() and 0xFF)
+        var offset = 12
+        for (i in 0 until qdCount) {
+            offset = skipDnsName(response, offset, length) ?: return null
+            offset += 4
+            if (offset > length) return null
+        }
+        for (i in 0 until anCount) {
+            offset = skipDnsName(response, offset, length) ?: return null
+            if (offset + 10 > length) return null
+            val rrType = ((response[offset].toInt() and 0xFF) shl 8) or (response[offset + 1].toInt() and 0xFF)
+            val rdLen = ((response[offset + 8].toInt() and 0xFF) shl 8) or (response[offset + 9].toInt() and 0xFF)
+            offset += 10
+            if (rrType == DNS_TYPE_TXT && rdLen > 0 && offset + rdLen <= length) {
+                val out = mutableListOf<Byte>()
+                var pos = offset
+                val end = offset + rdLen
+                while (pos < end) {
+                    val strLen = response[pos].toInt() and 0xFF
+                    pos++
+                    if (pos + strLen > end) break
+                    for (j in 0 until strLen) out.add(response[pos + j])
+                    pos += strLen
+                }
+                return out.toByteArray()
+            }
+            offset += rdLen
+        }
+        return null
+    }
+
+    /** Decode a lowercase base32 string (no padding) to bytes. Returns null on invalid input. */
+    private fun base32Decode(input: String): ByteArray? {
+        val alpha = "abcdefghijklmnopqrstuvwxyz234567"
+        val out = mutableListOf<Byte>()
+        var buffer = 0; var bitsLeft = 0
+        for (c in input) {
+            val v = alpha.indexOf(c)
+            if (v < 0) return null
+            buffer = (buffer shl 5) or v; bitsLeft += 5
+            if (bitsLeft >= 8) { bitsLeft -= 8; out.add((buffer shr bitsLeft).toByte()) }
+        }
+        return out.toByteArray()
+    }
+
     override suspend fun detectTransparentProxy(
         testDomain: String,
         timeoutMs: Long
@@ -734,7 +947,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         port: Int,
         testDomain: String,
         timeoutMs: Long,
-        concurrency: Int
+        concurrency: Int,
+        querySize: Int
     ): Flow<ResolverScanResult> = channelFlow {
         val semaphore = Semaphore(concurrency)
 
@@ -742,7 +956,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             launch {
                 semaphore.acquire()
                 try {
-                    val result = scanResolver(host, port, testDomain, timeoutMs)
+                    val result = scanResolver(host, port, testDomain, timeoutMs, querySize)
                     send(result)
                 } finally {
                     semaphore.release()
@@ -895,7 +1109,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 }
 
                 // Phase 2b: Warm up tunnel (Noise/KCP/smux handshake)
-                onPhaseUpdate("Tunnel handshake...")
+                val isSshVariant = profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.NOIZDNS_SSH
+                onPhaseUpdate(if (isSshVariant) "SSH tunnel handshake..." else "Tunnel handshake...")
                 remaining = timeoutMs - (SystemClock.elapsedRealtime() - totalStart)
                 if (remaining <= 0) {
                     return@withTimeoutOrNull E2eTestResult(
@@ -904,7 +1119,13 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                         phase = E2eTestPhase.TUNNEL_SETUP
                     )
                 }
-                val warmupOk = warmupDnsttTunnel(dnsttPort, remaining, profile.socksUsername, profile.socksPassword)
+                // SSH variants forward raw TCP to the SSH server (no SOCKS5),
+                // so use SSH banner read as the tunnel warmup proof instead.
+                val warmupOk = if (isSshVariant) {
+                    warmupSshTunnel(dnsttPort, remaining)
+                } else {
+                    warmupDnsttTunnel(dnsttPort, remaining, profile.socksUsername, profile.socksPassword)
+                }
                 if (!warmupOk) {
                     return@withTimeoutOrNull E2eTestResult(
                         totalMs = SystemClock.elapsedRealtime() - totalStart,
@@ -913,10 +1134,9 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                     )
                 }
 
-                val isSshVariant = profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.NOIZDNS_SSH
                 val tunnelSetupMs = SystemClock.elapsedRealtime() - totalStart
 
-                // Fast scan mode: SOCKS5 handshake already proved bidirectional
+                // Fast scan mode: handshake already proved bidirectional
                 // tunnel data flow — skip HTTP/SSH verification.
                 if (!fullVerification) {
                     return@withTimeoutOrNull E2eTestResult(
@@ -1178,7 +1398,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 // The Go Accept() loop doesn't run until Noise handshake completes
                 // (3-15s of DNS round-trips). A warm-up connection forces this setup
                 // and blocks until the tunnel is actually functional.
-                onPhaseUpdate("Tunnel handshake...")
+                val isSshVariant = profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.NOIZDNS_SSH
+                onPhaseUpdate(if (isSshVariant) "SSH tunnel handshake..." else "Tunnel handshake...")
                 remaining = timeoutMs - (SystemClock.elapsedRealtime() - totalStart)
                 if (remaining <= 0) {
                     return@withTimeoutOrNull E2eTestResult(
@@ -1187,7 +1408,13 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                         phase = E2eTestPhase.TUNNEL_SETUP
                     )
                 }
-                val warmupOk = warmupDnsttTunnel(dnsttPort, remaining, profile.socksUsername, profile.socksPassword)
+                // SSH variants forward raw TCP to the SSH server (no SOCKS5),
+                // so use SSH banner read as the tunnel warmup proof instead.
+                val warmupOk = if (isSshVariant) {
+                    warmupSshTunnel(dnsttPort, remaining)
+                } else {
+                    warmupDnsttTunnel(dnsttPort, remaining, profile.socksUsername, profile.socksPassword)
+                }
                 if (!warmupOk) {
                     return@withTimeoutOrNull E2eTestResult(
                         totalMs = SystemClock.elapsedRealtime() - totalStart,
@@ -1195,8 +1422,6 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                         phase = E2eTestPhase.TUNNEL_SETUP
                     )
                 }
-
-                val isSshVariant = profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.NOIZDNS_SSH
 
                 if (!isSshVariant) {
                     // Non-SSH: start DnsttSocksBridge (same as VPN flow) to handle
@@ -1291,6 +1516,36 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             try {
                 DnsttBridge.stopClient()
             } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Warm up the DNSTT tunnel for SSH variants.
+     * Connects to the local tunnel port and reads the SSH server banner.
+     * The TCP connect blocks until the Noise/KCP/smux handshake completes,
+     * and receiving the SSH banner proves bidirectional tunnel data flow.
+     */
+    private fun warmupSshTunnel(
+        dnsttPort: Int,
+        timeoutMs: Long
+    ): Boolean {
+        var sock: Socket? = null
+        return try {
+            val warmupTimeout = timeoutMs.toInt().coerceAtLeast(1)
+            sock = Socket()
+            sock.connect(java.net.InetSocketAddress("127.0.0.1", dnsttPort), warmupTimeout)
+            sock.soTimeout = warmupTimeout
+
+            // Read SSH banner (e.g. "SSH-2.0-OpenSSH_8.9").
+            // The TCP accept blocks until Noise handshake completes,
+            // then the SSH server sends its banner immediately.
+            val buf = ByteArray(256)
+            val n = sock.getInputStream().read(buf)
+            n > 4 && String(buf, 0, minOf(n, 4)) == "SSH-"
+        } catch (e: Exception) {
+            false
+        } finally {
+            try { sock?.close() } catch (_: Exception) {}
         }
     }
 
