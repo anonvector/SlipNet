@@ -53,6 +53,9 @@ jobs:
         with:
           go-version-file: cli/go.mod
 
+      - name: Copy resolver list for embedding
+        run: cp app/src/main/res/raw/resolvers.txt cli/resolvers.txt
+
       - name: Build
         working-directory: cli
         env:
