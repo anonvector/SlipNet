@@ -34,9 +34,10 @@ jobs:
           - target: x86_64-apple-darwin
             suffix: darwin-amd64
             os: macos-15
+            cmake_osx_arch: x86_64
           - target: aarch64-apple-darwin
             suffix: darwin-arm64
-            os: macos-14
+            os: macos-15
           - target: x86_64-pc-windows-msvc
             suffix: windows-amd64
             ext: .exe
@@ -73,6 +74,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CC: ${{ matrix.cc || '' }}
           AR: ${{ matrix.ar || '' }}
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_osx_arch || '' }}
           CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
         run: |
           # On Windows, prefer Strawberry Perl over Git Bash perl for OpenSSL
@@ -82,6 +84,11 @@ jobs:
           # Unset CC/AR if empty so the build system uses its defaults
           [ -z "$CC" ] && unset CC
           [ -z "$AR" ] && unset AR
+          # macOS x86_64 cross-compilation from ARM64 runner
+          if [ -n "${CMAKE_OSX_ARCHITECTURES:-}" ]; then
+            export CFLAGS="-arch ${CMAKE_OSX_ARCHITECTURES}"
+            export CXXFLAGS="-arch ${CMAKE_OSX_ARCHITECTURES}"
+          fi
           cargo build --release --bin slipstream-client \
             --target ${{ matrix.target }} \
             --features openssl-vendored,picoquic-minimal-build
