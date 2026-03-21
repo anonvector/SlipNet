@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,7 +15,7 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-const e2eTestURL = "http://www.gstatic.com/generate_204"
+const defaultE2ETestURL = "http://www.gstatic.com/generate_204"
 
 // E2EResult holds the result of an end-to-end tunnel test.
 type E2EResult struct {
@@ -29,15 +30,17 @@ type E2EResult struct {
 
 // E2EConfig holds configuration for E2E testing.
 type E2EConfig struct {
-	TunnelDomain string
-	PublicKey    string
-	NoizMode     bool
-	SSHMode      bool // true for dnstt_ssh/sayedns_ssh — tunnel carries raw SSH, not SOCKS5
-	TimeoutMs    int
-	Concurrency  int // max parallel E2E tests (bridges are NOT singletons in Go)
-	QuerySize    int // max DNS query payload size (0 = full capacity)
-	SOCKSUser    string
-	SOCKSPass    string
+	TunnelDomain   string
+	PublicKey       string
+	NoizMode        bool
+	SSHMode         bool // true for dnstt_ssh/sayedns_ssh — tunnel carries raw SSH, not SOCKS5
+	TimeoutMs       int
+	Concurrency     int // max parallel E2E tests (bridges are NOT singletons in Go)
+	QuerySize       int // max DNS query payload size (0 = full capacity)
+	ScoreThreshold  int // minimum DNS probe score to qualify for E2E (default: 2)
+	SOCKSUser       string
+	SOCKSPass       string
+	TestURL         string // custom URL for E2E verification (default: generate_204)
 }
 
 // RunE2ETests runs end-to-end tunnel tests on a list of resolver IPs.
@@ -63,7 +66,7 @@ func RunE2ETests(resolvers []string, config E2EConfig, onResult func(E2EResult))
 				return
 			}
 
-			result := testResolverE2E(host, port, config)
+			result := testResolverE2E(context.Background(), host, port, config)
 			onResult(result)
 		}(ip)
 	}
@@ -84,10 +87,14 @@ func allocatePort(counter *int32) int {
 	return 0
 }
 
-func testResolverE2E(resolverIP string, localPort int, config E2EConfig) E2EResult {
+func testResolverE2E(parentCtx context.Context, resolverIP string, localPort int, config E2EConfig) E2EResult {
 	result := E2EResult{Host: resolverIP}
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", localPort)
 	dnsAddr := resolverIP + ":53"
+
+	timeout := time.Duration(config.TimeoutMs) * time.Millisecond
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
+	defer cancel()
 
 	totalStart := time.Now()
 
@@ -107,47 +114,112 @@ func testResolverE2E(resolverIP string, localPort int, config E2EConfig) E2EResu
 	if config.QuerySize > 0 {
 		client.SetMaxPayload(config.QuerySize)
 	}
-	if config.SOCKSUser != "" {
+	if config.SOCKSUser != "" && !config.SSHMode {
 		client.SetSocksCredentials(config.SOCKSUser, config.SOCKSPass)
 	}
 
-	if err := client.Start(); err != nil {
-		result.Error = fmt.Sprintf("start tunnel: %v", err)
+	// Run client.Start() with deadline — the API has no context support,
+	// so we race it against the overall timeout in a goroutine.
+	// Stop is always async to avoid inflating TotalMs with teardown time.
+	stopBg := func() { go client.Stop() }
+
+	startCh := make(chan error, 1)
+	go func() { startCh <- client.Start() }()
+	select {
+	case err = <-startCh:
+		if err != nil {
+			stopBg()
+			result.Error = fmt.Sprintf("start tunnel: %v", err)
+			result.TotalMs = time.Since(totalStart).Milliseconds()
+			return result
+		}
+	case <-ctx.Done():
+		stopBg()
+		result.Error = "timeout starting tunnel"
 		result.TotalMs = time.Since(totalStart).Milliseconds()
 		return result
 	}
-	defer client.Stop()
+	defer stopBg()
 
-	// Wait for tunnel port to be ready
-	if !waitForPort(listenAddr, 5*time.Second) {
-		result.Error = "tunnel port not ready"
+	// Wait for tunnel port to be ready (respect overall deadline and cancellation)
+	portTimeout := time.Until(time.Now().Add(5 * time.Second))
+	if dl, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(dl); remaining < portTimeout {
+			portTimeout = remaining
+		}
+	}
+	if !waitForPort(ctx, listenAddr, portTimeout) {
+		if ctx.Err() != nil {
+			result.Error = "cancelled"
+		} else {
+			result.Error = "tunnel port not ready"
+		}
 		result.TotalMs = time.Since(totalStart).Milliseconds()
 		return result
 	}
 
 	result.TunnelMs = time.Since(tunnelStart).Milliseconds()
 
+	// Check if deadline already exceeded after tunnel setup
+	if ctx.Err() != nil {
+		result.Error = "timeout during tunnel setup"
+		result.TotalMs = time.Since(totalStart).Milliseconds()
+		return result
+	}
+
 	// Phase 2: Verify tunnel — SSH banner check or HTTP through SOCKS5
+	// "none" = tunnel-only mode: handshake proved bidirectional flow, skip verification.
+	if config.TestURL == "none" {
+		result.Success = true
+		result.TotalMs = time.Since(totalStart).Milliseconds()
+		return result
+	}
+
 	if config.SSHMode {
 		// SSH variant: tunnel forwards raw TCP to SSH server.
 		// Read the SSH banner to prove bidirectional data flow.
 		sshStart := time.Now()
-		conn, err := net.DialTimeout("tcp", listenAddr, 5*time.Second)
+		remaining := time.Until(time.Now().Add(timeout))
+		if dl, ok := ctx.Deadline(); ok {
+			remaining = time.Until(dl)
+		}
+		conn, err := net.DialTimeout("tcp", listenAddr, remaining)
 		if err != nil {
-			result.Error = fmt.Sprintf("ssh connect: %v", err)
+			if ctx.Err() != nil {
+				result.Error = "cancelled"
+			} else {
+				result.Error = fmt.Sprintf("ssh connect: %v", err)
+			}
 			result.TotalMs = time.Since(totalStart).Milliseconds()
 			return result
 		}
-		conn.SetDeadline(time.Now().Add(time.Duration(config.TimeoutMs) * time.Millisecond))
+		if dl, ok := ctx.Deadline(); ok {
+			conn.SetDeadline(dl)
+		}
+		// Close conn immediately when context is cancelled (e.g. Ctrl+C)
+		// so conn.Read unblocks instead of waiting for the full timeout.
+		connDone := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				conn.Close()
+			case <-connDone:
+			}
+		}()
 		buf := make([]byte, 256)
 		n, err := conn.Read(buf)
+		close(connDone)
 		conn.Close()
 
 		result.HTTPMs = time.Since(sshStart).Milliseconds()
 		result.TotalMs = time.Since(totalStart).Milliseconds()
 
 		if err != nil {
-			result.Error = fmt.Sprintf("ssh banner: %v", err)
+			if ctx.Err() != nil {
+				result.Error = "cancelled"
+			} else {
+				result.Error = fmt.Sprintf("ssh banner: %v", err)
+			}
 			return result
 		}
 		if n >= 4 && string(buf[:4]) == "SSH-" {
@@ -168,24 +240,42 @@ func testResolverE2E(resolverIP string, localPort int, config E2EConfig) E2EResu
 		return result
 	}
 
+	// Derive TLS handshake timeout from remaining deadline
+	tlsTimeout := 10 * time.Second
+	if dl, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(dl); remaining < tlsTimeout {
+			tlsTimeout = remaining
+		}
+	}
+
 	httpClient := &http.Client{
-		Timeout: time.Duration(config.TimeoutMs) * time.Millisecond,
 		Transport: &http.Transport{
 			Dial:                dialer.Dial,
 			DisableKeepAlives:   true,
-			TLSHandshakeTimeout: 10 * time.Second,
+			TLSHandshakeTimeout: tlsTimeout,
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 
-	resp, err := httpClient.Get(e2eTestURL)
+	testURL := config.TestURL
+	if testURL == "" {
+		testURL = defaultE2ETestURL
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
+	if err != nil {
+		result.Error = fmt.Sprintf("create request: %v", err)
+		result.TotalMs = time.Since(totalStart).Milliseconds()
+		return result
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		errMsg := err.Error()
 		// Simplify common errors
 		if strings.Contains(errMsg, "context deadline exceeded") || strings.Contains(errMsg, "Timeout") {
-			errMsg = "HTTP timeout"
+			errMsg = "timeout"
 		} else if strings.Contains(errMsg, "connection refused") {
 			errMsg = "connection refused"
 		} else if len(errMsg) > 50 {
@@ -201,8 +291,7 @@ func testResolverE2E(resolverIP string, localPort int, config E2EConfig) E2EResu
 	result.HTTPStatus = resp.StatusCode
 	result.TotalMs = time.Since(totalStart).Milliseconds()
 
-	// 204 = success for generate_204
-	if resp.StatusCode == 204 || resp.StatusCode == 200 {
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 		result.Success = true
 	} else {
 		result.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
@@ -211,9 +300,12 @@ func testResolverE2E(resolverIP string, localPort int, config E2EConfig) E2EResu
 	return result
 }
 
-func waitForPort(addr string, timeout time.Duration) bool {
+func waitForPort(ctx context.Context, addr string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return false
+		}
 		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 		if err == nil {
 			conn.Close()

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -93,7 +94,7 @@ func connectSSHTunnel(profile *Profile) {
 		return
 	}
 
-	if !waitForPort(listenAddr, 15*time.Second) {
+	if !waitForPort(context.Background(), listenAddr, 15*time.Second) {
 		fmt.Println("  Warning: SOCKS5 proxy not ready yet (SSH handshake may still be in progress)")
 	}
 
@@ -222,7 +223,7 @@ func connectSOCKS5(profile *Profile) {
 		return
 	}
 
-	if !waitForPort(listenAddr, 15*time.Second) {
+	if !waitForPort(context.Background(), listenAddr, 15*time.Second) {
 		fmt.Println("  Warning: Port forward not ready yet")
 	}
 

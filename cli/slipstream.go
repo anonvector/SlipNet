@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -231,7 +232,7 @@ func connectSlipstream(profile *Profile, listenHost string, listenPort int) {
 		return
 	}
 
-	if !waitForPort(listenAddr, 15*time.Second) {
+	if !waitForPort(context.Background(), listenAddr, 15*time.Second) {
 		fmt.Println("  Warning: SOCKS5 proxy not ready yet (QUIC handshake may still be in progress)")
 	}
 
