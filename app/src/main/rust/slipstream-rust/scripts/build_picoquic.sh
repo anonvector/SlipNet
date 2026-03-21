@@ -97,8 +97,14 @@ if [[ -n "${OPENSSL_USE_STATIC_LIBS:-}" ]]; then
   CMAKE_ARGS+=("-DOPENSSL_USE_STATIC_LIBS=${OPENSSL_USE_STATIC_LIBS}")
 fi
 
-# Prefer Ninja over MSBuild on Windows (much faster).
-if command -v ninja &>/dev/null && [[ -z "${CMAKE_GENERATOR:-}" ]]; then
+# Prefer Ninja on non-Windows (much faster than make).
+# On Windows, keep the Visual Studio generator — Ninja picks up MinGW GCC
+# instead of MSVC, and the /FI flags are MSVC-specific.
+IS_WINDOWS=""
+if [[ "${OS:-}" == "Windows_NT" ]] || [[ "$(uname -s 2>/dev/null)" == MINGW* ]]; then
+  IS_WINDOWS=1
+fi
+if [[ -z "${IS_WINDOWS}" ]] && command -v ninja &>/dev/null && [[ -z "${CMAKE_GENERATOR:-}" ]]; then
   CMAKE_ARGS+=("-G" "Ninja")
 fi
 
