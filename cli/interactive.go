@@ -53,7 +53,8 @@ func runInteractive() {
 		fmt.Println("║  3) DNS Scanner + E2E Test                       ║")
 		fmt.Println("║  4) Quick Scan (single IP)                       ║")
 		fmt.Println("║  5) Prism (server-verified scan)                 ║")
-		fmt.Println("║  6) Help                                         ║")
+		fmt.Println("║  6) E2E Test Only                                ║")
+		fmt.Println("║  7) Help                                         ║")
 		fmt.Println("║  0) Exit                                         ║")
 		fmt.Println("║                                                  ║")
 		fmt.Println("╚══════════════════════════════════════════════════╝")
@@ -73,6 +74,8 @@ func runInteractive() {
 		case "5":
 			interactiveVerifyScan()
 		case "6":
+			interactiveE2EOnly()
+		case "7":
 			printUsage()
 			waitExit()
 		case "0", "q", "exit":
@@ -367,6 +370,10 @@ func interactiveScan(withE2E bool) {
 		if v, _ := strconv.Atoi(e2eTimeout); v > 0 {
 			args = append(args, "--e2e-timeout", e2eTimeout)
 		}
+		e2eURL := promptDefault("  E2E test URL (blank = default, 'none' = tunnel-only)", "")
+		if e2eURL != "" {
+			args = append(args, "--e2e-url", e2eURL)
+		}
 	}
 
 	fmt.Println()
@@ -501,14 +508,14 @@ func interactiveVerifyScan() {
 	// Probe settings
 	fmt.Println()
 	fmt.Println("  Probe settings:")
-	probes := promptDefault("  Probes per resolver (1-50)", "10")
+	probes := promptDefault("  Probes per resolver (1-50)", "5")
 	if v, err := strconv.Atoi(probes); err == nil && v > 0 {
 		if v > 50 {
 			probes = "50"
 		}
-		args = append(args, "--rounds", probes)
+		args = append(args, "--probes", probes)
 	}
-	threshold := promptDefault("  Pass threshold (min probes to pass)", "8")
+	threshold := promptDefault("  Pass threshold (min probes to pass)", "2")
 	if v, err := strconv.Atoi(threshold); err == nil && v > 0 {
 		if pv, _ := strconv.Atoi(probes); v > pv {
 			threshold = probes
@@ -536,6 +543,131 @@ func interactiveVerifyScan() {
 	timeout := promptDefault("  Timeout (ms)", "3000")
 	if v, _ := strconv.Atoi(timeout); v > 0 {
 		args = append(args, "--timeout", timeout)
+	}
+
+	fmt.Println()
+	runScanCommand(args)
+	waitExit()
+}
+
+func interactiveE2EOnly() {
+	fmt.Println()
+	fmt.Println("  ── E2E Test Only ────────────────────────────────")
+	fmt.Println()
+	fmt.Println("  Runs end-to-end tunnel tests directly on resolvers")
+	fmt.Println("  without a DNS scan. Each resolver is tested by starting")
+	fmt.Println("  a real tunnel and making an HTTP request through it.")
+	fmt.Println()
+
+	var args []string
+
+	// Config URI or manual domain + pubkey
+	configURI := promptDefault("  slipnet:// config (or blank to enter manually)", "")
+	if configURI != "" && isSlipnetURI(configURI) {
+		args = append(args, "--config", configURI, "--e2e-only")
+	} else {
+		domain := prompt("  Tunnel domain (e.g. t.example.com): ")
+		if domain == "" {
+			fmt.Println("  Domain is required.")
+			waitExit()
+			return
+		}
+		pubkey := prompt("  Server public key (hex): ")
+		if pubkey == "" {
+			fmt.Println("  Public key is required for E2E.")
+			waitExit()
+			return
+		}
+		args = append(args, "--domain", domain, "--pubkey", pubkey, "--e2e-only")
+
+		noizdns := promptDefault("  NoizDNS mode? (y/N)", "n")
+		if strings.HasPrefix(strings.ToLower(noizdns), "y") {
+			args = append(args, "--noizdns")
+		}
+	}
+
+	// IP source
+	fmt.Println()
+	fmt.Println("  IP source:")
+	fmt.Println("    1) File (one IP per line)")
+	fmt.Println("    2) Paste IPs")
+	fmt.Println("    3) Built-in list")
+	fmt.Println()
+	ipChoice := prompt("  Select: ")
+
+	switch ipChoice {
+	case "1":
+		filePath := prompt("  File path: ")
+		filePath = strings.Trim(filePath, "\"' ")
+		if filePath == "" {
+			fmt.Println("  File path is required.")
+			waitExit()
+			return
+		}
+		if !filepath.IsAbs(filePath) {
+			if cwd, err := os.Getwd(); err == nil {
+				filePath = filepath.Join(cwd, filePath)
+			}
+		}
+		args = append(args, "--ips", filePath)
+
+	case "2":
+		fmt.Println("  Paste IPs (one per line, empty line to finish):")
+		var ips []string
+		for {
+			line := prompt("  ")
+			if line == "" {
+				break
+			}
+			for _, part := range strings.Split(line, ",") {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					ips = append(ips, part)
+				}
+			}
+		}
+		if len(ips) == 0 {
+			fmt.Println("  No IPs entered.")
+			waitExit()
+			return
+		}
+		tmpFile, err := os.CreateTemp("", "slipnet-ips-*.txt")
+		if err != nil {
+			fmt.Printf("  Error creating temp file: %v\n", err)
+			waitExit()
+			return
+		}
+		tmpFile.WriteString(strings.Join(ips, "\n"))
+		tmpFile.Close()
+		defer os.Remove(tmpFile.Name())
+		args = append(args, "--ips", tmpFile.Name())
+
+	case "3":
+		// No --ips flag — runScanCommand falls back to built-in list
+
+	default:
+		fmt.Println("  Invalid choice.")
+		waitExit()
+		return
+	}
+
+	// Optional settings
+	fmt.Println()
+	concurrency := promptDefault("  Concurrency", "10")
+	if v, _ := strconv.Atoi(concurrency); v > 0 {
+		args = append(args, "--e2e-concurrency", concurrency)
+	}
+	timeout := promptDefault("  Timeout per resolver (ms)", "15000")
+	if v, _ := strconv.Atoi(timeout); v > 0 {
+		args = append(args, "--e2e-timeout", timeout)
+	}
+	qs := promptDefault("  Query size in bytes (blank = full capacity)", "")
+	if v, err := strconv.Atoi(qs); err == nil && v >= 50 {
+		args = append(args, "--query-size", qs)
+	}
+	e2eURL := promptDefault("  E2E test URL (blank = default, 'none' = tunnel-only)", "")
+	if e2eURL != "" {
+		args = append(args, "--e2e-url", e2eURL)
 	}
 
 	fmt.Println()

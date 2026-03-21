@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base32"
@@ -712,15 +713,20 @@ func extractTXTData(resp []byte) string {
 // RunVerifyScanner sends HMAC-authenticated verification probes to each
 // resolver. Each resolver gets probeCount probes and must pass at least
 // passThreshold to be considered verified. Results are shown in real time.
-func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, probeCount int, passThreshold int, pubkey []byte, responseSize int) {
+func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, probeCount int, passThreshold int, pubkey []byte, responseSize int, prefilter bool, outputFile string) {
 	if probeCount <= 0 {
-		probeCount = 20
+		probeCount = 5
 	}
 	if passThreshold <= 0 || passThreshold > probeCount {
-		passThreshold = probeCount / 4
-		if passThreshold < 1 {
-			passThreshold = 1
-		}
+		passThreshold = 2
+	}
+	// Ensure at least 500ms per probe
+	maxThreshold := timeoutMs / 200
+	if maxThreshold < 1 {
+		maxThreshold = 1
+	}
+	if passThreshold > maxThreshold {
+		passThreshold = maxThreshold
 	}
 
 	fmt.Println()
@@ -732,10 +738,15 @@ func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs
 	fmt.Printf("  Resolvers:   %d\n", len(resolvers))
 	fmt.Printf("  Probes:      %d (pass: %d/%d)\n", probeCount, passThreshold, probeCount)
 	fmt.Printf("  Concurrency: %d\n", concurrency)
-	fmt.Printf("  Timeout:     %dms\n", timeoutMs)
+	perProbeMs := timeoutMs / passThreshold
+	if perProbeMs < 200 {
+		perProbeMs = 200
+	}
+	fmt.Printf("  Timeout:     %dms per resolver (%dms per probe)\n", timeoutMs, perProbeMs)
 	if responseSize > 0 {
 		fmt.Printf("  Resp. size:  %d bytes\n", responseSize)
 	}
+	fmt.Printf("  Pre-filter:  %s\n", map[bool]string{true: "on", false: "off"}[prefilter])
 	fmt.Println()
 
 	// Graceful stop on Ctrl+C
@@ -745,11 +756,13 @@ func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs
 	go func() {
 		<-sigCh
 		stopped.Store(true)
-		fmt.Printf("\n\n  Scan interrupted! Finishing in-flight tests...\n")
-		fmt.Println("  Press Ctrl+C again to force exit.")
+		fmt.Printf("\n\n  Scan interrupted! Finishing in-flight probes...\n")
+		// Second Ctrl+C = force exit
 		<-sigCh
 		os.Exit(1)
 	}()
+
+	parentDomain := getParentDomain(testDomain)
 
 	startTime := time.Now()
 	total := int64(len(resolvers))
@@ -780,15 +793,38 @@ func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs
 				return
 			}
 
-			// Run probes with early exit
+			// Optional pre-filter: quick DNS check before prism probes
+			if prefilter {
+				pfTimeout := timeoutMs
+				if pfTimeout > 1500 {
+					pfTimeout = 1500
+				}
+				_, err := dnsQuery(host, port, randomLabel(8)+"."+parentDomain, 1, pfTimeout, nil)
+				if err != nil {
+					n := atomic.AddInt64(&scanned, 1)
+					if n%20 == 0 || n == total {
+						v := atomic.LoadInt64(&verified)
+						fmt.Printf("\r  Scanning... %d/%d  (verified: %d)", n, total, v)
+					}
+					return
+				}
+			}
+
+			// Run probes with early exit — divide timeout across probes,
+			// with an overall deadline of timeoutMs per resolver.
+			perProbeTimeout := timeoutMs / passThreshold
+			if perProbeTimeout < 200 {
+				perProbeTimeout = 200
+			}
+			deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 			passed := 0
 			maxFailures := probeCount - passThreshold
 			failures := 0
 			for i := 0; i < probeCount; i++ {
-				if stopped.Load() {
-					return
+				if stopped.Load() || time.Now().After(deadline) {
+					break
 				}
-				if testVerify(host, port, testDomain, timeoutMs, pubkey, responseSize) {
+				if testVerify(host, port, testDomain, perProbeTimeout, pubkey, responseSize) {
 					passed++
 					if passed >= passThreshold {
 						break // already verified
@@ -840,25 +876,7 @@ func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs
 	}
 	fmt.Println()
 
-	// Save prompt
-	if len(verifiedIPs) > 0 {
-		if reader == nil {
-			reader = bufio.NewReader(os.Stdin)
-		}
-		fmt.Print("  Save results to file? (Y/n): ")
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(strings.ToLower(choice))
-		if choice != "n" && choice != "no" {
-			filename := "verified.txt"
-			content := strings.Join(verifiedIPs, "\n") + "\n"
-			if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
-				fmt.Printf("  Error saving: %v\n", err)
-			} else {
-				fmt.Printf("  Saved %d verified IPs to %s\n", len(verifiedIPs), filename)
-			}
-			fmt.Println()
-		}
-	}
+	saveResultsPrompt(verifiedIPs, nil, outputFile, stopped.Load())
 }
 
 // LoadIPList parses a text file/string into a list of IP addresses.
@@ -886,9 +904,9 @@ func LoadIPList(content string) []string {
 }
 
 // RunScanner is the main entry point for the CLI scanner.
-// If e2eConfig is non-nil, E2E tests run in parallel as 6/6 resolvers are found.
+// If e2eConfig is non-nil, E2E tests run in parallel as resolvers meeting the score threshold are found.
 // querySize caps DNS probes to match the user's --query-size (0 = full capacity).
-func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, querySize int, e2eConfig *E2EConfig) {
+func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, querySize int, e2eConfig *E2EConfig, outputFile string) {
 	total := len(resolvers)
 	var scanned int64
 	var working int64
@@ -916,6 +934,10 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 	// Print mutex for clean terminal output
 	var printMu sync.Mutex
 
+	// Cancellable context — cancelled on Ctrl+C to abort in-flight E2E tests immediately.
+	e2eCtx, cancelE2E := context.WithCancel(context.Background())
+	defer cancelE2E()
+
 	// Graceful stop on Ctrl+C
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -941,7 +963,7 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 		if e2eConfig.SSHMode {
 			mode += "+SSH"
 		}
-		fmt.Printf("  E2E:         enabled (%s, concurrency: %d)\n", mode, e2eConfig.Concurrency)
+		fmt.Printf("  E2E:         enabled (%s, concurrency: %d, threshold: %d/6)\n", mode, e2eConfig.Concurrency, e2eConfig.ScoreThreshold)
 	}
 	fmt.Println()
 
@@ -978,7 +1000,7 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 					if p == 0 {
 						continue
 					}
-					result := testResolverE2E(ip, p, *e2eConfig)
+					result := testResolverE2E(e2eCtx, ip, p, *e2eConfig)
 					n := atomic.AddInt64(&e2eTested, 1)
 
 					e2eMu.Lock()
@@ -993,6 +1015,15 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 					printMu.Lock()
 					if result.Success {
 						fmt.Printf("\r  ✓ E2E %-18s PASS  %5dms        (E2E: %d/%d)\n", result.Host, result.TotalMs, ep, n)
+					} else {
+						errMsg := result.Error
+						if errMsg == "" {
+							errMsg = "unknown"
+						}
+						if len(errMsg) > 20 {
+							errMsg = errMsg[:20]
+						}
+						fmt.Printf("\r  ✗ E2E %-18s FAIL  %s        (E2E: %d/%d)\n", result.Host, errMsg, ep, n)
 					}
 					s := atomic.LoadInt64(&scanned)
 					w := atomic.LoadInt64(&working)
@@ -1003,14 +1034,15 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 		}
 	}
 
-	// Handle Ctrl+C — first press stops scan, second press force-exits
+	// Handle Ctrl+C — cancel in-flight E2E tests immediately
 	go func() {
 		<-sigCh
 		stopped.Store(true)
+		cancelE2E() // abort all in-flight E2E tests
 		printMu.Lock()
-		fmt.Printf("\n\n  Scan interrupted! Finishing in-flight tests...\n")
-		fmt.Println("  Press Ctrl+C again to force exit.")
+		fmt.Printf("\n\n  Scan interrupted! Cancelling in-flight tests...\n")
 		printMu.Unlock()
+		// Second Ctrl+C = force exit
 		<-sigCh
 		os.Exit(1)
 	}()
@@ -1053,7 +1085,11 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 			if result.Tunnel != nil && result.Tunnel.Score() > 0 {
 				mu.Lock()
 				compatible = append(compatible, scoredResult{result, result.Tunnel.Score()})
-				if result.Tunnel.Score() == 6 {
+				e2eThresh := 6
+				if e2eConfig != nil {
+					e2eThresh = e2eConfig.ScoreThreshold
+				}
+				if result.Tunnel.Score() >= e2eThresh {
 					workingIPs = append(workingIPs, host)
 					if e2eChan != nil && !stopped.Load() {
 						select {
@@ -1066,7 +1102,11 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 			}
 
 			// Progress update
-			if n%10 == 0 || n == int64(total) || (result.Tunnel != nil && result.Tunnel.Score() == 6) {
+			progressThresh := 6
+			if e2eConfig != nil {
+				progressThresh = e2eConfig.ScoreThreshold
+			}
+			if n%10 == 0 || n == int64(total) || (result.Tunnel != nil && result.Tunnel.Score() >= progressThresh) {
 				printMu.Lock()
 				w := atomic.LoadInt64(&working)
 				if e2eConfig != nil {
@@ -1137,7 +1177,7 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 
 	if len(compatible) == 0 {
 		fmt.Println("  No compatible resolvers found.")
-		saveResultsPrompt(workingIPs, e2ePassedIPs)
+		saveResultsPrompt(workingIPs, e2ePassedIPs, outputFile, stopped.Load())
 		return
 	}
 
@@ -1206,16 +1246,236 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 	}
 
 	// Save results to files
-	saveResultsPrompt(workingIPs, e2ePassedIPs)
+	saveResultsPrompt(workingIPs, e2ePassedIPs, outputFile, stopped.Load())
 }
 
-func saveResultsPrompt(workingIPs []string, e2ePassedIPs []string) {
+// RunE2EOnlyScanner runs E2E tunnel tests directly on the given resolvers
+// without a preceding DNS scan. Results are displayed in real time.
+func RunE2EOnlyScanner(resolvers []string, config E2EConfig, outputFile string) {
+	total := len(resolvers)
+	var tested int64
+	var passed int64
+	var mu sync.Mutex
+	var results []E2EResult
+	var passedIPs []string
+	var portCounter int32 = 19000
+
+	// Suppress noizdns tunnel library logging during E2E
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
+
+	// Cancellable context — cancelled on Ctrl+C to abort in-flight tests immediately.
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+
+	// Graceful stop on Ctrl+C
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	var stopped atomic.Bool
+
+	mode := "DNSTT"
+	if config.NoizMode {
+		mode = "NoizDNS"
+	}
+	if config.SSHMode {
+		mode += "+SSH"
+	}
+
+	fmt.Println()
+	fmt.Println("╔══════════════════════════════════════════════════╗")
+	fmt.Println("║              SlipNet E2E Test                    ║")
+	fmt.Println("╚══════════════════════════════════════════════════╝")
+	fmt.Println()
+	fmt.Printf("  Domain:      %s\n", config.TunnelDomain)
+	fmt.Printf("  Mode:        %s\n", mode)
+	fmt.Printf("  Resolvers:   %d\n", total)
+	fmt.Printf("  Concurrency: %d\n", config.Concurrency)
+	fmt.Printf("  Timeout:     %dms\n", config.TimeoutMs)
+	if config.QuerySize > 0 {
+		fmt.Printf("  Query Size:  %d bytes\n", config.QuerySize)
+	}
+	// Print table header
+	fmt.Printf("  %-18s %7s  %7s  %7s  %s\n", "RESOLVER", "TUNNEL", "HTTP", "TOTAL", "STATUS")
+	fmt.Printf("  %-18s %7s  %7s  %7s  %s\n", "────────────────", "───────", "───────", "───────", "──────")
+
+	// Print mutex for clean terminal output
+	var printMu sync.Mutex
+
+	// Progress line helper — clears the line then prints status
+	printProgress := func() {
+		ep := atomic.LoadInt64(&passed)
+		et := atomic.LoadInt64(&tested)
+		ef := et - ep
+		fmt.Printf("\r  Testing... %d/%d  |  passed: %d  failed: %d  ", et, total, ep, ef)
+	}
+
+	startTime := time.Now()
+
+	// Handle Ctrl+C — cancel in-flight tests immediately
+	go func() {
+		<-sigCh
+		stopped.Store(true)
+		cancelCtx() // abort all in-flight E2E tests
+		printMu.Lock()
+		fmt.Printf("\n\n  Interrupted! Cancelling in-flight tests...\n")
+		printMu.Unlock()
+		// Second Ctrl+C = force exit
+		<-sigCh
+		os.Exit(1)
+	}()
+
+	concurrency := config.Concurrency
+	if concurrency <= 0 {
+		concurrency = 10
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for _, ip := range resolvers {
+		if stopped.Load() {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		if stopped.Load() {
+			<-sem
+			wg.Done()
+			break
+		}
+		go func(host string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			if stopped.Load() {
+				return
+			}
+
+			p := allocatePort(&portCounter)
+			if p == 0 {
+				return
+			}
+			result := testResolverE2E(ctx, host, p, config)
+			atomic.AddInt64(&tested, 1)
+
+			mu.Lock()
+			results = append(results, result)
+			if result.Success {
+				atomic.AddInt64(&passed, 1)
+				passedIPs = append(passedIPs, result.Host)
+			}
+			mu.Unlock()
+
+			printMu.Lock()
+			// Clear the progress line, print the result row, then reprint progress
+			if result.Success {
+				fmt.Printf("\r  %-18s %5dms  %5dms  %5dms  PASS\n",
+					result.Host, result.TunnelMs, result.HTTPMs, result.TotalMs)
+			} else {
+				errMsg := result.Error
+				if errMsg == "" {
+					errMsg = "unknown"
+				}
+				if len(errMsg) > 20 {
+					errMsg = errMsg[:20]
+				}
+				fmt.Printf("\r  %-18s %5dms  %5dms  %5dms  FAIL  %s\n",
+					result.Host, result.TunnelMs, result.HTTPMs, result.TotalMs, errMsg)
+			}
+			printProgress()
+			printMu.Unlock()
+		}(ip)
+	}
+
+	wg.Wait()
+	signal.Stop(sigCh)
+
+	elapsed := time.Since(startTime)
+	ep := atomic.LoadInt64(&passed)
+	et := atomic.LoadInt64(&tested)
+	ef := et - ep
+
+	// Clear progress line and print final status
+	fmt.Printf("\r  Testing... %d/%d  |  passed: %d  failed: %d  \n", et, total, ep, ef)
+	fmt.Println()
+
+	// Summary
+	fmt.Println("  ── Summary ──────────────────────────────────────")
+	fmt.Println()
+	if stopped.Load() {
+		fmt.Printf("  Tested:  %d/%d (interrupted)\n", et, total)
+	} else {
+		fmt.Printf("  Tested:  %d\n", et)
+	}
+	fmt.Printf("  Passed:  %d\n", ep)
+	fmt.Printf("  Failed:  %d\n", ef)
+	fmt.Printf("  Elapsed: %s\n", elapsed.Round(time.Millisecond))
+	fmt.Println()
+
+	// Print sorted passed resolvers for easy copy
+	if ep > 0 {
+		// Sort passed by latency ascending
+		mu.Lock()
+		sortedPassed := make([]E2EResult, 0, ep)
+		for _, r := range results {
+			if r.Success {
+				sortedPassed = append(sortedPassed, r)
+			}
+		}
+		mu.Unlock()
+
+		for i := 0; i < len(sortedPassed); i++ {
+			for j := i + 1; j < len(sortedPassed); j++ {
+				if sortedPassed[j].TotalMs < sortedPassed[i].TotalMs {
+					sortedPassed[i], sortedPassed[j] = sortedPassed[j], sortedPassed[i]
+				}
+			}
+		}
+
+		fmt.Printf("  Passed resolvers (sorted by latency):\n\n")
+		fmt.Printf("  %-18s %7s  %7s  %7s\n", "RESOLVER", "TUNNEL", "HTTP", "TOTAL")
+		fmt.Printf("  %-18s %7s  %7s  %7s\n", "────────────────", "───────", "───────", "───────")
+		for _, r := range sortedPassed {
+			fmt.Printf("  %-18s %5dms  %5dms  %5dms\n",
+				r.Host, r.TunnelMs, r.HTTPMs, r.TotalMs)
+		}
+		fmt.Println()
+	}
+
+	saveResultsPrompt(nil, passedIPs, outputFile, stopped.Load())
+}
+
+func saveResultsPrompt(workingIPs []string, e2ePassedIPs []string, outputFile string, interrupted bool) {
 	if len(workingIPs) == 0 && len(e2ePassedIPs) == 0 {
+		return
+	}
+
+	// If --output was specified, save all results to that file without prompting
+	if outputFile != "" {
+		var allIPs []string
+		if len(e2ePassedIPs) > 0 {
+			allIPs = e2ePassedIPs
+		} else {
+			allIPs = workingIPs
+		}
+		content := strings.Join(allIPs, "\n") + "\n"
+		if err := os.WriteFile(outputFile, []byte(content), 0644); err != nil {
+			fmt.Printf("  Error saving: %v\n", err)
+		} else {
+			fmt.Printf("  Saved %d IPs to %s\n", len(allIPs), outputFile)
+		}
+		fmt.Println()
 		return
 	}
 
 	if reader == nil {
 		reader = bufio.NewReader(os.Stdin)
+	}
+
+	// After Ctrl+C, stdin may have leftover bytes — drain them first.
+	if interrupted {
+		for reader.Buffered() > 0 {
+			reader.ReadByte()
+		}
 	}
 
 	fmt.Print("  Save results to files? (Y/n): ")
@@ -1225,6 +1485,10 @@ func saveResultsPrompt(workingIPs []string, e2ePassedIPs []string) {
 		return
 	}
 
+	saveResults(workingIPs, e2ePassedIPs)
+}
+
+func saveResults(workingIPs []string, e2ePassedIPs []string) {
 	if len(workingIPs) > 0 {
 		filename := "working.txt"
 		content := strings.Join(workingIPs, "\n") + "\n"

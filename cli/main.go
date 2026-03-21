@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -542,12 +543,18 @@ func runScanCommand(args []string) {
 	var noizdns bool
 	var e2eConcurrency = 10
 	var e2eTimeout = 15000
+	var e2eURL string
+	var e2eThreshold = 2
 	var configURI string
 	var verifyMode bool
-	var verifyRounds = 10
-	var passThreshold = 5
+	var prismTimeout = 0 // 0 = use --timeout value
+	var verifyRounds = 5
+	var passThreshold = 2
 	var responseSize int
 	var querySize int
+	var prismPrefilter bool
+	var e2eOnly bool
+	var outputFile string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -615,9 +622,22 @@ func runScanCommand(args []string) {
 				}
 				i++
 			}
+		case "--e2e-threshold":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v >= 0 && v <= 6 {
+					e2eThreshold = v
+				}
+				i++
+			}
+		case "--e2e-url":
+			if i+1 < len(args) {
+				e2eURL = args[i+1]
+				i++
+			}
 		case "--verify", "-verify":
 			verifyMode = true
-		case "--rounds", "-rounds":
+		case "--probes", "-probes", "--rounds", "-rounds":
 			if i+1 < len(args) {
 				v, err := strconv.Atoi(args[i+1])
 				if err == nil && v > 0 {
@@ -641,6 +661,18 @@ func runScanCommand(args []string) {
 				}
 				i++
 			}
+		case "--prism-timeout", "-prism-timeout":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v > 0 {
+					prismTimeout = v
+				}
+				i++
+			}
+		case "--prefilter", "-prefilter":
+			prismPrefilter = true
+		case "--e2e-only":
+			e2eOnly = true
 		case "--config", "-config":
 			if i+1 < len(args) {
 				configURI = args[i+1]
@@ -652,6 +684,11 @@ func runScanCommand(args []string) {
 				if err == nil && v >= 50 {
 					querySize = v
 				}
+				i++
+			}
+		case "--output", "-output", "-o":
+			if i+1 < len(args) {
+				outputFile = args[i+1]
 				i++
 			}
 		case "--help", "-help", "-h":
@@ -716,7 +753,31 @@ func runScanCommand(args []string) {
 		if err != nil {
 			log.Fatalf("invalid pubkey hex: %v", err)
 		}
-		RunVerifyScanner(resolvers, domain, port, timeoutMs, concurrency, verifyRounds, passThreshold, pubkeyBytes, responseSize)
+		prismTimeoutMs := prismTimeout
+		if prismTimeoutMs <= 0 {
+			prismTimeoutMs = timeoutMs
+		}
+		RunVerifyScanner(resolvers, domain, port, prismTimeoutMs, concurrency, verifyRounds, passThreshold, pubkeyBytes, responseSize, prismPrefilter, outputFile)
+		return
+	}
+
+	if e2eOnly {
+		if pubkey == "" {
+			log.Fatal("E2E-only mode requires --pubkey or --config with a slipnet:// URI")
+		}
+		e2eOnlyConfig := E2EConfig{
+			TunnelDomain: domain,
+			PublicKey:     pubkey,
+			NoizMode:      noizdns,
+			SSHMode:       sshMode,
+			TimeoutMs:     e2eTimeout,
+			Concurrency:   e2eConcurrency,
+			QuerySize:     querySize,
+			SOCKSUser:     socksUser,
+			SOCKSPass:     socksPass,
+			TestURL:       e2eURL,
+		}
+		RunE2EOnlyScanner(resolvers, e2eOnlyConfig, outputFile)
 		return
 	}
 
@@ -726,22 +787,25 @@ func runScanCommand(args []string) {
 			log.Fatal("E2E testing requires --pubkey or --config with a slipnet:// URI")
 		}
 		e2eConfig = &E2EConfig{
-			TunnelDomain: domain,
-			PublicKey:     pubkey,
-			NoizMode:     noizdns,
-			SSHMode:      sshMode,
-			TimeoutMs:    e2eTimeout,
-			Concurrency:  e2eConcurrency,
-			QuerySize:    querySize,
-			SOCKSUser:    socksUser,
-			SOCKSPass:    socksPass,
+			TunnelDomain:   domain,
+			PublicKey:       pubkey,
+			NoizMode:        noizdns,
+			SSHMode:         sshMode,
+			TimeoutMs:       e2eTimeout,
+			Concurrency:     e2eConcurrency,
+			QuerySize:       querySize,
+			ScoreThreshold:  e2eThreshold,
+			SOCKSUser:       socksUser,
+			TestURL:         e2eURL,
+			SOCKSPass:       socksPass,
 		}
 	}
 
-	RunScanner(resolvers, domain, port, timeoutMs, concurrency, querySize, e2eConfig)
+	RunScanner(resolvers, domain, port, timeoutMs, concurrency, querySize, e2eConfig, outputFile)
 }
 
 func printUsage() {
+	prog := filepath.Base(os.Args[0])
 	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - Tunnel proxy (DNSTT, NoizDNS, Slipstream, SSH, SOCKS5)
 
 Usage:
@@ -775,20 +839,26 @@ Options (scan):
   --timeout MS        Per-query timeout in ms (default: 3000)
   --concurrency N     Parallel DNS scans (default: 100)
   --port PORT         DNS port (default: 53)
-  --e2e               Run E2E tunnel test on 6/6 resolvers after DNS scan
-  --pubkey KEY        Server public key for E2E (required with --e2e)
+  --e2e               Run E2E tunnel test on resolvers meeting score threshold
+  --e2e-only          E2E test only: skip DNS scan, test resolvers directly
+  --pubkey KEY        Server public key for E2E (required with --e2e/--e2e-only)
   --noizdns           Use NoizDNS mode for E2E (default: DNSTT)
   --e2e-concurrency N Parallel E2E tests (default: 10)
   --e2e-timeout MS    E2E HTTP timeout in ms (default: 15000)
+  --e2e-url URL       Custom URL for E2E verification (default: gstatic generate_204)
+  --e2e-threshold N   Minimum DNS score to qualify for E2E, 0-6 (default: 2)
   --config URI        Extract domain/pubkey/mode from slipnet:// URI (auto-enables E2E)
   --verify            Prism mode: server-verified scan to authenticate the tunnel server
                       Requires --pubkey or --config to provide the server's public key
-  --rounds N          Probes per resolver (default: 10, used with --verify)
-  --threshold N       Required passing probes (default: 5, used with --verify)
+  --prism-timeout MS  Timeout per resolver for Prism mode (default: --timeout value)
+  --probes N          Probes per resolver (default: 5, used with --verify)
+  --threshold N       Required passing probes (default: 2, used with --verify)
   --response-size N   Request server to pad response to N bytes (used with --verify)
                       0 = server default, 200-4096 = custom size
+  --prefilter         DNS pre-filter to skip dead IPs before Prism probes (off by default)
   --query-size BYTES  Cap DNS probe and E2E tunnel query size (default: full capacity)
                       Matches connect --query-size so scan results reflect real usage
+  --output FILE       Save results to FILE (skips interactive prompt)
 
 If no --dns is specified, the client auto-detects the server IP
 when DNS delegation isn't working.
@@ -805,6 +875,7 @@ Examples:
   %[2]s scan --config slipnet://BASE64... --ips resolvers.txt
   %[2]s scan --domain t.example.com --ips ips.txt --e2e --pubkey HEXKEY
   %[2]s scan --config slipnet://BASE64... --ips resolvers.txt --verify
-  %[2]s scan --domain t.example.com --pubkey HEXKEY --ips resolvers.txt --verify --rounds 3
-`, version, os.Args[0])
+  %[2]s scan --config slipnet://BASE64... --ips resolvers.txt --e2e-only
+  %[2]s scan --domain t.example.com --pubkey HEXKEY --ips resolvers.txt --verify --probes 3
+`, version, prog)
 }
