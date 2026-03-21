@@ -71,15 +71,14 @@ if [[ -n "${CMAKE_OSX_ARCHITECTURES:-}" ]]; then
 fi
 
 # Windows: picotls.h includes "wincompat.h" which lives in picoquic's source
-# directory. Add it to the global C include path so the fetched picotls build
-# can find it.
+# directory, and picotls uses sockaddr_in6/inet_pton which need <ws2tcpip.h>.
+# Add the include path and the missing header via CMAKE_C_FLAGS_INIT.
 if [[ "${OS:-}" == "Windows_NT" ]] || [[ "$(uname -s 2>/dev/null)" == MINGW* ]]; then
   WINCOMPAT_DIR="${PICOQUIC_DIR}/picoquic"
-  # Convert to Windows-style path for MSVC /I flag
   if command -v cygpath &>/dev/null; then
     WINCOMPAT_DIR="$(cygpath -w "${WINCOMPAT_DIR}")"
   fi
-  CMAKE_ARGS+=("-DCMAKE_C_FLAGS_INIT=/I\"${WINCOMPAT_DIR}\"")
+  CMAKE_ARGS+=("-DCMAKE_C_FLAGS_INIT=/I\"${WINCOMPAT_DIR}\" /FI\"ws2tcpip.h\"")
 fi
 
 if [[ -n "${OPENSSL_ROOT_DIR:-}" ]]; then
