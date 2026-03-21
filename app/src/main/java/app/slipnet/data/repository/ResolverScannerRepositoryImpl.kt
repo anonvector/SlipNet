@@ -735,6 +735,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         for (i in 1..probeCount) {
             if (verifyResolverOnce(host, port, testDomain, pubkey, timeoutMs, responseSize)) {
                 passed++
+                if (passed >= passThreshold) break // already verified
             } else {
                 failures++
                 if (failures > maxFailures) break // can't reach threshold anymore

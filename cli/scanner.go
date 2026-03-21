@@ -790,6 +790,9 @@ func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs
 				}
 				if testVerify(host, port, testDomain, timeoutMs, pubkey, responseSize) {
 					passed++
+					if passed >= passThreshold {
+						break // already verified
+					}
 				} else {
 					failures++
 					if failures > maxFailures {
