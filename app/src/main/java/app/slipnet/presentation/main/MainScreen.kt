@@ -52,6 +52,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
@@ -126,7 +127,7 @@ import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ConnectionState
-import app.slipnet.domain.model.PingResult
+import app.slipnet.domain.model.ProfileChain
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
 import app.slipnet.presentation.common.components.AboutDialogContent
@@ -183,11 +184,13 @@ fun MainScreen(
     // VPN permission flow
     var pendingConnect by remember { mutableStateOf(false) }
     var pendingProfile by remember { mutableStateOf<ServerProfile?>(null) }
+    var pendingChain by remember { mutableStateOf<ProfileChain?>(null) }
 
     // Battery optimization prompt (shown once on first connect)
     var showBatteryOptDialog by remember { mutableStateOf(false) }
     var pendingConnectAfterBatteryPrompt by remember { mutableStateOf(false) }
     var pendingProfileAfterBatteryPrompt by remember { mutableStateOf<ServerProfile?>(null) }
+    var pendingChainAfterBatteryPrompt by remember { mutableStateOf<ProfileChain?>(null) }
 
     // Dialog/sheet state
     var showShareDialog by remember { mutableStateOf(false) }
@@ -210,14 +213,22 @@ fun MainScreen(
     var exportLockDeviceId by remember { mutableStateOf("") }
     var exportLockPasswordVisible by remember { mutableStateOf(false) }
     var exportHideResolvers by remember { mutableStateOf(false) }
+
+    // Tab state (hoisted so FAB and content can both access it)
+    val hasChains = uiState.chains.isNotEmpty()
+    var selectedTab by remember { mutableIntStateOf(0) }
+    if (!hasChains && selectedTab == 1) selectedTab = 0
     var showLiteInfoDialog by remember { mutableStateOf(false) }
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && pendingConnect) {
+            val chain = pendingChain
             val profile = pendingProfile
-            if (profile != null) {
+            if (chain != null) {
+                viewModel.connectChain(chain)
+            } else if (profile != null) {
                 viewModel.connect(profile)
             } else {
                 viewModel.connect()
@@ -225,6 +236,7 @@ fun MainScreen(
         }
         pendingConnect = false
         pendingProfile = null
+        pendingChain = null
     }
 
     val importFileLauncher = rememberLauncherForActivityResult(
@@ -314,9 +326,29 @@ fun MainScreen(
             if (vpnIntent != null) {
                 pendingConnect = true
                 pendingProfile = profile
+                pendingChain = null
                 vpnPermissionLauncher.launch(vpnIntent)
             } else {
                 if (profile != null) viewModel.connect(profile) else viewModel.connect()
+            }
+        }
+    }
+
+    // Helper: proceed with VPN permission check and connect a chain
+    fun proceedWithChainConnect(chain: ProfileChain) {
+        if (activity != null) {
+            if (uiState.proxyOnlyMode) {
+                viewModel.connectChain(chain)
+                return
+            }
+            val vpnIntent = VpnService.prepare(activity)
+            if (vpnIntent != null) {
+                pendingConnect = true
+                pendingChain = chain
+                pendingProfile = null
+                vpnPermissionLauncher.launch(vpnIntent)
+            } else {
+                viewModel.connectChain(chain)
             }
         }
     }
@@ -336,11 +368,21 @@ fun MainScreen(
                     if (!prompted && !pm.isIgnoringBatteryOptimizations(context.packageName)) {
                         pendingConnectAfterBatteryPrompt = true
                         pendingProfileAfterBatteryPrompt = null
+                        // If on Chains tab, remember the active chain for after the battery dialog
+                        pendingChainAfterBatteryPrompt = if (selectedTab == 1 && hasChains) uiState.activeChain else null
                         showBatteryOptDialog = true
                         return
                     }
 
-                    proceedWithConnect()
+                    // If on Chains tab, connect the active chain; otherwise connect active profile
+                    if (selectedTab == 1 && hasChains) {
+                        val chain = uiState.activeChain
+                        if (chain != null) {
+                            proceedWithChainConnect(chain)
+                        }
+                    } else {
+                        proceedWithConnect()
+                    }
                 }
             }
         }
@@ -464,7 +506,7 @@ fun MainScreen(
                 // Connect / Disconnect FAB
                 ConnectFab(
                     connectionState = uiState.connectionState,
-                    hasProfile = uiState.activeProfile != null || uiState.profiles.isNotEmpty(),
+                    hasProfile = uiState.activeProfile != null || uiState.activeChain != null || uiState.profiles.isNotEmpty(),
                     snowflakeBootstrapProgress = uiState.snowflakeBootstrapProgress,
                     onToggleConnection = { requestConnectOrToggle() },
                     modifier = Modifier.padding(
@@ -478,10 +520,6 @@ fun MainScreen(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { paddingValues ->
-        val hasChains = uiState.chains.isNotEmpty()
-        var selectedTab by remember { mutableIntStateOf(0) }
-        // Reset to profiles tab when chains are deleted
-        if (!hasChains && selectedTab == 1) selectedTab = 0
         // Auto-switch to chains tab when a chain is connected
         LaunchedEffect(uiState.connectedChainId) {
             if (uiState.connectedChainId != null && hasChains) selectedTab = 1
@@ -517,7 +555,13 @@ fun MainScreen(
                 when {
                     selectedTab == 1 && hasChains -> {
                         // ── Chains Tab ──────────────────────────────────
+                        val chainListState = rememberLazyListState()
+                        val reorderableChainState = rememberReorderableLazyListState(chainListState) { from, to ->
+                            viewModel.moveChain(from.index, to.index)
+                        }
+
                         LazyColumn(
+                            state = chainListState,
                             contentPadding = PaddingValues(
                                 start = 16.dp, end = 16.dp,
                                 top = 8.dp,
@@ -530,14 +574,34 @@ fun MainScreen(
                                 items = uiState.chains,
                                 key = { "chain_${it.id}" }
                             ) { chain ->
-                                ChainListItem(
-                                    chain = chain,
-                                    profiles = uiState.profiles,
-                                    isConnected = uiState.connectedChainId == chain.id,
-                                    onClick = { viewModel.connectChain(chain) },
-                                    onEditClick = { onNavigateToEditChain(chain.id) },
-                                    onDeleteClick = { viewModel.deleteChain(chain) }
-                                )
+                                ReorderableItem(reorderableChainState, key = "chain_${chain.id}") { isDragging ->
+                                    val elevation = if (isDragging) 8.dp else 0.dp
+
+                                    ChainListItem(
+                                        chain = chain,
+                                        profiles = uiState.profiles,
+                                        isSelected = uiState.activeChain?.id == chain.id,
+                                        isConnected = uiState.connectedChainId == chain.id,
+                                        onClick = { viewModel.setActiveChain(chain) },
+                                        onEditClick = { onNavigateToEditChain(chain.id) },
+                                        onDeleteClick = {
+                                            val isConnected = uiState.connectedChainId == chain.id
+                                            if (isConnected) {
+                                                scope.launch {
+                                                    snackbarHostState.showSnackbar(
+                                                        "Disconnect VPN before deleting this chain"
+                                                    )
+                                                }
+                                            } else {
+                                                viewModel.deleteChain(chain)
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .longPressDraggableHandle()
+                                            .shadow(elevation, RoundedCornerShape(12.dp))
+                                            .zIndex(if (isDragging) 1f else 0f)
+                                    )
+                                }
                             }
                         }
                     }
@@ -643,6 +707,7 @@ fun MainScreen(
             ConnectionStatusStrip(
                 connectionState = uiState.connectionState,
                 activeProfile = uiState.activeProfile,
+                activeChain = uiState.activeChain,
                 isProxyOnly = uiState.proxyOnlyMode,
                 snowflakeBootstrapProgress = uiState.snowflakeBootstrapProgress,
                 uploadSpeed = uiState.uploadSpeed,
@@ -911,8 +976,14 @@ fun MainScreen(
                 // Proceed with connect regardless
                 if (pendingConnectAfterBatteryPrompt) {
                     pendingConnectAfterBatteryPrompt = false
-                    proceedWithConnect(pendingProfileAfterBatteryPrompt)
-                    pendingProfileAfterBatteryPrompt = null
+                    val chain = pendingChainAfterBatteryPrompt
+                    if (chain != null) {
+                        pendingChainAfterBatteryPrompt = null
+                        proceedWithChainConnect(chain)
+                    } else {
+                        proceedWithConnect(pendingProfileAfterBatteryPrompt)
+                        pendingProfileAfterBatteryPrompt = null
+                    }
                 }
             },
             title = { Text("Disable Battery Optimization") },
@@ -940,8 +1011,14 @@ fun MainScreen(
                         // Proceed with connect
                         if (pendingConnectAfterBatteryPrompt) {
                             pendingConnectAfterBatteryPrompt = false
-                            proceedWithConnect(pendingProfileAfterBatteryPrompt)
-                            pendingProfileAfterBatteryPrompt = null
+                            val chain = pendingChainAfterBatteryPrompt
+                            if (chain != null) {
+                                pendingChainAfterBatteryPrompt = null
+                                proceedWithChainConnect(chain)
+                            } else {
+                                proceedWithConnect(pendingProfileAfterBatteryPrompt)
+                                pendingProfileAfterBatteryPrompt = null
+                            }
                         }
                     }
                 ) { Text("Disable") }
@@ -955,8 +1032,14 @@ fun MainScreen(
                         // Proceed with connect without disabling
                         if (pendingConnectAfterBatteryPrompt) {
                             pendingConnectAfterBatteryPrompt = false
-                            proceedWithConnect(pendingProfileAfterBatteryPrompt)
-                            pendingProfileAfterBatteryPrompt = null
+                            val chain = pendingChainAfterBatteryPrompt
+                            if (chain != null) {
+                                pendingChainAfterBatteryPrompt = null
+                                proceedWithChainConnect(chain)
+                            } else {
+                                proceedWithConnect(pendingProfileAfterBatteryPrompt)
+                                pendingProfileAfterBatteryPrompt = null
+                            }
                         }
                     }
                 ) { Text("Skip") }
@@ -1350,8 +1433,9 @@ fun MainScreen(
 
 @Composable
 private fun ChainListItem(
-    chain: app.slipnet.domain.model.ProfileChain,
+    chain: ProfileChain,
     profiles: List<ServerProfile>,
+    isSelected: Boolean = false,
     isConnected: Boolean = false,
     onClick: () -> Unit,
     onEditClick: () -> Unit,
@@ -1362,55 +1446,121 @@ private fun ChainListItem(
         profiles.find { it.id == id }?.let { "${it.name} (${it.tunnelType.displayName})" }
     }
 
-    val borderColor = if (isConnected) ConnectedGreen else null
-    val containerColor = if (isConnected) ConnectedGreen.copy(alpha = 0.08f)
-        else MaterialTheme.colorScheme.secondaryContainer
+    val borderColor = when {
+        isConnected -> ConnectedGreen
+        isSelected -> MaterialTheme.colorScheme.primary
+        else -> null
+    }
+    val cardShape = RoundedCornerShape(12.dp)
+
+    val containerColor = when {
+        isConnected -> ConnectedGreen.copy(alpha = 0.08f)
+        isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+        else -> MaterialTheme.colorScheme.surface
+    }
 
     Card(
         modifier = modifier
             .fillMaxWidth()
             .then(
-                if (borderColor != null) Modifier.border(2.dp, borderColor, RoundedCornerShape(12.dp))
+                if (borderColor != null) Modifier.border(2.dp, borderColor, cardShape)
                 else Modifier
             )
             .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(
-            containerColor = containerColor
-        ),
-        shape = RoundedCornerShape(12.dp)
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        shape = cardShape,
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = chain.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
-                )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = chain.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (isConnected) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Connected",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ConnectedGreen,
+                            modifier = Modifier
+                                .background(
+                                    ConnectedGreen.copy(alpha = 0.15f),
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    } else if (isSelected) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Selected",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.primaryContainer,
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
                 Text(
                     text = layerNames.joinToString(" \u2192 "),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${chain.profileIds.size}-layer chain",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
-                    maxLines = 2
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
-            IconButton(onClick = onEditClick) {
-                Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = "Edit chain",
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-            IconButton(onClick = onDeleteClick) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Delete chain",
-                    modifier = Modifier.size(20.dp)
-                )
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onEditClick,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Edit chain",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(
+                    onClick = onDeleteClick,
+                    enabled = !isConnected,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete chain",
+                        modifier = Modifier.size(18.dp),
+                        tint = if (!isConnected)
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                    )
+                }
             }
         }
     }
@@ -1422,6 +1572,7 @@ private fun ChainListItem(
 private fun ConnectionStatusStrip(
     connectionState: ConnectionState,
     activeProfile: ServerProfile?,
+    activeChain: ProfileChain? = null,
     isProxyOnly: Boolean,
     snowflakeBootstrapProgress: Int,
     uploadSpeed: Long = 0,
@@ -1494,9 +1645,10 @@ private fun ConnectionStatusStrip(
                     Text(
                         text = when {
                             isConnected && connectionState is ConnectionState.Connected ->
-                                connectionState.profile.name
+                                connectionState.chainName ?: connectionState.profile.name
                             isError && connectionState is ConnectionState.Error ->
                                 connectionState.message
+                            activeChain != null -> activeChain.name
                             activeProfile != null -> activeProfile.name
                             else -> "No profile selected"
                         },

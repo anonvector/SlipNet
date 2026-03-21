@@ -461,7 +461,7 @@ fun EditProfileScreen(
                             }
 
                             // DNS Query Size (locked profiles)
-                            if (uiState.isDnsttOrNoizBased || uiState.isSlipstreamBased) {
+                            if (uiState.isDnsttOrNoizBased) {
                                 var showMtuDialogLocked by remember { mutableStateOf(false) }
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                 Row(
@@ -735,7 +735,7 @@ fun EditProfileScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Domain / SSH Server (hidden for DOH and Snowflake profiles)
+                // Domain / SSH Server (hidden for DOH, Snowflake, and SOCKS5 profiles)
                 if (!uiState.isDoh && !uiState.isSnowflake && !uiState.isSocks5) {
                     OutlinedTextField(
                         value = uiState.domain,
@@ -997,8 +997,8 @@ fun EditProfileScreen(
                     }
                 }
 
-                // DNS MTU selector (DNSTT/NoizDNS/Slipstream)
-                if (uiState.isDnsttOrNoizBased || uiState.isSlipstreamBased) {
+                // DNS MTU selector (DNSTT/NoizDNS)
+                if (uiState.isDnsttOrNoizBased) {
                     var showMtuDialog by remember { mutableStateOf(false) }
                     Row(
                         modifier = Modifier

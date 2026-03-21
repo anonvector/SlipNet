@@ -113,7 +113,13 @@ data class ResolverScanResult(
     val responseTimeMs: Long? = null,
     val errorMessage: String? = null,
     val tunnelTestResult: DnsTunnelTestResult? = null,
-    val e2eTestResult: E2eTestResult? = null
+    val e2eTestResult: E2eTestResult? = null,
+    /** True when the resolver passed the Prism HMAC challenge-response probe. */
+    val prismVerified: Boolean? = null,
+    /** Number of Prism probes that passed (e.g. 8 out of 10). */
+    val prismPassedProbes: Int? = null,
+    /** Total Prism probes sent. */
+    val prismTotalProbes: Int? = null
 )
 
 /**

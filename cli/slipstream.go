@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -59,7 +62,7 @@ func findSlipstreamBinary() (string, error) {
 // extractEmbeddedSlipstream extracts the embedded slipstream-client binary
 // to a cache directory. Uses content hash so it's only written once per version.
 func extractEmbeddedSlipstream() (string, error) {
-	if len(embeddedSlipstream) == 0 {
+	if len(embeddedSlipstreamGz) == 0 {
 		return "", nil
 	}
 
@@ -69,8 +72,8 @@ func extractEmbeddedSlipstream() (string, error) {
 		return "", err
 	}
 
-	// Hash the binary content so we only extract once per version
-	hash := sha256.Sum256(embeddedSlipstream)
+	// Hash the compressed content so we only extract once per version
+	hash := sha256.Sum256(embeddedSlipstreamGz)
 	shortHash := hex.EncodeToString(hash[:8])
 	name := fmt.Sprintf("slipstream-client-%s", shortHash)
 	if runtime.GOOS == "windows" {
@@ -84,9 +87,21 @@ func extractEmbeddedSlipstream() (string, error) {
 		return path, nil
 	}
 
+	// Decompress gzip
+	gr, err := gzip.NewReader(bytes.NewReader(embeddedSlipstreamGz))
+	if err != nil {
+		return "", fmt.Errorf("decompress embedded binary: %v", err)
+	}
+	defer gr.Close()
+
+	data, err := io.ReadAll(gr)
+	if err != nil {
+		return "", fmt.Errorf("decompress embedded binary: %v", err)
+	}
+
 	// Write to temp then rename (atomic on same filesystem)
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, embeddedSlipstream, 0755); err != nil {
+	if err := os.WriteFile(tmp, data, 0755); err != nil {
 		os.Remove(tmp)
 		return "", err
 	}
@@ -118,7 +133,7 @@ type SlipstreamProcess struct {
 }
 
 // StartSlipstream spawns the slipstream-client binary.
-func StartSlipstream(profile *Profile, listenHost string, listenPort int, querySize int) (*SlipstreamProcess, error) {
+func StartSlipstream(profile *Profile, listenHost string, listenPort int) (*SlipstreamProcess, error) {
 	binPath, err := findSlipstreamBinary()
 	if err != nil {
 		return nil, err
@@ -161,10 +176,6 @@ func StartSlipstream(profile *Profile, listenHost string, listenPort int, queryS
 	if profile.GSO {
 		args = append(args, "--gso")
 	}
-	if querySize > 0 {
-		args = append(args, "--query-size", fmt.Sprintf("%d", querySize))
-	}
-
 	cmd := exec.Command(binPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -196,7 +207,7 @@ func (p *SlipstreamProcess) Stop() {
 }
 
 // connectSlipstream handles the Slipstream connection flow.
-func connectSlipstream(profile *Profile, listenHost string, listenPort int, querySize int) {
+func connectSlipstream(profile *Profile, listenHost string, listenPort int) {
 	fmt.Println()
 	fmt.Println("╔══════════════════════════════════════════════════╗")
 	fmt.Printf("║          SlipNet CLI  %-25s  ║\n", version)
@@ -209,16 +220,12 @@ func connectSlipstream(profile *Profile, listenHost string, listenPort int, quer
 	if profile.CC != "" {
 		fmt.Printf("  CC:         %s\n", profile.CC)
 	}
-	if querySize > 0 {
-		fmt.Printf("  Query Size: %d bytes\n", querySize)
-	}
-
 	listenAddr := fmt.Sprintf("%s:%d", listenHost, listenPort)
 	fmt.Printf("  SOCKS5:     %s\n", listenAddr)
 	fmt.Println()
 	fmt.Println("  Starting Slipstream tunnel...")
 
-	proc, err := StartSlipstream(profile, listenHost, listenPort, querySize)
+	proc, err := StartSlipstream(profile, listenHost, listenPort)
 	if err != nil {
 		fmt.Printf("\n  Error: %v\n", err)
 		return

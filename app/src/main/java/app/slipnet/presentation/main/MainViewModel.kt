@@ -56,6 +56,7 @@ data class MainUiState(
     // Connection state
     val connectionState: ConnectionState = ConnectionState.Disconnected,
     val activeProfile: ServerProfile? = null,
+    val activeChain: ProfileChain? = null,
     val proxyOnlyMode: Boolean = false,
     val debugLogging: Boolean = false,
     val snowflakeBootstrapProgress: Int = -1,
@@ -371,9 +372,23 @@ class MainViewModel @Inject constructor(
 
     private fun observeChains() {
         viewModelScope.launch {
-            chainRepository.getAllChains().collect { chains ->
-                _uiState.value = _uiState.value.copy(chains = chains)
+            combine(
+                chainRepository.getAllChains(),
+                chainRepository.getActiveChain()
+            ) { chains, activeChain ->
+                Pair(chains, activeChain)
+            }.collect { (chains, activeChain) ->
+                _uiState.value = _uiState.value.copy(
+                    chains = chains,
+                    activeChain = activeChain
+                )
             }
+        }
+    }
+
+    fun setActiveChain(chain: ProfileChain) {
+        viewModelScope.launch {
+            chainRepository.setActiveChain(chain.id)
         }
     }
 
@@ -390,6 +405,20 @@ class MainViewModel @Inject constructor(
                 return@launch
             }
             connectionManager.connectChain(chain, profiles.first())
+        }
+    }
+
+    fun moveChain(fromIndex: Int, toIndex: Int) {
+        val currentList = _uiState.value.chains.toMutableList()
+        if (fromIndex < 0 || fromIndex >= currentList.size ||
+            toIndex < 0 || toIndex >= currentList.size) return
+
+        val item = currentList.removeAt(fromIndex)
+        currentList.add(toIndex, item)
+        _uiState.value = _uiState.value.copy(chains = currentList)
+
+        viewModelScope.launch {
+            chainRepository.updateChainOrder(currentList.map { it.id })
         }
     }
 

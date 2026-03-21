@@ -4357,7 +4357,16 @@ uint64_t picoquic_get_default_connection_id_ttl(picoquic_quic_t* quic)
 void picoquic_set_mtu_max(picoquic_quic_t* quic, uint32_t mtu_max)
 {
     quic->mtu_max = mtu_max;
-    quic->default_tp.max_packet_size = mtu_max;
+    /* The max_packet_size transport parameter tells the peer the largest packet
+     * we are willing to receive.  RFC 9000 §18.2 says values below 1200 are
+     * invalid, and picoquic enforces PICOQUIC_ENFORCED_INITIAL_MTU (129) as
+     * the floor.  When the caller caps mtu_max for DNS-tunnel query-size
+     * purposes, the TP must still stay above this floor so the peer does not
+     * reject the connection with TRANSPORT_PARAMETER_ERROR.  Receiving
+     * packets up to the floor size is always safe because the recv buffer is
+     * much larger than any DNS-transport MTU. */
+    quic->default_tp.max_packet_size = (mtu_max >= PICOQUIC_ENFORCED_INITIAL_MTU)
+        ? mtu_max : PICOQUIC_ENFORCED_INITIAL_MTU;
 }
 
 void picoquic_set_initial_send_mtu(picoquic_quic_t* quic, uint32_t intitial_mtu_ipv4, uint32_t intitial_mtu_ipv6)

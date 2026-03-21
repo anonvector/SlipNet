@@ -396,6 +396,15 @@ fun SettingsScreen(
                     checked = uiState.appendHttpProxyToVpn,
                     onCheckedChange = { viewModel.setAppendHttpProxyToVpn(it) }
                 )
+
+                if (uiState.appendHttpProxyToVpn && !uiState.httpProxyEnabled) {
+                    Text(
+                        text = "To also share the HTTP proxy with other devices, enable \"HTTP proxy\" in Proxy Settings above.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 56.dp, end = 16.dp, bottom = 8.dp)
+                    )
+                }
             }
 
             // DNS Settings

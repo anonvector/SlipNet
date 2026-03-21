@@ -138,6 +138,9 @@ data class ProfileEntity(
     @ColumnInfo(name = "resolvers_hidden", defaultValue = "0")
     val resolversHidden: Boolean = false,
 
+    @ColumnInfo(name = "default_resolvers_json", defaultValue = "[]")
+    val defaultResolversJson: String = "[]",
+
     @ColumnInfo(name = "socks5_server_port", defaultValue = "1080")
     val socks5ServerPort: Int = 1080
 )

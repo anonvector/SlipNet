@@ -106,8 +106,14 @@ class ConfigExporter @Inject constructor() {
 
         // When hideResolvers is true, leave position 4 empty so old versions (v1-v16)
         // cannot see the resolver addresses. The actual resolvers go to a new trailing field.
+        // Use defaultResolvers if available (these are the original config defaults).
+        val defaultResolversStr = if (profile.defaultResolvers.isNotEmpty()) {
+            profile.defaultResolvers.joinToString(RESOLVER_DELIMITER) { resolver ->
+                "${resolver.host}${RESOLVER_PART_DELIMITER}${resolver.port}${RESOLVER_PART_DELIMITER}${if (resolver.authoritative) "1" else "0"}"
+            }
+        } else resolversStr
         val visibleResolvers = if (hideResolvers) "" else resolversStr
-        val hiddenResolvers = if (hideResolvers) resolversStr else ""
+        val hiddenResolvers = if (hideResolvers) defaultResolversStr else ""
 
         return listOf(
             VERSION,

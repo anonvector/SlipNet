@@ -237,7 +237,6 @@ pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSlips
     debug_streams: jboolean,
     idle_poll_interval: jint,
     idle_timeout_ms: jint,
-    max_query_size: jint,
 ) -> jint {
     // Catch panics to prevent crashes
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
@@ -256,7 +255,6 @@ pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeStartSlips
             debug_streams,
             idle_poll_interval,
             idle_timeout_ms,
-            max_query_size,
         )
     }));
 
@@ -285,7 +283,6 @@ fn start_client_impl<'local>(
     debug_streams: jboolean,
     idle_poll_interval: jint,
     idle_timeout_ms: jint,
-    max_query_size: jint,
 ) -> jint {
     info!("nativeStartSlipstreamClient called");
 
@@ -463,7 +460,6 @@ fn start_client_impl<'local>(
     let dbg_streams = debug_streams != JNI_FALSE;
     let idle_poll_ms = idle_poll_interval.max(0) as u64;
     let idle_timeout = idle_timeout_ms.max(0) as u64;
-    let max_qs = max_query_size.max(0) as u32;
 
     let handle = thread::Builder::new()
         .name("slipstream-client".to_string())
@@ -480,7 +476,6 @@ fn start_client_impl<'local>(
                 dbg_streams,
                 idle_poll_ms,
                 idle_timeout,
-                max_qs,
             );
         });
 
@@ -531,7 +526,6 @@ fn run_client_thread(
     debug_streams: bool,
     idle_poll_interval_ms: u64,
     idle_timeout_ms: u64,
-    max_query_size: u32,
 ) {
     info!("Client thread started");
 
@@ -549,7 +543,6 @@ fn run_client_thread(
             debug_streams,
             idle_poll_interval_ms,
             idle_timeout_ms,
-            max_query_size,
         };
 
         // Build tokio runtime

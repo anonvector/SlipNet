@@ -37,6 +37,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -47,7 +48,6 @@ import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PlayArrow
@@ -92,9 +92,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -177,6 +182,42 @@ fun DnsScannerScreen(
         )
     }
 
+    // Last scan IPs dialog
+    if (uiState.showLastScanIpsDialog) {
+        val workingCount = uiState.lastScanWorkingIps.size
+        val e2eCount = uiState.lastScanE2ePassedIps.size
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissLastScanIpsDialog() },
+            title = { Text("Load Last Scan IPs") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Choose which IPs to load as the resolver list:")
+                    FilledTonalButton(
+                        onClick = { viewModel.loadLastScanWorkingIps() },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Working IPs ($workingCount)")
+                    }
+                    FilledTonalButton(
+                        onClick = { viewModel.loadLastScanE2ePassedIps() },
+                        enabled = e2eCount > 0,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("E2E Passed IPs ($e2eCount)")
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissLastScanIpsDialog() }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
 
     Scaffold(
@@ -213,10 +254,12 @@ fun DnsScannerScreen(
             // Hero
             HeroCard()
 
-            // Scan Mode Toggle (only when profile supports E2E)
-            if (uiState.canUseSimpleMode) {
+            // Scan Mode Toggle — hide when only Advanced is available (no profile)
+            if (uiState.canUseSimpleMode || uiState.canUsePrismMode) {
                 ScanModeToggle(
                     scanMode = uiState.scanMode,
+                    canUseSimpleMode = uiState.canUseSimpleMode,
+                    canUsePrismMode = uiState.canUsePrismMode,
                     enabled = !uiState.scannerState.isScanning && !uiState.simpleModeE2eState.isRunning,
                     onModeChange = { viewModel.setScanMode(it) }
                 )
@@ -226,10 +269,10 @@ fun DnsScannerScreen(
             ActionSection(
                 canStartScan = uiState.resolverList.isNotEmpty() && !uiState.scannerState.isScanning,
                 hasResults = uiState.scannerState.results.isNotEmpty(),
-                workingCount = if (uiState.scanMode == ScanMode.SIMPLE) {
-                    uiState.scannerState.results.count { it.e2eTestResult?.success == true }
-                } else {
-                    uiState.scannerState.results.count {
+                workingCount = when (uiState.scanMode) {
+                    ScanMode.SIMPLE -> uiState.scannerState.results.count { it.e2eTestResult?.success == true }
+                    ScanMode.PRISM -> uiState.scannerState.results.count { it.prismVerified == true }
+                    else -> uiState.scannerState.results.count {
                         it.status == ResolverStatus.WORKING &&
                             (it.tunnelTestResult?.score ?: 0) >= 1
                     }
@@ -253,8 +296,12 @@ fun DnsScannerScreen(
                 testUrl = uiState.testUrl,
                 e2eTimeoutMs = uiState.e2eTimeoutMs,
                 e2eConcurrency = uiState.e2eConcurrency,
-                showTestUrl = uiState.profileId != null,
+                showTestUrl = uiState.profileId != null && uiState.scanMode != ScanMode.PRISM,
                 e2eFullVerification = uiState.e2eFullVerification,
+                scanMode = uiState.scanMode,
+                prismProbeCount = uiState.prismProbeCount,
+                prismPassThreshold = uiState.prismPassThreshold,
+                prismResponseSize = uiState.prismResponseSize,
                 onTestDomainChange = { viewModel.updateTestDomain(it) },
                 onScanPortChange = { viewModel.updateScanPort(it) },
                 onTimeoutChange = { viewModel.updateTimeout(it) },
@@ -264,7 +311,10 @@ fun DnsScannerScreen(
                 onTestUrlChange = { viewModel.updateTestUrl(it) },
                 onE2eTimeoutChange = { viewModel.updateE2eTimeout(it) },
                 onE2eConcurrencyChange = { viewModel.updateE2eConcurrency(it) },
-                onE2eFullVerificationChange = { viewModel.updateE2eFullVerification(it) }
+                onE2eFullVerificationChange = { viewModel.updateE2eFullVerification(it) },
+                onPrismProbeCountChange = { viewModel.updatePrismProbeCount(it) },
+                onPrismPassThresholdChange = { viewModel.updatePrismPassThreshold(it) },
+                onPrismResponseSizeChange = { viewModel.updatePrismResponseSize(it) }
             )
 
             // Resolver List
@@ -299,7 +349,9 @@ fun DnsScannerScreen(
                 onCustomRangeInputChange = { viewModel.updateCustomRangeInput(it) },
                 onLoadCustomRange = { viewModel.loadCustomRangeList() },
                 onLoadIrDnsCidrInfo = { viewModel.loadIrDnsCidrInfo() },
-                onLoadIrDnsRange = { viewModel.loadIrDnsRangeList() }
+                onLoadIrDnsRange = { viewModel.loadIrDnsRangeList() },
+                hasLastScanIps = uiState.hasLastScanIps,
+                onLoadLastScanIps = { viewModel.showLastScanIpsDialog() }
             )
 
             // Recent DNS
@@ -381,10 +433,10 @@ private fun ActionSection(
     onViewResults: () -> Unit
 ) {
     val buttonLabel = if (scanMode == ScanMode.SIMPLE) "Start Simple Scan" else "Start Scan"
-    val resultsLabel = if (scanMode == ScanMode.SIMPLE) {
-        "View Results ($workingCount passed)"
-    } else {
-        "View Results ($workingCount working)"
+    val resultsLabel = when (scanMode) {
+        ScanMode.SIMPLE -> "View Results ($workingCount passed)"
+        ScanMode.PRISM -> "View Results ($workingCount verified)"
+        else -> "View Results ($workingCount working)"
     }
 
     Column(
@@ -441,6 +493,8 @@ private fun ActionSection(
 @Composable
 private fun ScanModeToggle(
     scanMode: ScanMode,
+    canUseSimpleMode: Boolean,
+    canUsePrismMode: Boolean = false,
     enabled: Boolean,
     onModeChange: (ScanMode) -> Unit
 ) {
@@ -450,20 +504,22 @@ private fun ScanModeToggle(
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            FilterChip(
-                selected = scanMode == ScanMode.SIMPLE,
-                onClick = { onModeChange(ScanMode.SIMPLE) },
-                enabled = enabled,
-                label = { Text("Simple") },
-                leadingIcon = if (scanMode == ScanMode.SIMPLE) {
-                    { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                } else null,
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                    selectedLabelColor = MaterialTheme.colorScheme.primary,
-                    selectedLeadingIconColor = MaterialTheme.colorScheme.primary
+            if (canUseSimpleMode) {
+                FilterChip(
+                    selected = scanMode == ScanMode.SIMPLE,
+                    onClick = { onModeChange(ScanMode.SIMPLE) },
+                    enabled = enabled,
+                    label = { Text("Simple") },
+                    leadingIcon = if (scanMode == ScanMode.SIMPLE) {
+                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    } else null,
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.primary,
+                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary
+                    )
                 )
-            )
+            }
             FilterChip(
                 selected = scanMode == ScanMode.ADVANCED,
                 onClick = { onModeChange(ScanMode.ADVANCED) },
@@ -478,16 +534,60 @@ private fun ScanModeToggle(
                     selectedLeadingIconColor = MaterialTheme.colorScheme.primary
                 )
             )
+            if (canUsePrismMode) {
+                FilterChip(
+                    selected = scanMode == ScanMode.PRISM,
+                    onClick = { onModeChange(ScanMode.PRISM) },
+                    enabled = enabled,
+                    label = { Text("Prism") },
+                    leadingIcon = if (scanMode == ScanMode.PRISM) {
+                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    } else null,
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.primary,
+                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary
+                    )
+                )
+            }
         }
 
-        Text(
-            text = if (scanMode == ScanMode.SIMPLE)
-                "Scans DNS resolvers and automatically tests each one through the tunnel. Only resolvers that pass the tunnel test are shown."
-            else
-                "Scan DNS resolvers first, then optionally run tunnel test separately.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-        )
+        if (scanMode == ScanMode.PRISM) {
+            val uriHandler = LocalUriHandler.current
+            val linkColor = MaterialTheme.colorScheme.primary
+            val textColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            val textStyle = MaterialTheme.typography.bodySmall
+            val annotated = buildAnnotatedString {
+                withStyle(SpanStyle(color = textColor, fontSize = textStyle.fontSize)) {
+                    append("Server-verified scan: only resolvers that cryptographically prove they reach your specific server are shown. Requires ")
+                }
+                pushStringAnnotation(tag = "URL", annotation = "https://github.com/anonvector/slipgate")
+                withStyle(SpanStyle(color = linkColor, fontSize = textStyle.fontSize)) {
+                    append("SlipGate")
+                }
+                pop()
+                withStyle(SpanStyle(color = textColor, fontSize = textStyle.fontSize)) {
+                    append(" installed on your server.")
+                }
+            }
+            ClickableText(
+                text = annotated,
+                style = textStyle,
+                onClick = { offset ->
+                    annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                        .firstOrNull()?.let { uriHandler.openUri(it.item) }
+                }
+            )
+        } else {
+            Text(
+                text = when (scanMode) {
+                    ScanMode.SIMPLE -> "Scans DNS resolvers and automatically tests each one through the tunnel. Only resolvers that pass the tunnel test are shown."
+                    else -> "Scan DNS resolvers first, then optionally run tunnel test separately."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        }
     }
 }
 
@@ -506,6 +606,10 @@ private fun ConfigurationSection(
     e2eConcurrency: String = "3",
     showTestUrl: Boolean = false,
     e2eFullVerification: Boolean = false,
+    scanMode: ScanMode = ScanMode.ADVANCED,
+    prismProbeCount: String = "20",
+    prismPassThreshold: String = "5",
+    prismResponseSize: String = "0",
     onTestDomainChange: (String) -> Unit,
     onScanPortChange: (String) -> Unit,
     onTimeoutChange: (String) -> Unit,
@@ -515,7 +619,10 @@ private fun ConfigurationSection(
     onTestUrlChange: (String) -> Unit = {},
     onE2eTimeoutChange: (String) -> Unit = {},
     onE2eConcurrencyChange: (String) -> Unit = {},
-    onE2eFullVerificationChange: (Boolean) -> Unit = {}
+    onE2eFullVerificationChange: (Boolean) -> Unit = {},
+    onPrismProbeCountChange: (String) -> Unit = {},
+    onPrismPassThresholdChange: (String) -> Unit = {},
+    onPrismResponseSizeChange: (String) -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -534,30 +641,33 @@ private fun ConfigurationSection(
                 title = "Configuration"
             )
 
-            OutlinedTextField(
-                value = testDomain,
-                onValueChange = onTestDomainChange,
-                label = { Text("Test Domain") },
-                placeholder = {
-                    Text(if (isProfileLocked) "Profile domain (default)" else "google.com")
-                },
-                leadingIcon = {
-                    Icon(
-                        Icons.Default.Search,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                },
-                supportingText = {
-                    Text(
-                        if (isProfileLocked && testDomain.isBlank()) "Using profile domain — enter a domain to override"
-                        else "Domain used to test if resolvers work"
-                    )
-                },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            )
+            // Prism always uses the profile's tunnel domain — hide the editable field.
+            if (scanMode != ScanMode.PRISM) {
+                OutlinedTextField(
+                    value = testDomain,
+                    onValueChange = onTestDomainChange,
+                    label = { Text("Test Domain") },
+                    placeholder = {
+                        Text(if (isProfileLocked) "Profile domain (default)" else "google.com")
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Default.Search,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    supportingText = {
+                        Text(
+                            if (isProfileLocked && testDomain.isBlank()) "Using profile domain — enter a domain to override"
+                            else "Domain used to test if resolvers work"
+                        )
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -593,6 +703,52 @@ private fun ConfigurationSection(
                     modifier = Modifier.weight(0.8f),
                     shape = RoundedCornerShape(12.dp)
                 )
+            }
+
+            if (scanMode == ScanMode.PRISM) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedTextField(
+                        value = prismProbeCount,
+                        onValueChange = onPrismProbeCountChange,
+                        label = { Text("Probes") },
+                        supportingText = { Text("Requests per resolver") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    OutlinedTextField(
+                        value = prismPassThreshold,
+                        onValueChange = onPrismPassThresholdChange,
+                        label = { Text("Pass threshold") },
+                        supportingText = { Text("Min to pass") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedTextField(
+                        value = prismResponseSize,
+                        onValueChange = onPrismResponseSizeChange,
+                        label = { Text("Response size") },
+                        suffix = { Text("B") },
+                        supportingText = { Text("0 = server default") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
             }
 
             if (dnsTransport == DnsTransport.TCP) {
@@ -750,6 +906,7 @@ private fun ConfigurationSection(
                     shape = RoundedCornerShape(12.dp)
                 )
             }
+
         }
     }
 }
@@ -787,7 +944,9 @@ private fun ResolverListSection(
     onCustomRangeInputChange: (String) -> Unit,
     onLoadCustomRange: () -> Unit,
     onLoadIrDnsCidrInfo: () -> Unit,
-    onLoadIrDnsRange: () -> Unit
+    onLoadIrDnsRange: () -> Unit,
+    hasLastScanIps: Boolean = false,
+    onLoadLastScanIps: () -> Unit = {}
 ) {
     var activePanel by remember {
         mutableStateOf(
@@ -1594,6 +1753,23 @@ private fun ResolverListSection(
 
                     ResolverPanel.NONE -> {
                         // Empty — no extra panel shown
+                    }
+                }
+
+                // Load Last Scan button — hide when a panel is open to avoid overlap
+                AnimatedVisibility(visible = hasLastScanIps && !isLoading && activePanel == ResolverPanel.NONE) {
+                    OutlinedButton(
+                        onClick = onLoadLastScanIps,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.History,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Load Last Scan IPs")
                     }
                 }
             }

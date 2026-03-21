@@ -89,6 +89,9 @@ class PreferencesDataStore @Inject constructor(
         val SCANNER_E2E_TIMEOUT_MS = stringPreferencesKey("scanner_e2e_timeout_ms")
         val SCANNER_E2E_CONCURRENCY = stringPreferencesKey("scanner_e2e_concurrency")
         val SCANNER_TEST_URL = stringPreferencesKey("scanner_test_url")
+        val SCANNER_PRISM_PROBE_COUNT = stringPreferencesKey("scanner_prism_probe_count")
+        val SCANNER_PRISM_PASS_THRESHOLD = stringPreferencesKey("scanner_prism_pass_threshold")
+        val SCANNER_PRISM_RESPONSE_SIZE = stringPreferencesKey("scanner_prism_response_size")
         // DNS Scanner Resolver List Selection Keys
         val SCANNER_LIST_SOURCE = stringPreferencesKey("scanner_list_source")
         val SCANNER_COUNTRY = stringPreferencesKey("scanner_country")
@@ -614,12 +617,27 @@ class PreferencesDataStore @Inject constructor(
         prefs[Keys.SCANNER_TEST_URL] ?: "http://www.gstatic.com/generate_204"
     }
 
+    val scannerPrismProbeCount: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_PRISM_PROBE_COUNT] ?: "20"
+    }
+
+    val scannerPrismPassThreshold: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_PRISM_PASS_THRESHOLD] ?: "5"
+    }
+
+    val scannerPrismResponseSize: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_PRISM_RESPONSE_SIZE] ?: "0"
+    }
+
     suspend fun saveScannerSettings(
         timeoutMs: String,
         concurrency: String,
         e2eTimeoutMs: String,
         testUrl: String,
-        e2eConcurrency: String = "3"
+        e2eConcurrency: String = "3",
+        prismProbeCount: String = "10",
+        prismPassThreshold: String = "8",
+        prismResponseSize: String = "1232"
     ) {
         dataStore.edit { prefs ->
             prefs[Keys.SCANNER_TIMEOUT_MS] = timeoutMs
@@ -627,6 +645,9 @@ class PreferencesDataStore @Inject constructor(
             prefs[Keys.SCANNER_E2E_TIMEOUT_MS] = e2eTimeoutMs
             prefs[Keys.SCANNER_TEST_URL] = testUrl
             prefs[Keys.SCANNER_E2E_CONCURRENCY] = e2eConcurrency
+            prefs[Keys.SCANNER_PRISM_PROBE_COUNT] = prismProbeCount
+            prefs[Keys.SCANNER_PRISM_PASS_THRESHOLD] = prismPassThreshold
+            prefs[Keys.SCANNER_PRISM_RESPONSE_SIZE] = prismResponseSize
         }
     }
 

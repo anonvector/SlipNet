@@ -714,10 +714,10 @@ func extractTXTData(resp []byte) string {
 // passThreshold to be considered verified. Results are shown in real time.
 func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, probeCount int, passThreshold int, pubkey []byte, responseSize int) {
 	if probeCount <= 0 {
-		probeCount = 10
+		probeCount = 20
 	}
 	if passThreshold <= 0 || passThreshold > probeCount {
-		passThreshold = probeCount * 8 / 10
+		passThreshold = probeCount / 4
 		if passThreshold < 1 {
 			passThreshold = 1
 		}

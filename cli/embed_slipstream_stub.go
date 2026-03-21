@@ -2,4 +2,4 @@
 
 package main
 
-var embeddedSlipstream []byte // nil — no embedded binary, will search PATH
+var embeddedSlipstreamGz []byte // nil — no embedded binary, will search PATH

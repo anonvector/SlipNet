@@ -147,6 +147,8 @@ data class EditProfileUiState(
     val dnsPayloadSize: Int = 0,
     // Hidden resolvers (imported profile had resolvers hidden by exporter)
     val resolversHidden: Boolean = false,
+    // Original default resolvers from import (preserved when user overrides with custom ones)
+    val defaultResolversList: List<DnsResolver> = emptyList(),
     // When true, user chose to use their own resolver instead of the hidden default
     val useCustomResolver: Boolean = false,
     // SOCKS5 proxy fields
@@ -246,7 +248,32 @@ class EditProfileViewModel @Inject constructor(
                     profileId = profile.id,
                     name = profile.name,
                     domain = profile.domain,
-                    resolvers = if (profile.resolversHidden) "" else profile.resolvers.joinToString(",") { "${it.host}:${it.port}" },
+                    resolvers = run {
+                        val defaults = profile.defaultResolvers.ifEmpty {
+                            if (profile.resolversHidden) profile.resolvers else emptyList()
+                        }
+                        val defaultKeys = defaults.map { "${it.host}:${it.port}" }.toSet()
+                        val currentKeys = profile.resolvers.map { "${it.host}:${it.port}" }.toSet()
+                        val hasCustom = profile.resolversHidden && defaults.isNotEmpty() && currentKeys != defaultKeys
+                        if (hasCustom) {
+                            profile.resolvers.joinToString(",") { "${it.host}:${it.port}" }
+                        } else if (profile.resolversHidden) {
+                            ""
+                        } else {
+                            profile.resolvers.joinToString(",") { "${it.host}:${it.port}" }
+                        }
+                    },
+                    defaultResolversList = profile.defaultResolvers.ifEmpty {
+                        if (profile.resolversHidden) profile.resolvers else emptyList()
+                    },
+                    useCustomResolver = run {
+                        val defaults = profile.defaultResolvers.ifEmpty {
+                            if (profile.resolversHidden) profile.resolvers else emptyList()
+                        }
+                        val defaultKeys = defaults.map { "${it.host}:${it.port}" }.toSet()
+                        val currentKeys = profile.resolvers.map { "${it.host}:${it.port}" }.toSet()
+                        profile.resolversHidden && defaults.isNotEmpty() && currentKeys != defaultKeys
+                    },
                     authoritativeMode = profile.authoritativeMode,
                     keepAliveInterval = profile.keepAliveInterval.toString(),
                     congestionControl = profile.congestionControl,
@@ -971,7 +998,7 @@ class EditProfileViewModel @Inject constructor(
      * If validation fails, errors are shown on the form fields.
      */
     fun saveForScanner() {
-        if (!validateProfile()) return
+        if (!validateProfile(forScanner = true)) return
         persistProfile(forScanner = true)
     }
 
@@ -982,7 +1009,7 @@ class EditProfileViewModel @Inject constructor(
     /**
      * Validate the current profile form. Sets field errors and returns false if invalid.
      */
-    private fun validateProfile(): Boolean {
+    private fun validateProfile(forScanner: Boolean = false): Boolean {
         val state = _uiState.value
         var hasError = false
 
@@ -1015,9 +1042,9 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
-        // Resolver validation (SSH-only, DOH, Snowflake, NaiveProxy-based, and DNSTT with DoH transport don't need resolvers)
-        // Also skip when resolvers are hidden and user isn't overriding with custom ones
-        val skipResolvers = state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
+        // Resolver validation — skip when saving for scanner since the whole point
+        // is to find resolvers. Also skip for tunnel types that don't need resolvers.
+        val skipResolvers = forScanner || state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
                 state.tunnelType == TunnelType.SNOWFLAKE || state.isNaiveBased || state.isSocks5 ||
                 (state.isDnsttOrNoizBased && state.dnsTransport == DnsTransport.DOH) ||
                 (state.resolversHidden && !state.useCustomResolver)
@@ -1122,9 +1149,9 @@ class EditProfileViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isSaving = true)
 
             try {
-                // When resolvers are hidden and user isn't overriding, load existing resolvers from DB
-                val resolversList = if (state.resolversHidden && !state.useCustomResolver && state.profileId != null) {
-                    getProfileByIdUseCase(state.profileId)?.resolvers ?: emptyList()
+                // When resolvers are hidden and user isn't overriding, use the stored default resolvers
+                val resolversList = if (state.resolversHidden && !state.useCustomResolver) {
+                    state.defaultResolversList
                 } else {
                     parseResolvers(state.resolvers, state.authoritativeMode || state.dnsttAuthoritative)
                 }
@@ -1155,7 +1182,7 @@ class EditProfileViewModel @Inject constructor(
                     torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else "",
                     dnsttAuthoritative = if (state.isDnsttOrNoizBased) state.dnsttAuthoritative else false,
                     noizdnsStealth = if (state.isNoizdnsBased) state.noizdnsStealth else false,
-                    dnsPayloadSize = if (state.isDnsttOrNoizBased || state.isSlipstreamBased) state.dnsPayloadSize else 0,
+                    dnsPayloadSize = if (state.isDnsttOrNoizBased) state.dnsPayloadSize else 0,
                     naivePort = if (state.isNaiveBased) (state.naivePort.toIntOrNull() ?: 443) else 443,
                     naiveUsername = if (state.isNaiveBased) state.naiveUsername.trim() else "",
                     naivePassword = if (state.isNaiveBased) state.naivePassword else "",
@@ -1165,8 +1192,9 @@ class EditProfileViewModel @Inject constructor(
                     expirationDate = state.expirationDate,
                     allowSharing = state.allowSharing,
                     boundDeviceId = state.boundDeviceId,
-                    resolversHidden = state.resolversHidden && !state.useCustomResolver,
-                    socks5ServerPort = if (state.isSocks5) (state.socks5ServerPort.toIntOrNull() ?: 1080) else 1080,
+                    resolversHidden = state.resolversHidden,
+                    defaultResolvers = state.defaultResolversList,
+                    socks5ServerPort = if (state.isSocks5) (state.socks5ServerPort.toIntOrNull() ?: 1080) else 1080
                 )
 
                 val savedId = saveProfileUseCase(profile)

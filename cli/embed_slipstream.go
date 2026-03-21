@@ -6,5 +6,5 @@ import (
 	_ "embed"
 )
 
-//go:embed embedded/slipstream-client
-var embeddedSlipstream []byte
+//go:embed embedded/slipstream-client.gz
+var embeddedSlipstreamGz []byte

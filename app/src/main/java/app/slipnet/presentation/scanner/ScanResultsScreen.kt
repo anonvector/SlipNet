@@ -142,7 +142,7 @@ fun ScanResultsScreen(
     val prefs = remember { context.getSharedPreferences("scanner_ui", Context.MODE_PRIVATE) }
     var sortOption by remember {
         val initial = SortOption.entries.find { it.name == prefs.getString("sort_option", null) } ?: SortOption.NONE
-        viewModel.updateE2eSortOption(E2eSortOption.valueOf(initial.name))
+        viewModel.updateE2eSortOption(E2eSortOption.entries.find { it.name == initial.name } ?: E2eSortOption.NONE)
         mutableStateOf(initial)
     }
     var scoreFilter by remember {
@@ -152,7 +152,7 @@ fun ScanResultsScreen(
     }
     var showSortMenu by remember { mutableStateOf(false) }
     var showFilterMenu by remember { mutableStateOf(false) }
-    var showAllWorking by remember { mutableStateOf(false) }
+    var showAllWorking by remember { mutableStateOf(uiState.scanMode != ScanMode.SIMPLE) }
     var searchQuery by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
     // null = no dialog, "copy" or "export" = pending action
@@ -172,13 +172,19 @@ fun ScanResultsScreen(
     }
 
     // Single-pass filter: visible E2E-passed and Stage 1 working IPs (respects search/score)
-    val (visibleE2eIps, visibleStage1Ips) = remember(uiState.scannerState.results, scoreFilter, searchQuery) {
+    val isPrism = uiState.scanMode == ScanMode.PRISM
+    val (visibleE2eIps, visibleStage1Ips) = remember(uiState.scannerState.results, scoreFilter, searchQuery, isPrism) {
         val query = searchQuery.trim()
         val e2e = mutableListOf<String>()
         val stage1 = mutableListOf<String>()
         for (result in uiState.scannerState.results) {
-            val matchesFilters = (result.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
-                (query.isEmpty() || result.host.contains(query))
+            // Prism results have no tunnelTestResult (score), skip score filter for them
+            val matchesFilters = if (isPrism) {
+                result.prismVerified == true && (query.isEmpty() || result.host.contains(query))
+            } else {
+                (result.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
+                    (query.isEmpty() || result.host.contains(query))
+            }
             if (!matchesFilters) continue
             if (result.status == ResolverStatus.WORKING) stage1.add(result.host)
             if (result.e2eTestResult?.success == true) e2e.add(result.host)
@@ -335,6 +341,8 @@ fun ScanResultsScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
+            val isPrismMode = uiState.scanMode == ScanMode.PRISM
+
             // Progress
             if (uiState.scanMode == ScanMode.SIMPLE) {
                 val showProgress = uiState.scannerState.isScanning ||
@@ -350,10 +358,14 @@ fun ScanResultsScreen(
                 }
             } else {
                 if (uiState.scannerState.isScanning || uiState.scannerState.scannedCount > 0) {
-                    val workingWithScore = remember(uiState.scannerState.results) {
-                        uiState.scannerState.results.count {
-                            it.status == ResolverStatus.WORKING &&
-                                (it.tunnelTestResult?.score ?: 0) >= 1
+                    val workingCount = remember(uiState.scannerState.results, isPrismMode) {
+                        if (isPrismMode) {
+                            uiState.scannerState.results.count { it.prismVerified == true }
+                        } else {
+                            uiState.scannerState.results.count {
+                                it.status == ResolverStatus.WORKING &&
+                                    (it.tunnelTestResult?.score ?: 0) >= 1
+                            }
                         }
                     }
                     ResultsProgressSection(
@@ -361,7 +373,7 @@ fun ScanResultsScreen(
                         progress = uiState.scannerState.progress,
                         totalCount = uiState.scannerState.totalCount,
                         scannedCount = uiState.scannerState.scannedCount,
-                        workingCount = workingWithScore,
+                        workingCount = workingCount,
                         onStopScan = { viewModel.stopScan() },
                         onResumeScan = { viewModel.resumeScan() },
                         e2eSupported = uiState.e2eSupported,
@@ -387,7 +399,7 @@ fun ScanResultsScreen(
 
             // VPN active warning for E2E
             AnimatedVisibility(
-                visible = uiState.isVpnActive && uiState.profileId != null &&
+                visible = !isPrismMode && uiState.isVpnActive && uiState.profileId != null &&
                         !uiState.scannerState.isScanning && uiState.scannerState.workingCount > 0,
                 enter = expandVertically() + fadeIn(),
                 exit = shrinkVertically() + fadeOut()
@@ -515,9 +527,20 @@ fun ScanResultsScreen(
 
             // Results
             val isSimpleMode = uiState.scanMode == ScanMode.SIMPLE
-            val displayResults = remember(uiState.scannerState.results, scoreFilter, sortOption, isSimpleMode, showAllWorking, searchQuery) {
+            val displayResults = remember(uiState.scannerState.results, scoreFilter, sortOption, isSimpleMode, isPrismMode, showAllWorking, searchQuery, hasE2eResults) {
                 val query = searchQuery.trim()
-                val filtered = if (isSimpleMode && !showAllWorking) {
+                val filtered = if (isPrismMode && !showAllWorking && hasE2eResults) {
+                    uiState.scannerState.results.filter {
+                        it.prismVerified == true &&
+                            it.e2eTestResult?.success == true &&
+                            (query.isEmpty() || it.host.contains(query))
+                    }
+                } else if (isPrismMode) {
+                    uiState.scannerState.results.filter {
+                        it.prismVerified == true &&
+                            (query.isEmpty() || it.host.contains(query))
+                    }
+                } else if (isSimpleMode && !showAllWorking) {
                     uiState.scannerState.results.filter {
                         it.e2eTestResult?.success == true &&
                             (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
@@ -526,6 +549,13 @@ fun ScanResultsScreen(
                 } else if (isSimpleMode) {
                     uiState.scannerState.results.filter {
                         it.status == ResolverStatus.WORKING &&
+                            (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
+                            (query.isEmpty() || it.host.contains(query))
+                    }
+                } else if (!showAllWorking && hasE2eResults) {
+                    uiState.scannerState.results.filter {
+                        it.status == ResolverStatus.WORKING &&
+                            it.e2eTestResult?.success == true &&
                             (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
                             (query.isEmpty() || it.host.contains(query))
                     }
@@ -550,6 +580,9 @@ fun ScanResultsScreen(
                         compareByDescending<ResolverScanResult> { it.e2eTestResult?.success == true }
                             .thenBy { it.e2eTestResult?.totalMs ?: Long.MAX_VALUE }
                     )
+                    SortOption.PRISM_SCORE -> filtered.sortedByDescending {
+                        it.prismPassedProbes ?: 0
+                    }
                     SortOption.NONE -> if (isSimpleMode) {
                         filtered.sortedBy { it.e2eTestResult?.totalMs ?: Long.MAX_VALUE }
                     } else filtered
@@ -686,6 +719,7 @@ fun ScanResultsScreen(
                                         SortOption.IP -> "IP"
                                         SortOption.SCORE -> "Score"
                                         SortOption.E2E_SPEED -> "E2E"
+                                        SortOption.PRISM_SCORE -> "Prism"
                                     })
                                 },
                                 trailingIcon = {
@@ -701,19 +735,26 @@ fun ScanResultsScreen(
                                 expanded = showSortMenu,
                                 onDismissRequest = { showSortMenu = false }
                             ) {
-                                listOf(
+                                val sortOptions = if (isPrismMode) listOfNotNull(
+                                    SortOption.NONE to "None",
+                                    SortOption.SPEED to "Speed",
+                                    SortOption.IP to "IP",
+                                    SortOption.PRISM_SCORE to "Prism Score",
+                                    if (hasE2eResults) SortOption.E2E_SPEED to "E2E" else null
+                                ) else listOf(
                                     SortOption.NONE to "None",
                                     SortOption.SPEED to "Speed",
                                     SortOption.IP to "IP",
                                     SortOption.SCORE to "Score",
                                     SortOption.E2E_SPEED to "E2E"
-                                ).forEach { (option, label) ->
+                                )
+                                sortOptions.forEach { (option, label) ->
                                     DropdownMenuItem(
                                         text = { Text(label) },
                                         onClick = {
                                             sortOption = option
                                             prefs.edit().putString("sort_option", option.name).apply()
-                                            viewModel.updateE2eSortOption(E2eSortOption.valueOf(option.name))
+                                            viewModel.updateE2eSortOption(E2eSortOption.entries.find { it.name == option.name } ?: E2eSortOption.NONE)
                                             showSortMenu = false
                                         },
                                         leadingIcon = if (sortOption == option) ({
@@ -725,7 +766,7 @@ fun ScanResultsScreen(
                         }
 
                         // Score filter dropdown
-                        Box {
+                        if (!isPrismMode) Box {
                             FilterChip(
                                 selected = true,
                                 onClick = { showFilterMenu = true },
@@ -760,8 +801,8 @@ fun ScanResultsScreen(
                             }
                         }
 
-                        // All working chip (simple mode only)
-                        if (uiState.scanMode == ScanMode.SIMPLE) {
+                        // Toggle E2E-passed-only vs all working
+                        if (uiState.scanMode == ScanMode.SIMPLE || hasE2eResults) {
                             FilterChip(
                                 selected = showAllWorking,
                                 onClick = { showAllWorking = !showAllWorking },
@@ -817,7 +858,7 @@ private enum class ScoreFilter(val label: String, val minScore: Int) {
 }
 
 private enum class SortOption {
-    NONE, SPEED, IP, SCORE, E2E_SPEED
+    NONE, SPEED, IP, SCORE, E2E_SPEED, PRISM_SCORE
 }
 
 
@@ -1459,14 +1500,27 @@ private fun ResultsResolverItem(
                         )
                     }
 
+                    if (result.prismPassedProbes != null && result.prismTotalProbes != null) {
+                        Text(
+                            text = "${result.prismPassedProbes}/${result.prismTotalProbes}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = when {
+                                result.prismPassedProbes == result.prismTotalProbes -> WorkingGreen
+                                result.prismPassedProbes >= result.prismTotalProbes - 1 -> CensoredOrange
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+
                     result.tunnelTestResult?.let { tunnelResult ->
                         Text(
                             text = "${tunnelResult.score}/${tunnelResult.maxScore}",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = when {
-                                tunnelResult.score == tunnelResult.maxScore -> WorkingGreen
-                                tunnelResult.score >= tunnelResult.maxScore - 1 -> CensoredOrange
+                                tunnelResult.score >= (tunnelResult.maxScore * 0.8f) -> WorkingGreen
+                                tunnelResult.score >= (tunnelResult.maxScore * 0.6f) -> CensoredOrange
                                 else -> ErrorRed
                             }
                         )
@@ -1516,6 +1570,8 @@ private fun ResultsResolverItem(
                 result.e2eTestResult?.let { e2e ->
                     E2eResultChip(e2e)
                 }
+
+
             }
 
             if (showSelection && result.status == ResolverStatus.WORKING && onToggleSelection != null) {
@@ -1568,6 +1624,7 @@ private fun E2eResultChip(e2e: E2eTestResult) {
         }
     }
 }
+
 
 @Composable
 private fun ResultsStatusIcon(status: ResolverStatus) {

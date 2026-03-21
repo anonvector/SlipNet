@@ -30,6 +30,8 @@ class NotificationHelper @Inject constructor(
         const val AUTO_RECONNECT_NOTIFICATION_ID = 4
         const val PROBE_FAIL_NOTIFICATION_ID = 5
         private const val REQUEST_CODE_PROBE_RECONNECT = 105
+        const val SCAN_NOTIFICATION_ID = 6
+        private const val REQUEST_CODE_SCAN_STOP = 106
     }
 
     private fun createServicePendingIntent(
@@ -308,6 +310,55 @@ class NotificationHelper @Inject constructor(
             .addAction(R.drawable.ic_vpn_key, "Reconnect", reconnectPendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+    }
+
+    fun createScanNotification(
+        scannedCount: Int,
+        totalCount: Int,
+        workingCount: Int,
+        isE2eRunning: Boolean = false
+    ): Notification {
+        val mainIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val mainPendingIntent = PendingIntent.getActivity(
+            context,
+            REQUEST_CODE_MAIN,
+            mainIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val stopIntent = Intent(context, ScanService::class.java).apply {
+            action = ScanService.ACTION_STOP
+        }
+        val stopPendingIntent = createServicePendingIntent(
+            requestCode = REQUEST_CODE_SCAN_STOP,
+            intent = stopIntent
+        )
+
+        val title = when {
+            isE2eRunning && scannedCount >= totalCount && totalCount > 0 -> "Testing tunnel connections"
+            isE2eRunning -> "Scanning & testing resolvers"
+            else -> "Scanning DNS resolvers"
+        }
+        val text = if (totalCount > 0) {
+            "$scannedCount / $totalCount checked  \u2022  $workingCount working"
+        } else {
+            "Starting scan\u2026"
+        }
+
+        return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_SCAN_STATUS)
+            .setSmallIcon(R.drawable.ic_vpn_key)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setContentIntent(mainPendingIntent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setProgress(totalCount, scannedCount, totalCount == 0)
+            .addAction(R.drawable.ic_vpn_key, "Stop", stopPendingIntent)
             .build()
     }
 

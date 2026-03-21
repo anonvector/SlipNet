@@ -52,7 +52,7 @@ func runInteractive() {
 		fmt.Println("║  2) DNS Scanner                                  ║")
 		fmt.Println("║  3) DNS Scanner + E2E Test                       ║")
 		fmt.Println("║  4) Quick Scan (single IP)                       ║")
-		fmt.Println("║  5) Verify Scanner (challenge-response)          ║")
+		fmt.Println("║  5) Prism (server-verified scan)                 ║")
 		fmt.Println("║  6) Help                                         ║")
 		fmt.Println("║  0) Exit                                         ║")
 		fmt.Println("║                                                  ║")
@@ -130,66 +130,69 @@ func interactiveConnectWithURI(uri string) {
 	directStr := promptDefault("  Direct mode? (y/N)", "n")
 	forceDirectMode := strings.HasPrefix(strings.ToLower(directStr), "y")
 
-	fmt.Println()
-	fmt.Println("  DNS query size (smaller = stealthier, slower):")
-	fmt.Println("    0) Full capacity (fastest, default)")
-	fmt.Println("    1) 100 bytes — large, good balance")
-	fmt.Println("    2) 80 bytes  — medium, less conspicuous")
-	fmt.Println("    3) 60 bytes  — small, stealthier")
-	fmt.Println("    4) 50 bytes  — minimum, most stealthy")
-	fmt.Println("    5) Custom")
-	fmt.Println()
-	qsChoice := promptDefault("  Select", "0")
 	var querySize int
-	switch qsChoice {
-	case "0", "":
-		// full capacity
-	case "1":
-		querySize = 100
-	case "2":
-		querySize = 80
-	case "3":
-		querySize = 60
-	case "4":
-		querySize = 50
-	case "5":
-		custom := prompt("  Enter size in bytes (>= 50): ")
-		if v, err := strconv.Atoi(custom); err == nil && v >= 50 {
-			querySize = v
-		} else {
-			fmt.Println("  Invalid value, using full capacity.")
-		}
-	default:
-		// Try parsing as a direct number
-		if v, err := strconv.Atoi(qsChoice); err == nil && v >= 50 {
-			querySize = v
-		}
-	}
-
 	var queryPadding int
-	if querySize > 0 {
+	// Query size and padding only apply to DNSTT/NoizDNS, not Slipstream
+	if profile.TunnelType != "ss" && profile.TunnelType != "slipstream_ssh" {
 		fmt.Println()
-		fmt.Println("  Random query padding (adds 0–N bytes to each query to vary size):")
-		fmt.Println("    0) None (default)")
-		fmt.Println("    1) 20 bytes  — 50–70 byte range when combined with size 50")
-		fmt.Println("    2) Custom")
+		fmt.Println("  DNS query size (smaller = stealthier, slower):")
+		fmt.Println("    0) Full capacity (fastest, default)")
+		fmt.Println("    1) 100 bytes — large, good balance")
+		fmt.Println("    2) 80 bytes  — medium, less conspicuous")
+		fmt.Println("    3) 60 bytes  — small, stealthier")
+		fmt.Println("    4) 50 bytes  — minimum, most stealthy")
+		fmt.Println("    5) Custom")
 		fmt.Println()
-		qpChoice := promptDefault("  Select", "0")
-		switch qpChoice {
+		qsChoice := promptDefault("  Select", "0")
+		switch qsChoice {
 		case "0", "":
-			// none
+			// full capacity
 		case "1":
-			queryPadding = 20
+			querySize = 100
 		case "2":
-			custom := prompt("  Enter max padding bytes (> 0): ")
-			if v, err := strconv.Atoi(custom); err == nil && v > 0 {
-				queryPadding = v
+			querySize = 80
+		case "3":
+			querySize = 60
+		case "4":
+			querySize = 50
+		case "5":
+			custom := prompt("  Enter size in bytes (>= 50): ")
+			if v, err := strconv.Atoi(custom); err == nil && v >= 50 {
+				querySize = v
 			} else {
-				fmt.Println("  Invalid value, no padding.")
+				fmt.Println("  Invalid value, using full capacity.")
 			}
 		default:
-			if v, err := strconv.Atoi(qpChoice); err == nil && v > 0 {
-				queryPadding = v
+			// Try parsing as a direct number
+			if v, err := strconv.Atoi(qsChoice); err == nil && v >= 50 {
+				querySize = v
+			}
+		}
+
+		if querySize > 0 {
+			fmt.Println()
+			fmt.Println("  Random query padding (adds 0–N bytes to each query to vary size):")
+			fmt.Println("    0) None (default)")
+			fmt.Println("    1) 20 bytes  — 50–70 byte range when combined with size 50")
+			fmt.Println("    2) Custom")
+			fmt.Println()
+			qpChoice := promptDefault("  Select", "0")
+			switch qpChoice {
+			case "0", "":
+				// none
+			case "1":
+				queryPadding = 20
+			case "2":
+				custom := prompt("  Enter max padding bytes (> 0): ")
+				if v, err := strconv.Atoi(custom); err == nil && v > 0 {
+					queryPadding = v
+				} else {
+					fmt.Println("  Invalid value, no padding.")
+				}
+			default:
+				if v, err := strconv.Atoi(qpChoice); err == nil && v > 0 {
+					queryPadding = v
+				}
 			}
 		}
 	}
@@ -355,6 +358,10 @@ func interactiveScan(withE2E bool) {
 	if v, _ := strconv.Atoi(timeout); v > 0 {
 		args = append(args, "--timeout", timeout)
 	}
+	qs := promptDefault("  Query size in bytes (blank = full capacity)", "")
+	if v, err := strconv.Atoi(qs); err == nil && v >= 50 {
+		args = append(args, "--query-size", qs)
+	}
 	if withE2E {
 		e2eTimeout := promptDefault("  E2E timeout (ms)", "15000")
 		if v, _ := strconv.Atoi(e2eTimeout); v > 0 {
@@ -394,15 +401,14 @@ func interactiveQuickScan() {
 
 func interactiveVerifyScan() {
 	fmt.Println()
-	fmt.Println("  ── Verify Scanner (challenge-response) ──────────")
+	fmt.Println("  ── Prism ─────────────────────────────────────────")
 	fmt.Println()
 	fmt.Println("  Requires SlipGate running on the server.")
-	fmt.Println("  Repeats multiple rounds to filter unreliable resolvers.")
+	fmt.Println("  Sends multiple HMAC probes per resolver to verify")
+	fmt.Println("  authenticity and filter unreliable resolvers.")
 	fmt.Println()
 	fmt.Println("  Requires the server public key (from slipnet:// config")
 	fmt.Println("  or --pubkey) to authenticate responses.")
-	fmt.Println("  Optionally request a specific response size to test")
-	fmt.Println("  resolver packet size limits.")
 	fmt.Println()
 
 	var args []string
@@ -425,12 +431,6 @@ func interactiveVerifyScan() {
 			return
 		}
 		args = append(args, "--domain", domain, "--pubkey", pubkey, "--verify")
-	}
-
-	// Rounds
-	roundsStr := promptDefault("  Rounds", "3")
-	if v, _ := strconv.Atoi(roundsStr); v > 0 {
-		args = append(args, "--rounds", roundsStr)
 	}
 
 	// IP source
@@ -498,8 +498,31 @@ func interactiveVerifyScan() {
 		return
 	}
 
+	// Probe settings
+	fmt.Println()
+	fmt.Println("  Probe settings:")
+	probes := promptDefault("  Probes per resolver (1-50)", "10")
+	if v, err := strconv.Atoi(probes); err == nil && v > 0 {
+		if v > 50 {
+			probes = "50"
+		}
+		args = append(args, "--rounds", probes)
+	}
+	threshold := promptDefault("  Pass threshold (min probes to pass)", "8")
+	if v, err := strconv.Atoi(threshold); err == nil && v > 0 {
+		if pv, _ := strconv.Atoi(probes); v > pv {
+			threshold = probes
+		}
+		args = append(args, "--threshold", threshold)
+	}
+
 	// Response size
-	respSize := promptDefault("  Response size in bytes (blank = server default)", "")
+	fmt.Println()
+	fmt.Println("  Response size: request the server to pad its DNS response.")
+	fmt.Println("  Tests whether resolvers can handle larger responses.")
+	fmt.Println("  Typical range: 200–1232 bytes (1232 = dnsflagday max UDP).")
+	fmt.Println("  Leave blank for the server's default response size.")
+	respSize := promptDefault("  Response size in bytes (200-1232, blank = default)", "")
 	if v, err := strconv.Atoi(respSize); err == nil && v > 0 {
 		args = append(args, "--response-size", respSize)
 	}

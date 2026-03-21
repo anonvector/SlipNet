@@ -143,7 +143,10 @@ class VpnRepositoryImpl @Inject constructor(
     suspend fun startDnsttProxy(
         profile: ServerProfile,
         portOverride: Int? = null,
-        hostOverride: String? = null
+        hostOverride: String? = null,
+        socksProxyAddr: String? = null,
+        socksProxyUser: String? = null,
+        socksProxyPass: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
@@ -161,7 +164,10 @@ class VpnRepositoryImpl @Inject constructor(
             listenPort = proxyPort,
             listenHost = proxyHost,
             authoritativeMode = profile.dnsttAuthoritative,
-            maxPayload = profile.dnsPayloadSize
+            maxPayload = profile.dnsPayloadSize,
+            socksProxyAddr = socksProxyAddr,
+            socksProxyUser = socksProxyUser,
+            socksProxyPass = socksProxyPass
         )
 
         if (result.isSuccess) {
@@ -184,7 +190,10 @@ class VpnRepositoryImpl @Inject constructor(
     suspend fun startNoizdnsProxy(
         profile: ServerProfile,
         portOverride: Int? = null,
-        hostOverride: String? = null
+        hostOverride: String? = null,
+        socksProxyAddr: String? = null,
+        socksProxyUser: String? = null,
+        socksProxyPass: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
@@ -203,7 +212,10 @@ class VpnRepositoryImpl @Inject constructor(
             authoritativeMode = profile.dnsttAuthoritative,
             noizMode = true,
             stealthMode = profile.noizdnsStealth,
-            maxPayload = profile.dnsPayloadSize
+            maxPayload = profile.dnsPayloadSize,
+            socksProxyAddr = socksProxyAddr,
+            socksProxyUser = socksProxyUser,
+            socksProxyPass = socksProxyPass
         )
 
         if (result.isSuccess) {
@@ -670,8 +682,7 @@ class VpnRepositoryImpl @Inject constructor(
             debugPoll = debugLogging,
             debugStreams = debugLogging,
             idlePollIntervalMs = 10000,
-            idleTimeoutMs = 120000,
-            maxQuerySize = profile.dnsPayloadSize
+            idleTimeoutMs = 120000
         )
         if (result.isFailure) {
             val exception = result.exceptionOrNull()
