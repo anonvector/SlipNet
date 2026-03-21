@@ -99,6 +99,9 @@ app/schemas/
 # Release build output
 app/release/
 
+# Baseline profile DEX metadata (build artifacts)
+*.dm
+
 # DNS Multiplexer (separate repo: anonvector/DNS-Multiplexer)
 dns-multiplexer/
 
@@ -108,6 +111,7 @@ noizdns-deploy/
 # Embedded slipstream binary (placed by CI, not committed)
 cli/embedded/slipstream-client
 cli/embedded/slipstream-client.exe
+cli/embedded/slipstream-client.gz
 
 # CLI build output
 cli/slipnet
