@@ -349,7 +349,7 @@ class NotificationHelper @Inject constructor(
         }
 
         return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_SCAN_STATUS)
-            .setSmallIcon(R.drawable.ic_vpn_key)
+            .setSmallIcon(R.drawable.ic_search)
             .setContentTitle(title)
             .setContentText(text)
             .setContentIntent(mainPendingIntent)
@@ -358,7 +358,7 @@ class NotificationHelper @Inject constructor(
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setProgress(totalCount, scannedCount, totalCount == 0)
-            .addAction(R.drawable.ic_vpn_key, "Stop", stopPendingIntent)
+            .addAction(R.drawable.ic_search, "Stop", stopPendingIntent)
             .build()
     }
 
