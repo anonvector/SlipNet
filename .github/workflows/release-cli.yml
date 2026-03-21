@@ -62,6 +62,7 @@ jobs:
 
       - name: Build slipstream-client
         working-directory: app/src/main/rust/slipstream-rust
+        shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
