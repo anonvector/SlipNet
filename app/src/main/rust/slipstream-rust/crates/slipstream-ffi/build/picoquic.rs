@@ -28,7 +28,13 @@ pub(crate) fn build_picoquic(
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join(".picoquic-build"));
 
-    let mut command = Command::new(script);
+    let mut command = if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("bash");
+        cmd.arg(&script);
+        cmd
+    } else {
+        Command::new(&script)
+    };
     command
         .env("PICOQUIC_DIR", picoquic_dir)
         .env("PICOQUIC_BUILD_DIR", build_dir)
