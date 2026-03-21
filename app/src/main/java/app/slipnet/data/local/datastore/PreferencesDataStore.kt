@@ -618,7 +618,7 @@ class PreferencesDataStore @Inject constructor(
     }
 
     val scannerPrismProbeCount: Flow<String> = dataStore.data.map { prefs ->
-        prefs[Keys.SCANNER_PRISM_PROBE_COUNT] ?: "20"
+        prefs[Keys.SCANNER_PRISM_PROBE_COUNT] ?: "10"
     }
 
     val scannerPrismPassThreshold: Flow<String> = dataStore.data.map { prefs ->

@@ -544,7 +544,7 @@ func runScanCommand(args []string) {
 	var e2eTimeout = 15000
 	var configURI string
 	var verifyMode bool
-	var verifyRounds = 20
+	var verifyRounds = 10
 	var passThreshold = 5
 	var responseSize int
 	var querySize int
@@ -783,7 +783,7 @@ Options (scan):
   --config URI        Extract domain/pubkey/mode from slipnet:// URI (auto-enables E2E)
   --verify            Prism mode: server-verified scan to authenticate the tunnel server
                       Requires --pubkey or --config to provide the server's public key
-  --rounds N          Probes per resolver (default: 20, used with --verify)
+  --rounds N          Probes per resolver (default: 10, used with --verify)
   --threshold N       Required passing probes (default: 5, used with --verify)
   --response-size N   Request server to pad response to N bytes (used with --verify)
                       0 = server default, 200-4096 = custom size
