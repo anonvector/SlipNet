@@ -29,7 +29,14 @@ pub(crate) fn build_picoquic(
         .unwrap_or_else(|| root.join(".picoquic-build"));
 
     let mut command = if cfg!(target_os = "windows") {
-        let mut cmd = Command::new("bash");
+        // Use Git Bash, not WSL bash which may have no distro installed.
+        let git_bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
+        let shell = if git_bash.exists() {
+            git_bash.as_os_str().to_os_string()
+        } else {
+            std::ffi::OsString::from("bash")
+        };
+        let mut cmd = Command::new(shell);
         cmd.arg(&script);
         cmd
     } else {
