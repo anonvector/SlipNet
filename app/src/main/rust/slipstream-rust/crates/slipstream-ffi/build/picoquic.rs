@@ -30,12 +30,7 @@ pub(crate) fn build_picoquic(
 
     let mut command = if cfg!(target_os = "windows") {
         // Use Git Bash, not WSL bash which may have no distro installed.
-        let git_bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
-        let shell = if git_bash.exists() {
-            git_bash.as_os_str().to_os_string()
-        } else {
-            std::ffi::OsString::from("bash")
-        };
+        let shell = find_git_bash().unwrap_or_else(|| std::ffi::OsString::from("bash"));
         let mut cmd = Command::new(shell);
         cmd.arg(&script);
         cmd
@@ -293,5 +288,49 @@ fn find_lib_variant<'a>(dir: &Path, underscored: &'a str, hyphenated: &'a str) -
     if hyphen_path.exists() {
         return Some(hyphenated);
     }
+    None
+}
+
+/// Find Git Bash on Windows. Checks well-known paths first, then derives the
+/// path from `git.exe` in PATH (works on GitHub Actions runners where Git may
+/// be installed in a non-standard location).
+#[cfg(target_os = "windows")]
+fn find_git_bash() -> Option<std::ffi::OsString> {
+    let candidates = [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+    ];
+    for path in candidates {
+        if Path::new(path).exists() {
+            return Some(std::ffi::OsString::from(path));
+        }
+    }
+    // Derive from git.exe in PATH: git.exe is typically at <git>/cmd/git.exe,
+    // so bash.exe is at <git>/bin/bash.exe.
+    if let Ok(output) = Command::new("where").arg("git").output() {
+        if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
+            if let Some(git_path) = stdout.lines().next() {
+                let git = Path::new(git_path.trim());
+                if let Some(cmd_dir) = git.parent() {
+                    if let Some(git_root) = cmd_dir.parent() {
+                        let bash = git_root.join("bin").join("bash.exe");
+                        if bash.exists() {
+                            return Some(bash.into_os_string());
+                        }
+                        let bash = git_root.join("usr").join("bin").join("bash.exe");
+                        if bash.exists() {
+                            return Some(bash.into_os_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn find_git_bash() -> Option<std::ffi::OsString> {
     None
 }
