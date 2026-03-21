@@ -65,6 +65,10 @@
                 <data android:scheme="slipnet" />
                 <data android:scheme="slipnet-enc" />
             </intent-filter>
+            <!-- Opens app when user long-presses the Quick Settings tile -->
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+            </intent-filter>
         </activity>
 
         <!-- VPN Service -->
