@@ -65,6 +65,11 @@ if [[ -n "${ANDROID_REQUESTED}" ]]; then
   fi
 fi
 
+# macOS cross-compilation (e.g. x86_64 on ARM64 runner)
+if [[ -n "${CMAKE_OSX_ARCHITECTURES:-}" ]]; then
+  CMAKE_ARGS+=("-DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}")
+fi
+
 if [[ -n "${OPENSSL_ROOT_DIR:-}" ]]; then
   CMAKE_ARGS+=("-DOPENSSL_ROOT_DIR=${OPENSSL_ROOT_DIR}")
 fi
