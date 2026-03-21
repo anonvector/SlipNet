@@ -38,6 +38,7 @@ import javax.net.ssl.SSLSocketFactory
 object DnsttSocksBridge {
     private const val TAG = "DnsttSocksBridge"
     @Volatile var debugLogging = false
+    @Volatile var proxyOnlyMode = false
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
@@ -243,8 +244,11 @@ object DnsttSocksBridge {
                 logd("Acceptor thread exited")
             }, "dnstt-bridge-acceptor").also { it.isDaemon = true; it.start() }
 
-            // Pre-warm DNS worker pool in background
-            prewarmDnsWorkers()
+            // Pre-warm DNS worker pool in background (skip in proxy-only mode —
+            // apps resolve DNS via CONNECT, so workers are unused)
+            if (!proxyOnlyMode) {
+                prewarmDnsWorkers()
+            }
 
             Log.i(TAG, "Bridge started on $listenHost:$listenPort")
             Result.success(Unit)
@@ -293,6 +297,7 @@ object DnsttSocksBridge {
 
         tunnelTxBytes.set(0)
         tunnelRxBytes.set(0)
+        proxyOnlyMode = false
 
         logd("Bridge stopped")
     }

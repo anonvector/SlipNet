@@ -38,11 +38,23 @@ class SlipNetApp : Application() {
                 description = "Notifications for VPN connection events"
             }
             notificationManager.createNotificationChannel(eventsChannel)
+
+            // DNS Scan Status Channel
+            val scanChannel = NotificationChannel(
+                CHANNEL_SCAN_STATUS,
+                "DNS Scan",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Shows DNS resolver scan progress"
+                setShowBadge(false)
+            }
+            notificationManager.createNotificationChannel(scanChannel)
         }
     }
 
     companion object {
         const val CHANNEL_VPN_STATUS = "vpn_status"
         const val CHANNEL_CONNECTION_EVENTS = "connection_events"
+        const val CHANNEL_SCAN_STATUS = "scan_status"
     }
 }

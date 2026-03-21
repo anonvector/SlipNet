@@ -55,7 +55,10 @@ object DnsttBridge {
         authoritativeMode: Boolean = false,
         noizMode: Boolean = false,
         stealthMode: Boolean = false,
-        maxPayload: Int = 0
+        maxPayload: Int = 0,
+        socksProxyAddr: String? = null,
+        socksProxyUser: String? = null,
+        socksProxyPass: String? = null
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting DNSTT client")
@@ -66,6 +69,7 @@ object DnsttBridge {
         Log.i(TAG, "  Authoritative Mode: $authoritativeMode")
         Log.i(TAG, "  NoizMode: $noizMode")
         Log.i(TAG, "  StealthMode: $stealthMode")
+        Log.i(TAG, "  SOCKS5 Proxy: ${socksProxyAddr ?: "none"}")
         Log.i(TAG, "========================================")
 
         // Validate inputs
@@ -80,13 +84,28 @@ object DnsttBridge {
         stopClient()
 
         // Wait for the port to become free.  We give the Go runtime up to 10s to
-        // fully drain goroutines.  Do NOT silently fall back to alternative ports —
-        // a stuck port means the old instance is still alive and would leak traffic.
+        // fully drain goroutines.
+        var actualPort = listenPort
         if (!waitForPortAvailable(listenPort, 10_000)) {
-            Log.e(TAG, "Port $listenPort still in use after 10s — old DNSTT instance may be leaking")
-            return Result.failure(RuntimeException("Port $listenPort is still in use by a previous DNSTT instance"))
+            // Primary port stuck — the old Go listener is leaking.  Try nearby
+            // alternative ports so the connection isn't completely broken.
+            // The old instance will wind down on its own (c.stop() was called);
+            // it won't accept new connections, just drain existing goroutines.
+            Log.w(TAG, "Port $listenPort stuck after 10s, scanning for alternative port")
+            var found = false
+            for (alt in (listenPort + 1)..(listenPort + 10)) {
+                if (!isPortInUse(alt)) {
+                    Log.i(TAG, "Using alternative port $alt (preferred $listenPort was stuck)")
+                    actualPort = alt
+                    found = true
+                    break
+                }
+            }
+            if (!found) {
+                Log.e(TAG, "No available ports in range ${listenPort}..${listenPort + 10}")
+                return Result.failure(RuntimeException("Port $listenPort is still in use by a previous DNSTT instance"))
+            }
         }
-        val actualPort = listenPort
 
         return try {
             val listenAddr = "$listenHost:$actualPort"
@@ -116,6 +135,9 @@ object DnsttBridge {
                 if (stealthMode) {
                     newClient.setStealthMode(true)
                 }
+            }
+            if (!socksProxyAddr.isNullOrEmpty()) {
+                newClient.setSOCKS5Proxy(socksProxyAddr, socksProxyUser ?: "", socksProxyPass ?: "")
             }
             client = newClient
             currentPort = actualPort
@@ -166,6 +188,16 @@ object DnsttBridge {
             try {
                 Log.d(TAG, "Stopping DNSTT client...")
                 c.stop()
+                // Poke the listener to unblock a goroutine stuck in Accept().
+                // Go's net.Listener.Close() is supposed to wake Accept(), but if
+                // the close races with an in-flight accept the goroutine can linger.
+                if (port > 0) {
+                    try {
+                        java.net.Socket().use { s ->
+                            s.connect(java.net.InetSocketAddress("127.0.0.1", port), 500)
+                        }
+                    } catch (_: Exception) {}
+                }
                 // Give Go runtime time to close listener AND drain active goroutines.
                 // The listener.Close() is synchronous, but tunnel-session goroutines may
                 // still be sending DNS queries for a short while after the listener is gone.

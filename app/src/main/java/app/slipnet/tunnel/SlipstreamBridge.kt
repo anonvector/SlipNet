@@ -91,8 +91,7 @@ object SlipstreamBridge {
         debugPoll: Boolean = false,
         debugStreams: Boolean = false,
         idlePollIntervalMs: Int = 10000,
-        idleTimeoutMs: Int = 120000,
-        maxQuerySize: Int = 0
+        idleTimeoutMs: Int = 120000
     ): Result<Unit> {
         if (!isLibraryLoaded) {
             return Result.failure(IllegalStateException("Native library not loaded"))
@@ -143,8 +142,7 @@ object SlipstreamBridge {
                 debugPoll = debugPoll,
                 debugStreams = debugStreams,
                 idlePollInterval = idlePollIntervalMs,
-                idleTimeoutMs = idleTimeoutMs,
-                maxQuerySize = maxQuerySize
+                idleTimeoutMs = idleTimeoutMs
             )
 
             when (result) {
@@ -285,8 +283,7 @@ object SlipstreamBridge {
         debugPoll: Boolean,
         debugStreams: Boolean,
         idlePollInterval: Int,
-        idleTimeoutMs: Int,
-        maxQuerySize: Int
+        idleTimeoutMs: Int
     ): Int
 
     private external fun nativeStopSlipstreamClient()

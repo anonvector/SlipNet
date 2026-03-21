@@ -23,6 +23,11 @@ class ProfileMapper @Inject constructor(
         } catch (e: Exception) {
             emptyList()
         }
+        val defaultResolvers: List<DnsResolver> = try {
+            gson.fromJson(entity.defaultResolversJson, resolversType) ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
 
         return ServerProfile(
             id = entity.id,
@@ -66,12 +71,14 @@ class ProfileMapper @Inject constructor(
             noizdnsStealth = entity.noizdnsStealth,
             dnsPayloadSize = entity.dnsPayloadSize,
             resolversHidden = entity.resolversHidden,
+            defaultResolvers = defaultResolvers,
             socks5ServerPort = entity.socks5ServerPort
         )
     }
 
     fun toEntity(profile: ServerProfile): ProfileEntity {
         val resolversJson = gson.toJson(profile.resolvers)
+        val defaultResolversJson = gson.toJson(profile.defaultResolvers)
 
         return ProfileEntity(
             id = profile.id,
@@ -117,6 +124,7 @@ class ProfileMapper @Inject constructor(
             noizdnsStealth = profile.noizdnsStealth,
             dnsPayloadSize = profile.dnsPayloadSize,
             resolversHidden = profile.resolversHidden,
+            defaultResolversJson = defaultResolversJson,
             socks5ServerPort = profile.socks5ServerPort
         )
     }

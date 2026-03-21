@@ -1,4 +1,4 @@
-.PHONY: build build-slipstream build-cli resolvers clean
+.PHONY: build build-slipstream build-cli windows resolvers clean
 
 VERSION ?= dev
 RUST_DIR := ../app/src/main/rust/slipstream-rust
@@ -26,13 +26,19 @@ build-slipstream:
 		--features openssl-vendored,picoquic-minimal-build \
 		--manifest-path $(RUST_DIR)/Cargo.toml
 	mkdir -p embedded
-	cp $(SLIPSTREAM_BIN) embedded/slipstream-client
+	gzip -9 -c $(SLIPSTREAM_BIN) > embedded/slipstream-client.gz
 
 build-cli: keygen resolvers
-	CGO_ENABLED=0 garble -literals -seed=random build \
+	CGO_ENABLED=0 garble -seed=random build \
 		-tags 'embed_slipstream $(BUILD_TAGS)' -trimpath \
 		-ldflags='$(LDFLAGS)' \
 		-o slipnet .
+
+windows: keygen resolvers
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 garble -seed=random build \
+		-tags '$(BUILD_TAGS)' -trimpath \
+		-ldflags='$(LDFLAGS)' \
+		-o slipnet.exe .
 
 # Copy resolver list from app resources for embedding into the binary
 resolvers:
@@ -47,5 +53,5 @@ else
 endif
 
 clean:
-	rm -f slipnet key_generated.go resolvers.txt
-	rm -rf embedded/slipstream-client
+	rm -f slipnet slipnet.exe key_generated.go resolvers.txt
+	rm -rf embedded/slipstream-client embedded/slipstream-client.gz

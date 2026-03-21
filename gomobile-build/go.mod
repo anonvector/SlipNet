@@ -3,8 +3,8 @@ module gomobile-build
 go 1.24.0
 
 require (
-	dnstt-mobile v0.0.0
 	golang.org/x/mobile v0.0.0-20260204172633-1dceadbbeea3
+	noizdns v0.0.0
 	snowflake-mobile v0.0.0
 )
 
@@ -26,7 +26,7 @@ require (
 	github.com/aws/smithy-go v1.22.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
-	github.com/golang/mock v1.6.0 // indirect
+	github.com/golang/mock v1.7.0-rc.1 // indirect
 	github.com/google/uuid v1.3.1 // indirect
 	github.com/klauspost/compress v1.18.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
@@ -75,7 +75,6 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	noizdns v0.0.0 // indirect
 	www.bamsoftware.com/git/dnstt.git v0.0.0-00010101000000-000000000000 // indirect
 )
 

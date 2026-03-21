@@ -377,7 +377,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
         remoteDnsFallback: String = "1.1.1.1",
         naiveMode: Boolean = false
     ): Result<Unit> {
-        val proxyLabel = if (naiveMode) "NaiveProxy" else "Slipstream"
+        val proxyLabel = if (naiveMode) "NaiveProxy" else "SOCKS5"
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting SSH tunnel (over $proxyLabel SOCKS5 proxy)")
         Log.i(TAG, "  SSH target: $sshHost:$sshPort")
@@ -419,7 +419,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
                 // NaiveProxy: use custom SOCKS5 proxy (NO_AUTH only, proper ATYP, logging)
                 NaiveSocksProxy(proxyHost, proxyPort)
             } else {
-                // Slipstream: use JSch's ProxySOCKS5 (with optional Dante auth)
+                // Generic SOCKS5: use JSch's ProxySOCKS5 (with optional auth)
                 ProxySOCKS5(proxyHost, proxyPort).also { p ->
                     if (!socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()) {
                         p.setUserPasswd(socksUsername, socksPassword)

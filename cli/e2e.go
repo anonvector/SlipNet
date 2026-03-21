@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"noizdns/mobile"
@@ -31,8 +32,12 @@ type E2EConfig struct {
 	TunnelDomain string
 	PublicKey    string
 	NoizMode     bool
+	SSHMode      bool // true for dnstt_ssh/sayedns_ssh — tunnel carries raw SSH, not SOCKS5
 	TimeoutMs    int
 	Concurrency  int // max parallel E2E tests (bridges are NOT singletons in Go)
+	QuerySize    int // max DNS query payload size (0 = full capacity)
+	SOCKSUser    string
+	SOCKSPass    string
 }
 
 // RunE2ETests runs end-to-end tunnel tests on a list of resolver IPs.
@@ -68,9 +73,7 @@ func RunE2ETests(resolvers []string, config E2EConfig, onResult func(E2EResult))
 func allocatePort(counter *int32) int {
 	// Try ports starting from counter value
 	for i := 0; i < 100; i++ {
-		// Atomic increment via mutex-free approach (simple for CLI)
-		p := int(*counter)
-		*counter++
+		p := int(atomic.AddInt32(counter, 1) - 1)
 		addr := fmt.Sprintf("127.0.0.1:%d", p)
 		ln, err := net.Listen("tcp", addr)
 		if err == nil {
@@ -101,6 +104,12 @@ func testResolverE2E(resolverIP string, localPort int, config E2EConfig) E2EResu
 	if config.NoizMode {
 		client.SetNoizMode(true)
 	}
+	if config.QuerySize > 0 {
+		client.SetMaxPayload(config.QuerySize)
+	}
+	if config.SOCKSUser != "" {
+		client.SetSocksCredentials(config.SOCKSUser, config.SOCKSPass)
+	}
 
 	if err := client.Start(); err != nil {
 		result.Error = fmt.Sprintf("start tunnel: %v", err)
@@ -109,16 +118,48 @@ func testResolverE2E(resolverIP string, localPort int, config E2EConfig) E2EResu
 	}
 	defer client.Stop()
 
-	// Wait for SOCKS5 proxy to be ready
+	// Wait for tunnel port to be ready
 	if !waitForPort(listenAddr, 5*time.Second) {
-		result.Error = "tunnel SOCKS5 not ready"
+		result.Error = "tunnel port not ready"
 		result.TotalMs = time.Since(totalStart).Milliseconds()
 		return result
 	}
 
 	result.TunnelMs = time.Since(tunnelStart).Milliseconds()
 
-	// Phase 2: HTTP request through tunnel
+	// Phase 2: Verify tunnel — SSH banner check or HTTP through SOCKS5
+	if config.SSHMode {
+		// SSH variant: tunnel forwards raw TCP to SSH server.
+		// Read the SSH banner to prove bidirectional data flow.
+		sshStart := time.Now()
+		conn, err := net.DialTimeout("tcp", listenAddr, 5*time.Second)
+		if err != nil {
+			result.Error = fmt.Sprintf("ssh connect: %v", err)
+			result.TotalMs = time.Since(totalStart).Milliseconds()
+			return result
+		}
+		conn.SetDeadline(time.Now().Add(time.Duration(config.TimeoutMs) * time.Millisecond))
+		buf := make([]byte, 256)
+		n, err := conn.Read(buf)
+		conn.Close()
+
+		result.HTTPMs = time.Since(sshStart).Milliseconds()
+		result.TotalMs = time.Since(totalStart).Milliseconds()
+
+		if err != nil {
+			result.Error = fmt.Sprintf("ssh banner: %v", err)
+			return result
+		}
+		if n >= 4 && string(buf[:4]) == "SSH-" {
+			result.Success = true
+			result.HTTPStatus = 200 // synthetic — banner received
+		} else {
+			result.Error = "no SSH banner"
+		}
+		return result
+	}
+
+	// Non-SSH: HTTP request through SOCKS5 tunnel
 	httpStart := time.Now()
 	dialer, err := proxy.SOCKS5("tcp", listenAddr, nil, proxy.Direct)
 	if err != nil {

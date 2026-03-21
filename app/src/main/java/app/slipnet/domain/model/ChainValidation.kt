@@ -50,8 +50,10 @@ object ChainValidation {
 
     /** What a tunnel type provides to the next layer in the chain. */
     fun outputType(type: TunnelType): LayerOutput? = when (type) {
-        TunnelType.DNSTT, TunnelType.NOIZDNS -> LayerOutput.RAW_TCP
-        TunnelType.SLIPSTREAM -> LayerOutput.RAW_TCP
+        // Standalone DNSTT/NoizDNS/Slipstream tunnel to a remote Dante SOCKS5 proxy,
+        // so the next layer must perform a SOCKS5 handshake (with auth) to connect.
+        TunnelType.DNSTT, TunnelType.NOIZDNS -> LayerOutput.SOCKS5
+        TunnelType.SLIPSTREAM -> LayerOutput.SOCKS5
         TunnelType.SSH -> LayerOutput.SOCKS5
         TunnelType.NAIVE -> LayerOutput.SOCKS5
         TunnelType.SNOWFLAKE -> LayerOutput.SOCKS5

@@ -349,7 +349,7 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		if portOverride > 0 {
 			profile.Port = portOverride
 		}
-		connectSlipstream(profile, profile.Host, profile.Port, querySize)
+		connectSlipstream(profile, profile.Host, profile.Port)
 		return
 	case "ssh", "direct_ssh":
 		if portOverride > 0 {
@@ -540,12 +540,14 @@ func runScanCommand(args []string) {
 	var e2eEnabled bool
 	var pubkey string
 	var noizdns bool
-	var e2eConcurrency = 3
+	var e2eConcurrency = 10
 	var e2eTimeout = 15000
 	var configURI string
 	var verifyMode bool
-	var verifyRounds = 3
+	var verifyRounds = 20
+	var passThreshold = 5
 	var responseSize int
+	var querySize int
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -623,6 +625,14 @@ func runScanCommand(args []string) {
 				}
 				i++
 			}
+		case "--threshold", "-threshold":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v > 0 {
+					passThreshold = v
+				}
+				i++
+			}
 		case "--response-size", "-response-size":
 			if i+1 < len(args) {
 				v, err := strconv.Atoi(args[i+1])
@@ -636,13 +646,23 @@ func runScanCommand(args []string) {
 				configURI = args[i+1]
 				i++
 			}
+		case "--query-size", "-query-size":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v >= 50 {
+					querySize = v
+				}
+				i++
+			}
 		case "--help", "-help", "-h":
 			printUsage()
 			os.Exit(0)
 		}
 	}
 
-	// If --config is provided, extract domain, pubkey, and noizdns from slipnet:// URI
+	// If --config is provided, extract domain, pubkey, noizdns, and ssh mode from slipnet:// URI
+	var sshMode bool
+	var socksUser, socksPass string
 	if configURI != "" {
 		profile, err := parseURI(configURI)
 		if err != nil {
@@ -657,6 +677,11 @@ func runScanCommand(args []string) {
 		if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
 			noizdns = true
 		}
+		if profile.TunnelType == "dnstt_ssh" || profile.TunnelType == "sayedns_ssh" {
+			sshMode = true
+		}
+		socksUser = profile.SOCKSUser
+		socksPass = profile.SOCKSPass
 		// If e2e flag not explicitly set but pubkey is available, enable it
 		if pubkey != "" && !e2eEnabled {
 			e2eEnabled = true
@@ -691,7 +716,7 @@ func runScanCommand(args []string) {
 		if err != nil {
 			log.Fatalf("invalid pubkey hex: %v", err)
 		}
-		RunVerifyScanner(resolvers, domain, port, timeoutMs, concurrency, verifyRounds, pubkeyBytes, responseSize)
+		RunVerifyScanner(resolvers, domain, port, timeoutMs, concurrency, verifyRounds, passThreshold, pubkeyBytes, responseSize)
 		return
 	}
 
@@ -704,12 +729,16 @@ func runScanCommand(args []string) {
 			TunnelDomain: domain,
 			PublicKey:     pubkey,
 			NoizMode:     noizdns,
+			SSHMode:      sshMode,
 			TimeoutMs:    e2eTimeout,
 			Concurrency:  e2eConcurrency,
+			QuerySize:    querySize,
+			SOCKSUser:    socksUser,
+			SOCKSPass:    socksPass,
 		}
 	}
 
-	RunScanner(resolvers, domain, port, timeoutMs, concurrency, e2eConfig)
+	RunScanner(resolvers, domain, port, timeoutMs, concurrency, querySize, e2eConfig)
 }
 
 func printUsage() {
@@ -749,14 +778,17 @@ Options (scan):
   --e2e               Run E2E tunnel test on 6/6 resolvers after DNS scan
   --pubkey KEY        Server public key for E2E (required with --e2e)
   --noizdns           Use NoizDNS mode for E2E (default: DNSTT)
-  --e2e-concurrency N Parallel E2E tests (default: 3)
+  --e2e-concurrency N Parallel E2E tests (default: 10)
   --e2e-timeout MS    E2E HTTP timeout in ms (default: 15000)
   --config URI        Extract domain/pubkey/mode from slipnet:// URI (auto-enables E2E)
-  --verify            Verify mode: HMAC challenge-response to authenticate the server
+  --verify            Prism mode: server-verified scan to authenticate the tunnel server
                       Requires --pubkey or --config to provide the server's public key
-  --rounds N          Number of verification rounds (default: 3, used with --verify)
+  --rounds N          Probes per resolver (default: 20, used with --verify)
+  --threshold N       Required passing probes (default: 5, used with --verify)
   --response-size N   Request server to pad response to N bytes (used with --verify)
-                      Tests resolver's ability to handle large DNS responses
+                      0 = server default, 200-4096 = custom size
+  --query-size BYTES  Cap DNS probe and E2E tunnel query size (default: full capacity)
+                      Matches connect --query-size so scan results reflect real usage
 
 If no --dns is specified, the client auto-detects the server IP
 when DNS delegation isn't working.

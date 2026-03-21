@@ -342,6 +342,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -425,6 +426,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -513,6 +515,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -604,6 +607,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -707,6 +711,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -810,6 +815,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -909,6 +915,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1019,6 +1026,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1150,6 +1158,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1283,6 +1292,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1423,6 +1433,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1564,6 +1575,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1722,6 +1734,7 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
             }
@@ -1908,7 +1921,8 @@ class ConfigImporter @Inject constructor() {
         if (baseResult !is ProfileParseResult.Success) return baseResult
 
         val profile = baseResult.profile.copy(
-            resolversHidden = resolversHidden
+            resolversHidden = resolversHidden,
+            defaultResolvers = if (resolversHidden) baseResult.profile.resolvers else emptyList()
         )
 
         return ProfileParseResult.Success(profile)

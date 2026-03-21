@@ -74,20 +74,43 @@ interface ResolverScannerRepository {
         host: String,
         port: Int = 53,
         testDomain: String,
-        timeoutMs: Long = 3000
+        timeoutMs: Long = 3000,
+        querySize: Int = 0
     ): ResolverScanResult
 
     /**
      * Scan multiple resolvers concurrently
      * Emits results as they complete
+     * @param querySize Cap tunnel-realism probe size to match the user's query-size setting (0 = full capacity)
      */
     fun scanResolvers(
         hosts: List<String>,
         port: Int = 53,
         testDomain: String,
         timeoutMs: Long = 3000,
-        concurrency: Int = 50
+        concurrency: Int = 50,
+        querySize: Int = 0
     ): Flow<ResolverScanResult>
+
+    /**
+     * Probe a single resolver using the Prism (slipgate) HMAC challenge-response protocol.
+     * Sends base32(nonce || HMAC(key,nonce)[:16]).<domain> as a TXT query with EDNS0(4096),
+     * then verifies the server's response encodes HMAC(key, nonce||0x01).
+     * Returns true only when the resolver forwards to a server holding [pubkey].
+     */
+    /**
+     * @return Number of probes that passed (0..probeCount).
+     */
+    suspend fun verifyResolver(
+        host: String,
+        port: Int = 53,
+        testDomain: String,
+        pubkey: ByteArray,
+        timeoutMs: Long = 3000,
+        probeCount: Int = 20,
+        passThreshold: Int = 5,
+        responseSize: Int = 1232
+    ): Int
 
     /**
      * Detect transparent DNS proxy/interception by querying TEST-NET IPs (RFC 5737).
