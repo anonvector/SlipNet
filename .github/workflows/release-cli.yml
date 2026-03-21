@@ -17,117 +17,27 @@ on:
         default: true
 
 jobs:
-  # Build slipstream-client for each platform first
-  build-slipstream:
+  build-cli:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-pc-windows-msvc
-            suffix: windows-amd64
-            ext: .exe
-            os: windows-latest
-          - target: x86_64-unknown-linux-gnu
-            suffix: linux-amd64
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            suffix: linux-arm64
-            os: ubuntu-latest
-            cross: true
-            cc: aarch64-linux-gnu-gcc
-            ar: aarch64-linux-gnu-ar
-          - target: x86_64-apple-darwin
-            suffix: darwin-amd64
-            os: macos-15
-            cmake_osx_arch: x86_64
-          - target: aarch64-apple-darwin
-            suffix: darwin-arm64
-            os: macos-15
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.SUBMODULE_TOKEN }}
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.cross
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Install Windows build dependencies (Perl, pkg-config)
-        if: runner.os == 'Windows'
-        run: choco install strawberryperl pkgconfiglite -y
-
-      - name: Build slipstream-client
-        working-directory: app/src/main/rust/slipstream-rust
-        shell: bash
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CC: ${{ matrix.cc || '' }}
-          AR: ${{ matrix.ar || '' }}
-          CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_osx_arch || '' }}
-          CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
-        run: |
-          # On Windows, prefer Strawberry Perl over Git Bash perl for OpenSSL
-          if [ -d "/c/Strawberry/perl/bin" ]; then
-            export PATH="/c/Strawberry/perl/bin:$PATH"
-          fi
-          # Unset CC/AR if empty so the build system uses its defaults
-          [ -z "$CC" ] && unset CC
-          [ -z "$AR" ] && unset AR
-          # macOS x86_64 cross-compilation from ARM64 runner
-          if [ -n "${CMAKE_OSX_ARCHITECTURES:-}" ]; then
-            export CFLAGS="-arch ${CMAKE_OSX_ARCHITECTURES}"
-            export CXXFLAGS="-arch ${CMAKE_OSX_ARCHITECTURES}"
-          fi
-          cargo build --release --bin slipstream-client \
-            --target ${{ matrix.target }} \
-            --features openssl-vendored,picoquic-minimal-build
-
-      - name: Upload slipstream binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: slipstream-${{ matrix.suffix }}
-          path: app/src/main/rust/slipstream-rust/target/${{ matrix.target }}/release/slipstream-client${{ matrix.ext }}
-
-  # Build Go CLI with embedded slipstream binary
-  build-cli:
-    needs: build-slipstream
-    strategy:
-      matrix:
-        include:
           - goos: darwin
             goarch: amd64
             suffix: darwin-amd64
-            slipstream_suffix: darwin-amd64
           - goos: darwin
             goarch: arm64
             suffix: darwin-arm64
-            slipstream_suffix: darwin-arm64
           - goos: linux
             goarch: amd64
             suffix: linux-amd64
-            slipstream_suffix: linux-amd64
           - goos: linux
             goarch: arm64
             suffix: linux-arm64
-            slipstream_suffix: linux-arm64
           - goos: windows
             goarch: amd64
             suffix: windows-amd64
-            slipstream_suffix: windows-amd64
             ext: .exe
-            slipstream_ext: .exe
 
     runs-on: ubuntu-latest
 
@@ -143,16 +53,6 @@ jobs:
         with:
           go-version-file: cli/go.mod
 
-      - name: Download slipstream binary
-        uses: actions/download-artifact@v4
-        with:
-          name: slipstream-${{ matrix.slipstream_suffix }}
-          path: ./slipstream-download
-
-      - name: Embed slipstream binary
-        run: |
-          cp ./slipstream-download/slipstream-client${{ matrix.slipstream_ext }} cli/embedded/slipstream-client
-
       - name: Build
         working-directory: cli
         env:
@@ -165,7 +65,7 @@ jobs:
           if [ -n "${{ secrets.CONFIG_ENCRYPTION_KEY }}" ]; then
             LDFLAGS="${LDFLAGS} -X main.configKey=${{ secrets.CONFIG_ENCRYPTION_KEY }}"
           fi
-          go build -tags embed_slipstream -trimpath -ldflags="${LDFLAGS}" -o ../slipnet-${{ matrix.suffix }}${{ matrix.ext }} .
+          go build -trimpath -ldflags="${LDFLAGS}" -o ../slipnet-${{ matrix.suffix }}${{ matrix.ext }} .
 
       - name: Compress with UPX (Linux/macOS only)
         if: matrix.goos != 'windows'
