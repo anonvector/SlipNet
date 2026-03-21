@@ -60,6 +60,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      - name: Install Strawberry Perl (Windows)
+        if: runner.os == 'Windows'
+        run: choco install strawberryperl -y
+
       - name: Build slipstream-client
         working-directory: app/src/main/rust/slipstream-rust
         shell: bash
@@ -67,6 +71,10 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
         run: |
+          # On Windows, prefer Strawberry Perl over Git Bash perl for OpenSSL
+          if [ -d "/c/Strawberry/perl/bin" ]; then
+            export PATH="/c/Strawberry/perl/bin:$PATH"
+          fi
           cargo build --release --bin slipstream-client \
             --target ${{ matrix.target }} \
             --features openssl-vendored,picoquic-minimal-build
