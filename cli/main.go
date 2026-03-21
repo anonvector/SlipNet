@@ -345,13 +345,6 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	switch profile.TunnelType {
 	case "dnstt", "dnstt_ssh", "sayedns", "sayedns_ssh":
 		// DNSTT/NoizDNS — handled below via noizdns/mobile
-	case "ss", "slipstream_ssh":
-		// Slipstream — handled via slipstream-client subprocess
-		if portOverride > 0 {
-			profile.Port = portOverride
-		}
-		connectSlipstream(profile, profile.Host, profile.Port)
-		return
 	case "ssh", "direct_ssh":
 		if portOverride > 0 {
 			profile.Port = portOverride
@@ -364,9 +357,9 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		}
 		connectSOCKS5(profile)
 		return
-	case "doh", "snowflake", "naive":
+	case "ss", "slipstream_ssh", "doh", "snowflake", "naive":
 		log.Fatalf("This config uses tunnel type %q which is not supported by the CLI.\n"+
-			"SlipNet CLI supports DNSTT, NoizDNS, Slipstream, SSH, and SOCKS5 tunnel types.\n"+
+			"SlipNet CLI supports DNSTT, NoizDNS, SSH, and SOCKS5 tunnel types.\n"+
 			"Use the SlipNet app for other tunnel types.", profile.TunnelType)
 	default:
 		if profile.TunnelType != "" {
@@ -806,7 +799,7 @@ func runScanCommand(args []string) {
 
 func printUsage() {
 	prog := filepath.Base(os.Args[0])
-	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - Tunnel proxy (DNSTT, NoizDNS, Slipstream, SSH, SOCKS5)
+	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - Tunnel proxy (DNSTT, NoizDNS, SSH, SOCKS5)
 
 Usage:
   %s [options] slipnet://BASE64...

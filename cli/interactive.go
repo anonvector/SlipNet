@@ -48,7 +48,7 @@ func runInteractive() {
 		fmt.Printf("║          SlipNet CLI  %-25s  ║\n", version)
 		fmt.Println("╠══════════════════════════════════════════════════╣")
 		fmt.Println("║                                                  ║")
-		fmt.Println("║  1) Connect (DNSTT / NoizDNS / Slipstream)       ║")
+		fmt.Println("║  1) Connect (DNSTT / NoizDNS)                     ║")
 		fmt.Println("║  2) DNS Scanner                                  ║")
 		fmt.Println("║  3) DNS Scanner + E2E Test                       ║")
 		fmt.Println("║  4) Quick Scan (single IP)                       ║")
@@ -135,8 +135,8 @@ func interactiveConnectWithURI(uri string) {
 
 	var querySize int
 	var queryPadding int
-	// Query size and padding only apply to DNSTT/NoizDNS, not Slipstream
-	if profile.TunnelType != "ss" && profile.TunnelType != "slipstream_ssh" {
+	// Query size and padding apply to DNSTT/NoizDNS tunnel types
+	if profile.TunnelType == "dnstt" || profile.TunnelType == "dnstt_ssh" || profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" || profile.TunnelType == "" {
 		fmt.Println()
 		fmt.Println("  DNS query size (smaller = stealthier, slower):")
 		fmt.Println("    0) Full capacity (fastest, default)")
