@@ -12,8 +12,8 @@
       "filters": [],
       "attributes": [],
       "versionCode": 47,
-      "versionName": "2.4-beta6-lite",
-      "outputFile": "SlipNet-v2.4-beta6-lite-release-universal.apk"
+      "versionName": "2.4-lite",
+      "outputFile": "SlipNet-v2.4-lite-release-universal.apk"
     },
     {
       "type": "ONE_OF_MANY",
@@ -25,8 +25,8 @@
       ],
       "attributes": [],
       "versionCode": 47,
-      "versionName": "2.4-beta6-lite",
-      "outputFile": "SlipNet-v2.4-beta6-lite-release-arm64-v8a.apk"
+      "versionName": "2.4-lite",
+      "outputFile": "SlipNet-v2.4-lite-release-arm64-v8a.apk"
     },
     {
       "type": "ONE_OF_MANY",
@@ -38,8 +38,8 @@
       ],
       "attributes": [],
       "versionCode": 47,
-      "versionName": "2.4-beta6-lite",
-      "outputFile": "SlipNet-v2.4-beta6-lite-release-armeabi-v7a.apk"
+      "versionName": "2.4-lite",
+      "outputFile": "SlipNet-v2.4-lite-release-armeabi-v7a.apk"
     },
     {
       "type": "ONE_OF_MANY",
@@ -51,8 +51,8 @@
       ],
       "attributes": [],
       "versionCode": 47,
-      "versionName": "2.4-beta6-lite",
-      "outputFile": "SlipNet-v2.4-beta6-lite-release-x86_64.apk"
+      "versionName": "2.4-lite",
+      "outputFile": "SlipNet-v2.4-lite-release-x86_64.apk"
     }
   ],
   "elementType": "File",
@@ -61,20 +61,20 @@
       "minApi": 28,
       "maxApi": 30,
       "baselineProfiles": [
-        "baselineProfiles/1/SlipNet-v2.4-beta6-lite-release-universal.dm",
-        "baselineProfiles/1/SlipNet-v2.4-beta6-lite-release-arm64-v8a.dm",
-        "baselineProfiles/1/SlipNet-v2.4-beta6-lite-release-armeabi-v7a.dm",
-        "baselineProfiles/1/SlipNet-v2.4-beta6-lite-release-x86_64.dm"
+        "baselineProfiles/1/SlipNet-v2.4-lite-release-universal.dm",
+        "baselineProfiles/1/SlipNet-v2.4-lite-release-arm64-v8a.dm",
+        "baselineProfiles/1/SlipNet-v2.4-lite-release-armeabi-v7a.dm",
+        "baselineProfiles/1/SlipNet-v2.4-lite-release-x86_64.dm"
       ]
     },
     {
       "minApi": 31,
       "maxApi": 2147483647,
       "baselineProfiles": [
-        "baselineProfiles/0/SlipNet-v2.4-beta6-lite-release-universal.dm",
-        "baselineProfiles/0/SlipNet-v2.4-beta6-lite-release-arm64-v8a.dm",
-        "baselineProfiles/0/SlipNet-v2.4-beta6-lite-release-armeabi-v7a.dm",
-        "baselineProfiles/0/SlipNet-v2.4-beta6-lite-release-x86_64.dm"
+        "baselineProfiles/0/SlipNet-v2.4-lite-release-universal.dm",
+        "baselineProfiles/0/SlipNet-v2.4-lite-release-arm64-v8a.dm",
+        "baselineProfiles/0/SlipNet-v2.4-lite-release-armeabi-v7a.dm",
+        "baselineProfiles/0/SlipNet-v2.4-lite-release-x86_64.dm"
       ]
     }
   ],
