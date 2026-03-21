@@ -29,6 +29,8 @@ jobs:
             suffix: linux-arm64
             os: ubuntu-latest
             cross: true
+            cc: aarch64-linux-gnu-gcc
+            ar: aarch64-linux-gnu-ar
           - target: x86_64-apple-darwin
             suffix: darwin-amd64
             os: macos-13
@@ -69,12 +71,17 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC: ${{ matrix.cc || '' }}
+          AR: ${{ matrix.ar || '' }}
           CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
         run: |
           # On Windows, prefer Strawberry Perl over Git Bash perl for OpenSSL
           if [ -d "/c/Strawberry/perl/bin" ]; then
             export PATH="/c/Strawberry/perl/bin:$PATH"
           fi
+          # Unset CC/AR if empty so the build system uses its defaults
+          [ -z "$CC" ] && unset CC
+          [ -z "$AR" ] && unset AR
           cargo build --release --bin slipstream-client \
             --target ${{ matrix.target }} \
             --features openssl-vendored,picoquic-minimal-build
