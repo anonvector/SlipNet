@@ -1463,6 +1463,7 @@ class SlipNetVpnService : VpnService() {
     private suspend fun connectSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        vpnRepository.setCurrentTunnelType(TunnelType.SSH)
 
         if (isProxyOnly) {
             // Proxy-only: no VPN needed, start SSH directly (sockets go direct anyway)
@@ -2330,6 +2331,7 @@ class SlipNetVpnService : VpnService() {
     private suspend fun connectSocks5(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        vpnRepository.setCurrentTunnelType(TunnelType.SOCKS5)
 
         if (isProxyOnly) {
             Socks5ProxyBridge.debugLogging = preferencesDataStore.debugLogging.first()

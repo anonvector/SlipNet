@@ -28,6 +28,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeoutOrNull
 import app.slipnet.tunnel.DomainRouter
 import java.io.BufferedReader
@@ -719,6 +720,23 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         return "${(ip shr 24) and 0xFF}.${(ip shr 16) and 0xFF}.${(ip shr 8) and 0xFF}.${ip and 0xFF}"
     }
 
+    override suspend fun isResolverAlive(
+        host: String,
+        port: Int,
+        testDomain: String,
+        timeoutMs: Long
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val parentDomain = getParentDomain(testDomain)
+            val randSub = generateRandomSubdomain()
+            val query = "$randSub.$parentDomain"
+            performDnsQuery(host, port, query, DNS_TYPE_A, timeoutMs)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     override suspend fun verifyResolver(
         host: String,
         port: Int,
@@ -732,8 +750,10 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         var passed = 0
         val maxFailures = probeCount - passThreshold
         var failures = 0
+        val perProbeTimeout = (timeoutMs / passThreshold).coerceIn(200, 30000)
         for (i in 1..probeCount) {
-            if (verifyResolverOnce(host, port, testDomain, pubkey, timeoutMs, responseSize)) {
+            if (!coroutineContext.isActive) break
+            if (verifyResolverOnce(host, port, testDomain, pubkey, perProbeTimeout, responseSize)) {
                 passed++
                 if (passed >= passThreshold) break // already verified
             } else {
@@ -796,7 +816,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             val responseLen: Int
             try {
                 socket = DatagramSocket()
-                socket.soTimeout = timeoutMs.toInt().coerceIn(500, 30000)
+                socket.soTimeout = timeoutMs.toInt().coerceIn(200, 30000)
                 socket.send(DatagramPacket(queryPacket, queryPacket.size, serverAddress, port))
                 val buf = ByteArray(4096)
                 val pkt = DatagramPacket(buf, buf.size)

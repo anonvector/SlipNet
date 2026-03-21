@@ -10,6 +10,8 @@ import androidx.compose.animation.shrinkVertically
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -152,6 +154,12 @@ fun ScanResultsScreen(
     }
     var showSortMenu by remember { mutableStateOf(false) }
     var showFilterMenu by remember { mutableStateOf(false) }
+    var showPrismFilterDialog by remember { mutableStateOf(false) }
+    var prismMinProbes by remember {
+        mutableStateOf(
+            prefs.getInt("prism_min_probes", 0)
+        )
+    }
     var showAllWorking by remember { mutableStateOf(uiState.scanMode != ScanMode.SIMPLE) }
     var searchQuery by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
@@ -164,6 +172,44 @@ fun ScanResultsScreen(
         onNavigateBack()
     }
 
+    if (showPrismFilterDialog) {
+        var inputValue by remember { mutableStateOf(prismMinProbes.toString()) }
+        AlertDialog(
+            onDismissRequest = { showPrismFilterDialog = false },
+            title = { Text("Filter by passed probes") },
+            text = {
+                Column {
+                    Text(
+                        "Show only resolvers with at least this many passed probes. Enter 0 to show all.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = inputValue,
+                        onValueChange = { inputValue = it.filter { c -> c.isDigit() } },
+                        label = { Text("Min passed probes") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val value = inputValue.toIntOrNull()?.coerceIn(0, 30) ?: 0
+                    prismMinProbes = value
+                    prefs.edit().putInt("prism_min_probes", value).apply()
+                    showPrismFilterDialog = false
+                }) { Text("Apply") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPrismFilterDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     LaunchedEffect(uiState.error) {
         uiState.error?.let { error ->
             snackbarHostState.showSnackbar(error)
@@ -173,14 +219,16 @@ fun ScanResultsScreen(
 
     // Single-pass filter: visible E2E-passed and Stage 1 working IPs (respects search/score)
     val isPrism = uiState.scanMode == ScanMode.PRISM
-    val (visibleE2eIps, visibleStage1Ips) = remember(uiState.scannerState.results, scoreFilter, searchQuery, isPrism) {
+    val (visibleE2eIps, visibleStage1Ips) = remember(uiState.scannerState.results, scoreFilter, searchQuery, isPrism, prismMinProbes) {
         val query = searchQuery.trim()
         val e2e = mutableListOf<String>()
         val stage1 = mutableListOf<String>()
         for (result in uiState.scannerState.results) {
             // Prism results have no tunnelTestResult (score), skip score filter for them
             val matchesFilters = if (isPrism) {
-                result.prismVerified == true && (query.isEmpty() || result.host.contains(query))
+                result.prismVerified == true &&
+                    (result.prismPassedProbes ?: 0) >= prismMinProbes &&
+                    (query.isEmpty() || result.host.contains(query))
             } else {
                 (result.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
                     (query.isEmpty() || result.host.contains(query))
@@ -527,17 +575,19 @@ fun ScanResultsScreen(
 
             // Results
             val isSimpleMode = uiState.scanMode == ScanMode.SIMPLE
-            val displayResults = remember(uiState.scannerState.results, scoreFilter, sortOption, isSimpleMode, isPrismMode, showAllWorking, searchQuery, hasE2eResults) {
+            val displayResults = remember(uiState.scannerState.results, scoreFilter, sortOption, isSimpleMode, isPrismMode, showAllWorking, searchQuery, hasE2eResults, prismMinProbes) {
                 val query = searchQuery.trim()
                 val filtered = if (isPrismMode && !showAllWorking && hasE2eResults) {
                     uiState.scannerState.results.filter {
                         it.prismVerified == true &&
+                            (it.prismPassedProbes ?: 0) >= prismMinProbes &&
                             it.e2eTestResult?.success == true &&
                             (query.isEmpty() || it.host.contains(query))
                     }
                 } else if (isPrismMode) {
                     uiState.scannerState.results.filter {
                         it.prismVerified == true &&
+                            (it.prismPassedProbes ?: 0) >= prismMinProbes &&
                             (query.isEmpty() || it.host.contains(query))
                     }
                 } else if (isSimpleMode && !showAllWorking) {
@@ -763,6 +813,23 @@ fun ScanResultsScreen(
                                     )
                                 }
                             }
+                        }
+
+                        // Prism probe filter
+                        if (isPrismMode) {
+                            FilterChip(
+                                selected = prismMinProbes > 0,
+                                onClick = { showPrismFilterDialog = true },
+                                label = { Text(if (prismMinProbes > 0) "Probes ${prismMinProbes}+" else "All probes") },
+                                trailingIcon = {
+                                    Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(16.dp))
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.secondary,
+                                    selectedTrailingIconColor = MaterialTheme.colorScheme.secondary
+                                )
+                            )
                         }
 
                         // Score filter dropdown

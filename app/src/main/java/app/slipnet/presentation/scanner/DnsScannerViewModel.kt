@@ -96,9 +96,12 @@ data class DnsScannerUiState(
     val e2eConcurrency: String = "3",
     val e2eFullVerification: Boolean = false,
     // Prism probe settings
-    val prismProbeCount: String = "20",
-    val prismPassThreshold: String = "5",
+    val prismTimeoutMs: String = "2000",
+    val prismProbeCount: String = "5",
+    val prismPassThreshold: String = "2",
     val prismResponseSize: String = "0",
+    val prismPrefilter: Boolean = false,
+    val prismPrefilterTimeoutMs: String = "1500",
     // Last scan IPs dialog
     val showLastScanIpsDialog: Boolean = false,
 ) {
@@ -144,6 +147,16 @@ data class DnsScannerUiState(
 
     /** Prism requires a profile with a valid Noise public key. */
     val canUsePrismMode: Boolean get() = profile != null && profilePubkeyValid
+
+    /** Per-probe timeout for Prism mode. */
+    val prismPerProbeMs: Long get() {
+        val timeout = prismTimeoutMs.toLongOrNull() ?: 2000L
+        val threshold = prismPassThreshold.toIntOrNull()?.coerceAtLeast(1) ?: 2
+        return timeout / threshold
+    }
+
+    /** True when prism settings would result in per-probe timeout below 200ms. */
+    val prismSettingsInvalid: Boolean get() = prismPerProbeMs < 200
 
     val canUseSimpleMode: Boolean
         get() {
@@ -460,18 +473,24 @@ class DnsScannerViewModel @Inject constructor(
             val e2eTimeout = preferencesDataStore.scannerE2eTimeoutMs.first()
             val testUrl = preferencesDataStore.scannerTestUrl.first()
             val e2eConcurrency = preferencesDataStore.scannerE2eConcurrency.first()
+            val prismTimeoutMs = preferencesDataStore.scannerPrismTimeoutMs.first()
             val prismProbeCount = preferencesDataStore.scannerPrismProbeCount.first()
             val prismPassThreshold = preferencesDataStore.scannerPrismPassThreshold.first()
             val prismResponseSize = preferencesDataStore.scannerPrismResponseSize.first()
+            val prismPrefilter = preferencesDataStore.scannerPrismPrefilter.first()
+            val prismPrefilterTimeoutMs = preferencesDataStore.scannerPrismPrefilterTimeoutMs.first()
             _uiState.value = _uiState.value.copy(
                 timeoutMs = timeout,
                 concurrency = concurrency,
                 e2eTimeoutMs = e2eTimeout,
                 testUrl = testUrl,
                 e2eConcurrency = e2eConcurrency,
+                prismTimeoutMs = prismTimeoutMs,
                 prismProbeCount = prismProbeCount,
                 prismPassThreshold = prismPassThreshold,
-                prismResponseSize = prismResponseSize
+                prismResponseSize = prismResponseSize,
+                prismPrefilter = prismPrefilter,
+                prismPrefilterTimeoutMs = prismPrefilterTimeoutMs
             )
         } catch (e: Exception) {
             Log.w("DnsScanner", "Failed to load scanner settings", e)
@@ -505,9 +524,12 @@ class DnsScannerViewModel @Inject constructor(
                     e2eTimeoutMs = state.e2eTimeoutMs,
                     testUrl = state.testUrl,
                     e2eConcurrency = state.e2eConcurrency,
+                    prismTimeoutMs = state.prismTimeoutMs,
                     prismProbeCount = state.prismProbeCount,
                     prismPassThreshold = state.prismPassThreshold,
-                    prismResponseSize = state.prismResponseSize
+                    prismResponseSize = state.prismResponseSize,
+                    prismPrefilter = state.prismPrefilter,
+                    prismPrefilterTimeoutMs = state.prismPrefilterTimeoutMs
                 )
             } catch (e: Exception) {
                 Log.w("DnsScanner", "Failed to save scanner settings", e)
@@ -821,21 +843,48 @@ class DnsScannerViewModel @Inject constructor(
         saveScannerSettings()
     }
 
+    fun updatePrismTimeout(value: String) {
+        _uiState.value = _uiState.value.copy(prismTimeoutMs = value)
+        saveScannerSettings()
+    }
+
     fun updatePrismProbeCount(value: String) {
-        val clamped = value.toIntOrNull()?.let { if (it > 50) "50" else value } ?: value
+        val clamped = value.toIntOrNull()?.let { if (it > 30) "30" else value } ?: value
         _uiState.value = _uiState.value.copy(prismProbeCount = clamped)
         saveScannerSettings()
     }
 
     fun updatePrismPassThreshold(value: String) {
-        val clamped = value.toIntOrNull()?.let { if (it > 50) "50" else value } ?: value
-        _uiState.value = _uiState.value.copy(prismPassThreshold = clamped)
+        _uiState.value = _uiState.value.copy(prismPassThreshold = value)
         saveScannerSettings()
     }
 
     fun updatePrismResponseSize(value: String) {
         val clamped = value.toIntOrNull()?.let { if (it > 4096) "4096" else value } ?: value
         _uiState.value = _uiState.value.copy(prismResponseSize = clamped)
+        saveScannerSettings()
+    }
+
+    fun resetPrismSettings() {
+        _uiState.value = _uiState.value.copy(
+            prismTimeoutMs = "2000",
+            prismProbeCount = "5",
+            prismPassThreshold = "2",
+            prismResponseSize = "0",
+            prismPrefilter = false,
+            prismPrefilterTimeoutMs = "1500"
+        )
+        saveScannerSettings()
+    }
+
+    fun updatePrismPrefilter(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(prismPrefilter = enabled)
+        saveScannerSettings()
+    }
+
+    fun updatePrismPrefilterTimeout(value: String) {
+        val clamped = value.toIntOrNull()?.let { if (it < 200) "200" else value } ?: value
+        _uiState.value = _uiState.value.copy(prismPrefilterTimeoutMs = clamped)
         saveScannerSettings()
     }
 
@@ -1222,6 +1271,10 @@ class DnsScannerViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(error = "Prism requires a VPN profile with a valid server public key")
             return
         }
+        if (state.scanMode == ScanMode.PRISM && state.prismSettingsInvalid) {
+            _uiState.value = _uiState.value.copy(error = "Per-probe timeout too low (${state.prismPerProbeMs}ms). Increase timeout or lower pass threshold.")
+            return
+        }
 
         // Check for resumable partial scan
         val ss = state.scannerState
@@ -1315,23 +1368,23 @@ class DnsScannerViewModel @Inject constructor(
             )
             ScanMode.PRISM -> {
                 val pubkeyBytes = state.profilePubkey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                // Prism MUST use the profile's tunnel domain — SlipGate only
-                // responds on that domain. Ignore the editable testDomain field.
                 val prismDomain = state.profile?.domain ?: state.effectiveTestDomain
-                val probeCount = state.prismProbeCount.toIntOrNull()?.coerceIn(1, 50) ?: 20
-                val passThreshold = state.prismPassThreshold.toIntOrNull()?.coerceIn(1, probeCount) ?: (probeCount / 4).coerceAtLeast(1)
+                val prismTimeout = state.prismTimeoutMs.toLongOrNull() ?: 2000L
+                val probeCount = state.prismProbeCount.toIntOrNull()?.coerceIn(1, 30) ?: 5
+                val passThreshold = state.prismPassThreshold.toIntOrNull()?.coerceIn(1, probeCount) ?: 2
                 val responseSize = state.prismResponseSize.toIntOrNull()?.let { if (it == 0) 0 else it.coerceIn(200, 4096) } ?: 0
                 launchPrismScan(
                     hosts = resolvers,
                     allHosts = resolvers,
                     testDomain = prismDomain,
-                    timeout = timeout,
+                    timeout = prismTimeout,
                     concurrency = concurrency,
                     pubkey = pubkeyBytes,
                     port = scanPort,
                     probeCount = probeCount,
                     passThreshold = passThreshold,
-                    responseSize = responseSize
+                    responseSize = responseSize,
+                    prefilter = state.prismPrefilter
                 )
             }
             ScanMode.ADVANCED -> launchScan(
@@ -1373,11 +1426,11 @@ class DnsScannerViewModel @Inject constructor(
                 releaseWakeLock()
                 return
             }
-            val timeout = state.timeoutMs.toLongOrNull() ?: 3000L
+            val prismTimeout = state.prismTimeoutMs.toLongOrNull() ?: 2000L
             val concurrency = state.concurrency.toIntOrNull() ?: 50
             val scanPort = state.scanPort.toIntOrNull()?.coerceIn(1, 65535) ?: 53
-            val probeCount = state.prismProbeCount.toIntOrNull()?.coerceIn(1, 50) ?: 20
-            val passThreshold = state.prismPassThreshold.toIntOrNull()?.coerceIn(1, probeCount) ?: (probeCount / 4).coerceAtLeast(1)
+            val probeCount = state.prismProbeCount.toIntOrNull()?.coerceIn(1, 30) ?: 5
+            val passThreshold = state.prismPassThreshold.toIntOrNull()?.coerceIn(1, probeCount) ?: 2
             val pubkeyBytes = state.profilePubkey.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
             val responseSize = state.prismResponseSize.toIntOrNull()?.let { if (it == 0) 0 else it.coerceIn(200, 4096) } ?: 0
             val existingResults = state.scannerState.results
@@ -1392,13 +1445,14 @@ class DnsScannerViewModel @Inject constructor(
                 hosts = remainingHosts,
                 allHosts = state.resolverList,
                 testDomain = prismDomain,
-                timeout = timeout,
+                timeout = prismTimeout,
                 concurrency = concurrency,
                 pubkey = pubkeyBytes,
                 port = scanPort,
                 probeCount = probeCount,
                 passThreshold = passThreshold,
                 responseSize = responseSize,
+                prefilter = state.prismPrefilter,
                 existingResults = existingResults,
                 startScannedCount = existingResults.size,
                 startWorkingCount = startWorking
@@ -1985,9 +2039,10 @@ class DnsScannerViewModel @Inject constructor(
         concurrency: Int,
         pubkey: ByteArray,
         port: Int = 53,
-        probeCount: Int = 20,
-        passThreshold: Int = 5,
+        probeCount: Int = 5,
+        passThreshold: Int = 2,
         responseSize: Int = 0,
+        prefilter: Boolean = false,
         existingResults: Map<String, ResolverScanResult> = emptyMap(),
         startScannedCount: Int = 0,
         startWorkingCount: Int = 0
@@ -2003,6 +2058,8 @@ class DnsScannerViewModel @Inject constructor(
             var lastEmitTimeMs = 0L
 
             fun emitState(scanning: Boolean, force: Boolean = false) {
+                // If the job was cancelled (stop pressed), never set isScanning back to true
+                val actuallyScanning = scanning && scanJob?.isActive == true
                 if (!force) {
                     val now = System.currentTimeMillis()
                     if (now - lastEmitTimeMs < 150L) return
@@ -2010,7 +2067,7 @@ class DnsScannerViewModel @Inject constructor(
                 }
                 _uiState.update { s ->
                     s.copy(scannerState = ScannerState(
-                        isScanning = scanning,
+                        isScanning = actuallyScanning,
                         totalCount = allHosts.size,
                         scannedCount = scannedCount,
                         workingCount = workingCount,
@@ -2020,7 +2077,7 @@ class DnsScannerViewModel @Inject constructor(
                     ))
                 }
                 ScanStateHolder.update { it.copy(
-                    isScanning = scanning,
+                    isScanning = actuallyScanning,
                     scannedCount = scannedCount,
                     totalCount = allHosts.size,
                     workingCount = workingCount
@@ -2028,17 +2085,32 @@ class DnsScannerViewModel @Inject constructor(
                 periodicSaveIfNeeded()
             }
 
-            // Single pass — each resolver gets probeCount sequential probes internally.
-            // Results appear immediately as each resolver completes verification.
+            // Per-resolver: optional alive check then prism probes, all in one pass.
+            val prefilterDomain = testDomain
             val semaphore = kotlinx.coroutines.sync.Semaphore(concurrency)
             val jobs = hosts.map { host ->
                 launch {
                     semaphore.acquire()
                     try {
+                        // Optional pre-filter: skip dead IPs with a quick DNS check
+                        if (prefilter) {
+                            val pfTimeout = _uiState.value.prismPrefilterTimeoutMs.toLongOrNull()?.coerceAtLeast(200) ?: 1500L
+                            val alive = scannerRepository.isResolverAlive(host, port, prefilterDomain, pfTimeout)
+                            if (!alive) {
+                                scannedCount++
+                                timeoutCount++
+                                uiUpdateCounter++
+                                if (uiUpdateCounter >= 10) { uiUpdateCounter = 0; emitState(true) }
+                                return@launch
+                            }
+                        }
+
                         val start = System.currentTimeMillis()
-                        val passedProbes = scannerRepository.verifyResolver(host, port, testDomain, pubkey, timeout, probeCount, passThreshold, responseSize)
+                        val passedProbes = withTimeoutOrNull(timeout) {
+                            scannerRepository.verifyResolver(host, port, testDomain, pubkey, timeout, probeCount, passThreshold, responseSize)
+                        }
                         val ms = System.currentTimeMillis() - start
-                        val verified = passedProbes >= passThreshold
+                        val verified = passedProbes != null && passedProbes >= passThreshold
                         scannedCount++
                         if (verified) {
                             workingCount++
@@ -2047,17 +2119,18 @@ class DnsScannerViewModel @Inject constructor(
                                 status = ResolverStatus.WORKING,
                                 responseTimeMs = ms,
                                 prismVerified = true,
-                                prismPassedProbes = passedProbes,
+                                prismPassedProbes = passedProbes!!,
                                 prismTotalProbes = probeCount
                             ))
                         } else {
                             timeoutCount++
                         }
                         uiUpdateCounter++
-                        if (verified || uiUpdateCounter >= 20) {
+                        if (verified || uiUpdateCounter >= 10) {
                             uiUpdateCounter = 0; emitState(true)
                         }
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
                         scannedCount++; errorCount++
                     } finally {
                         semaphore.release()
