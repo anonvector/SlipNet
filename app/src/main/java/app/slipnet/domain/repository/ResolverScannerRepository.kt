@@ -93,6 +93,19 @@ interface ResolverScannerRepository {
     ): Flow<ResolverScanResult>
 
     /**
+     * Quick reachability check — sends a single A query for a random subdomain
+     * of the parent zone and returns true if any DNS response is received.
+     * Used as an optional pre-filter before Prism scans.
+     * May not work in censored environments where the parent domain is blocked.
+     */
+    suspend fun isResolverAlive(
+        host: String,
+        port: Int = 53,
+        testDomain: String,
+        timeoutMs: Long = 3000
+    ): Boolean
+
+    /**
      * Probe a single resolver using the Prism (slipgate) HMAC challenge-response protocol.
      * Sends base32(nonce || HMAC(key,nonce)[:16]).<domain> as a TXT query with EDNS0(4096),
      * then verifies the server's response encodes HMAC(key, nonce||0x01).
@@ -107,8 +120,8 @@ interface ResolverScannerRepository {
         testDomain: String,
         pubkey: ByteArray,
         timeoutMs: Long = 3000,
-        probeCount: Int = 20,
-        passThreshold: Int = 5,
+        probeCount: Int = 5,
+        passThreshold: Int = 2,
         responseSize: Int = 1232
     ): Int
 

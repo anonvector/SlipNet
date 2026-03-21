@@ -182,6 +182,13 @@ Pre-built binaries are available on the Releases page:
 # Use a custom local proxy port
 ./slipnet --port 9050 'slipnet://BASE64...'
 
+# Limit DNS query size (smaller = stealthier, slower)
+# Presets: 100 (large), 80 (medium), 60 (small), 50 (minimum)
+./slipnet --query-size 80 'slipnet://BASE64...'
+
+# Randomize query size with padding (e.g. 50–70 byte queries)
+./slipnet --query-size 50 --query-padding 20 'slipnet://BASE64...'
+
 # Show version
 ./slipnet --version
 ```
@@ -203,6 +210,82 @@ google-chrome --proxy-server="socks5://127.0.0.1:1080"
 ```
 
 The CLI auto-detects when DNS delegation isn't available and falls back to connecting directly to the server via its NS record.
+
+### Scanner
+
+The CLI includes a built-in DNS scanner with multiple scan modes:
+
+#### DNS Scan
+
+Tests resolvers for DNS tunnel compatibility using EDNS probing, NXDOMAIN hijacking detection, and latency measurement. Each resolver gets a score from 0–6.
+
+```bash
+# Scan with a file of resolver IPs
+./slipnet scan --domain t.example.com --ips resolvers.txt
+
+# Scan a single IP
+./slipnet scan --domain t.example.com --ip 8.8.8.8
+
+# Use the built-in resolver list
+./slipnet scan --domain t.example.com
+```
+
+#### DNS Scan + E2E
+
+Runs DNS scanning and automatically feeds resolvers meeting the score threshold into end-to-end tunnel tests. Each E2E test starts a real tunnel through the resolver and makes an HTTP request.
+
+```bash
+# Using a slipnet:// config (auto-extracts domain, pubkey, and mode)
+./slipnet scan --config 'slipnet://BASE64...' --ips resolvers.txt
+
+# Manual domain + pubkey
+./slipnet scan --domain t.example.com --ips resolvers.txt --e2e --pubkey HEXKEY
+
+# With NoizDNS mode
+./slipnet scan --domain t.example.com --ips resolvers.txt --e2e --pubkey HEXKEY --noizdns
+```
+
+#### E2E Test Only
+
+Skips the DNS scan entirely and runs E2E tunnel tests directly on the provided resolvers. Useful when you already have a list of known-good resolvers and want to verify tunnel connectivity.
+
+```bash
+# Using a slipnet:// config
+./slipnet scan --config 'slipnet://BASE64...' --ips resolvers.txt --e2e-only
+
+# Manual domain + pubkey
+./slipnet scan --domain t.example.com --pubkey HEXKEY --ips resolvers.txt --e2e-only
+
+# With custom concurrency and timeout
+./slipnet scan --config 'slipnet://BASE64...' --ips resolvers.txt --e2e-only --e2e-concurrency 20 --e2e-timeout 20000
+```
+
+#### Prism (Server-Verified Scan)
+
+Sends HMAC-authenticated probes to verify that the tunnel server is genuine. Requires [SlipGate](https://github.com/anonvector/slipgate) running on the server.
+
+```bash
+# Using a slipnet:// config
+./slipnet scan --config 'slipnet://BASE64...' --ips resolvers.txt --verify
+
+# Manual domain + pubkey with custom probe settings
+./slipnet scan --domain t.example.com --pubkey HEXKEY --ips resolvers.txt --verify --rounds 5 --threshold 2
+```
+
+### Interactive Mode
+
+Running `./slipnet` with no arguments launches an interactive menu with all modes accessible via numbered options:
+
+```
+  1) Connect (DNSTT / NoizDNS / Slipstream)
+  2) DNS Scanner
+  3) DNS Scanner + E2E Test
+  4) Quick Scan (single IP)
+  5) Prism (server-verified scan)
+  6) E2E Test Only
+  7) Help
+  0) Exit
+```
 
 ### Building CLI from Source
 

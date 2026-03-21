@@ -299,9 +299,12 @@ fun DnsScannerScreen(
                 showTestUrl = uiState.profileId != null && uiState.scanMode != ScanMode.PRISM,
                 e2eFullVerification = uiState.e2eFullVerification,
                 scanMode = uiState.scanMode,
+                prismTimeoutMs = uiState.prismTimeoutMs,
                 prismProbeCount = uiState.prismProbeCount,
                 prismPassThreshold = uiState.prismPassThreshold,
                 prismResponseSize = uiState.prismResponseSize,
+                prismPrefilter = uiState.prismPrefilter,
+                prismPrefilterTimeoutMs = uiState.prismPrefilterTimeoutMs,
                 onTestDomainChange = { viewModel.updateTestDomain(it) },
                 onScanPortChange = { viewModel.updateScanPort(it) },
                 onTimeoutChange = { viewModel.updateTimeout(it) },
@@ -312,9 +315,13 @@ fun DnsScannerScreen(
                 onE2eTimeoutChange = { viewModel.updateE2eTimeout(it) },
                 onE2eConcurrencyChange = { viewModel.updateE2eConcurrency(it) },
                 onE2eFullVerificationChange = { viewModel.updateE2eFullVerification(it) },
+                onPrismTimeoutChange = { viewModel.updatePrismTimeout(it) },
                 onPrismProbeCountChange = { viewModel.updatePrismProbeCount(it) },
                 onPrismPassThresholdChange = { viewModel.updatePrismPassThreshold(it) },
-                onPrismResponseSizeChange = { viewModel.updatePrismResponseSize(it) }
+                onPrismResponseSizeChange = { viewModel.updatePrismResponseSize(it) },
+                onPrismPrefilterChange = { viewModel.updatePrismPrefilter(it) },
+                onPrismPrefilterTimeoutChange = { viewModel.updatePrismPrefilterTimeout(it) },
+                onResetPrismSettings = { viewModel.resetPrismSettings() }
             )
 
             // Resolver List
@@ -607,9 +614,12 @@ private fun ConfigurationSection(
     showTestUrl: Boolean = false,
     e2eFullVerification: Boolean = false,
     scanMode: ScanMode = ScanMode.ADVANCED,
-    prismProbeCount: String = "20",
-    prismPassThreshold: String = "5",
+    prismTimeoutMs: String = "2000",
+    prismProbeCount: String = "5",
+    prismPassThreshold: String = "2",
     prismResponseSize: String = "0",
+    prismPrefilter: Boolean = false,
+    prismPrefilterTimeoutMs: String = "1500",
     onTestDomainChange: (String) -> Unit,
     onScanPortChange: (String) -> Unit,
     onTimeoutChange: (String) -> Unit,
@@ -620,9 +630,13 @@ private fun ConfigurationSection(
     onE2eTimeoutChange: (String) -> Unit = {},
     onE2eConcurrencyChange: (String) -> Unit = {},
     onE2eFullVerificationChange: (Boolean) -> Unit = {},
+    onPrismTimeoutChange: (String) -> Unit = {},
     onPrismProbeCountChange: (String) -> Unit = {},
     onPrismPassThresholdChange: (String) -> Unit = {},
-    onPrismResponseSizeChange: (String) -> Unit = {}
+    onPrismResponseSizeChange: (String) -> Unit = {},
+    onPrismPrefilterChange: (Boolean) -> Unit = {},
+    onPrismPrefilterTimeoutChange: (String) -> Unit = {},
+    onResetPrismSettings: () -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -683,16 +697,18 @@ private fun ConfigurationSection(
                     shape = RoundedCornerShape(12.dp)
                 )
 
-                OutlinedTextField(
-                    value = timeoutMs,
-                    onValueChange = onTimeoutChange,
-                    label = { Text("Timeout") },
-                    suffix = { Text("ms") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp)
-                )
+                if (scanMode != ScanMode.PRISM) {
+                    OutlinedTextField(
+                        value = timeoutMs,
+                        onValueChange = onTimeoutChange,
+                        label = { Text("Timeout") },
+                        suffix = { Text("ms") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
 
                 OutlinedTextField(
                     value = concurrency,
@@ -737,6 +753,27 @@ private fun ConfigurationSection(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    val rawPerProbe = (prismTimeoutMs.toLongOrNull() ?: 2000L) / (prismPassThreshold.toIntOrNull()?.coerceAtLeast(1) ?: 2)
+                    val perProbeTooLow = rawPerProbe < 200
+                    OutlinedTextField(
+                        value = prismTimeoutMs,
+                        onValueChange = { onPrismTimeoutChange(it.filter { c -> c.isDigit() }) },
+                        label = { Text("Timeout (per resolver)") },
+                        suffix = { Text("ms") },
+                        isError = perProbeTooLow,
+                        supportingText = {
+                            if (perProbeTooLow) {
+                                Text("${rawPerProbe}ms per probe — min 200ms required")
+                            } else {
+                                Text("${rawPerProbe}ms per probe")
+                            }
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
                     OutlinedTextField(
                         value = prismResponseSize,
                         onValueChange = onPrismResponseSizeChange,
@@ -748,6 +785,58 @@ private fun ConfigurationSection(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp)
                     )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Pre-filter dead resolvers", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = "Quick DNS check to skip dead IPs before prism probes (uses test domain)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = prismPrefilter,
+                        onCheckedChange = onPrismPrefilterChange
+                    )
+                }
+
+                if (prismPrefilter) {
+                    OutlinedTextField(
+                        value = prismPrefilterTimeoutMs,
+                        onValueChange = { onPrismPrefilterTimeoutChange(it.filter { c -> c.isDigit() }) },
+                        label = { Text("Pre-filter timeout") },
+                        suffix = { Text("ms") },
+                        supportingText = { Text("Min 500ms") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+
+                OutlinedTextField(
+                    value = e2eTimeoutMs,
+                    onValueChange = { onE2eTimeoutChange(it.filter { c -> c.isDigit() }) },
+                    label = { Text("E2E Timeout") },
+                    suffix = { Text("ms") },
+                    supportingText = { Text("Timeout per resolver for tunnel test") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                )
+
+                TextButton(
+                    onClick = onResetPrismSettings,
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Reset to defaults")
                 }
             }
 
