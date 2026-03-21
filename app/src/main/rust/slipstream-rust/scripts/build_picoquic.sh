@@ -97,9 +97,14 @@ if [[ -n "${OPENSSL_USE_STATIC_LIBS:-}" ]]; then
   CMAKE_ARGS+=("-DOPENSSL_USE_STATIC_LIBS=${OPENSSL_USE_STATIC_LIBS}")
 fi
 
+# Prefer Ninja over MSBuild on Windows (much faster).
+if command -v ninja &>/dev/null && [[ -z "${CMAKE_GENERATOR:-}" ]]; then
+  CMAKE_ARGS+=("-G" "Ninja")
+fi
+
 cmake -S "${PICOQUIC_DIR}" -B "${BUILD_DIR}" "${CMAKE_ARGS[@]}"
 if [[ ${#BUILD_TARGET[@]} -gt 0 ]]; then
-  cmake --build "${BUILD_DIR}" "${BUILD_TARGET[@]}"
+  cmake --build "${BUILD_DIR}" --config "${BUILD_TYPE}" "${BUILD_TARGET[@]}"
 else
-  cmake --build "${BUILD_DIR}"
+  cmake --build "${BUILD_DIR}" --config "${BUILD_TYPE}"
 fi
