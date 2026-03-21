@@ -70,6 +70,18 @@ if [[ -n "${CMAKE_OSX_ARCHITECTURES:-}" ]]; then
   CMAKE_ARGS+=("-DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}")
 fi
 
+# Windows: picotls.h includes "wincompat.h" which lives in picoquic's source
+# directory. Add it to the global C include path so the fetched picotls build
+# can find it.
+if [[ "${OS:-}" == "Windows_NT" ]] || [[ "$(uname -s 2>/dev/null)" == MINGW* ]]; then
+  WINCOMPAT_DIR="${PICOQUIC_DIR}/picoquic"
+  # Convert to Windows-style path for MSVC /I flag
+  if command -v cygpath &>/dev/null; then
+    WINCOMPAT_DIR="$(cygpath -w "${WINCOMPAT_DIR}")"
+  fi
+  CMAKE_ARGS+=("-DCMAKE_C_FLAGS_INIT=/I\"${WINCOMPAT_DIR}\"")
+fi
+
 if [[ -n "${OPENSSL_ROOT_DIR:-}" ]]; then
   CMAKE_ARGS+=("-DOPENSSL_ROOT_DIR=${OPENSSL_ROOT_DIR}")
 fi
