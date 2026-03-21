@@ -51,21 +51,39 @@ pub(crate) fn create_archive(
     Ok(())
 }
 
+/// Returns extra CC flags needed for cross-compilation (e.g. `-arch x86_64`
+/// when building for x86_64 on an ARM64 macOS host).
+fn cross_compile_flags() -> Vec<String> {
+    let mut flags = Vec::new();
+    // Honour CFLAGS from the environment (e.g. `-arch x86_64`).
+    if let Ok(cflags) = env::var("CFLAGS") {
+        for flag in cflags.split_whitespace() {
+            flags.push(flag.to_string());
+        }
+    }
+    flags
+}
+
 pub(crate) fn compile_cc(
     cc: &str,
     source: &Path,
     output: &Path,
     picoquic_include_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let status = Command::new(cc)
+    let mut command = Command::new(cc);
+    command
         .arg("-c")
-        .arg("-fPIC")
+        .arg("-fPIC");
+    for flag in cross_compile_flags() {
+        command.arg(flag);
+    }
+    command
         .arg(source)
         .arg("-o")
         .arg(output)
         .arg("-I")
-        .arg(picoquic_include_dir)
-        .status()?;
+        .arg(picoquic_include_dir);
+    let status = command.status()?;
     if !status.success() {
         return Err(format!("Failed to compile {}.", source.display()).into());
     }
@@ -81,7 +99,11 @@ pub(crate) fn compile_cc_with_includes(
     let mut command = Command::new(cc);
     command
         .arg("-c")
-        .arg("-fPIC")
+        .arg("-fPIC");
+    for flag in cross_compile_flags() {
+        command.arg(flag);
+    }
+    command
         .arg(source)
         .arg("-o")
         .arg(output);
