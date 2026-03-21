@@ -98,6 +98,7 @@ app/schemas/
 
 # Release build output
 app/release/
+app/lite/release/
 
 # Baseline profile DEX metadata (build artifacts)
 *.dm
