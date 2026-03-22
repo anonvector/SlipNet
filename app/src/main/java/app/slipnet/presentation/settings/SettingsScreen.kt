@@ -132,6 +132,7 @@ fun SettingsScreen(
     var showGeoBypassCountryDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showRemoteDnsDialog by remember { mutableStateOf(false) }
+    var showGlobalResolverDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
     var showResetSettingsDialog by remember { mutableStateOf(false) }
 
@@ -412,6 +413,26 @@ fun SettingsScreen(
                 title = "DNS",
                 subtitle = "Changes apply on next connection"
             ) {
+                SwitchSettingItem(
+                    icon = Icons.Default.Storage,
+                    title = "Global DNS resolver override",
+                    description = if (uiState.globalResolverEnabled) {
+                        val list = uiState.globalResolverList.ifBlank { "Not set" }
+                        "Active: $list"
+                    } else {
+                        "Use profile resolvers (default)"
+                    },
+                    checked = uiState.globalResolverEnabled,
+                    onCheckedChange = { viewModel.setGlobalResolverEnabled(it) }
+                )
+                if (uiState.globalResolverEnabled) {
+                    ClickableSettingItem(
+                        icon = Icons.Default.Edit,
+                        title = "Global resolver IPs",
+                        description = uiState.globalResolverList.ifBlank { "Tap to set resolver IPs" },
+                        onClick = { showGlobalResolverDialog = true }
+                    )
+                }
                 ClickableSettingItem(
                     icon = Icons.Default.Language,
                     title = "Remote DNS server",
@@ -986,6 +1007,40 @@ fun SettingsScreen(
                 TextButton(onClick = { showGeoBypassCountryDialog = false }) {
                     Text("Cancel")
                 }
+            }
+        )
+    }
+
+    // Global Resolver Override Dialog
+    if (showGlobalResolverDialog) {
+        var resolverText by remember { mutableStateOf(uiState.globalResolverList) }
+        AlertDialog(
+            onDismissRequest = { showGlobalResolverDialog = false },
+            title = { Text("Global DNS Resolvers") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Enter DNS resolver IPs, one per line or comma-separated. These will override the resolvers in all DNS tunnel profiles (DNSTT, NoizDNS, Slipstream).",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        value = resolverText,
+                        onValueChange = { resolverText = it },
+                        modifier = Modifier.fillMaxWidth().height(120.dp),
+                        placeholder = { Text("e.g. 8.8.8.8, 1.1.1.1") },
+                        singleLine = false,
+                        maxLines = 5
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.setGlobalResolverList(resolverText.trim())
+                    showGlobalResolverDialog = false
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGlobalResolverDialog = false }) { Text("Cancel") }
             }
         )
     }

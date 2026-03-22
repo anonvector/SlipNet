@@ -394,7 +394,20 @@ class SlipNetVpnService : VpnService() {
                 currentTunnelType = profile.tunnelType
                 Log.i(TAG, "Starting VPN with tunnel type: $currentTunnelType")
 
-                val dnsServer = resolveToIp(profile.resolvers.firstOrNull()?.host)
+                // Global resolver override: replace profile resolvers with user's global list
+                val effectiveResolverHost = if (preferencesDataStore.globalResolverEnabled.first()) {
+                    val globalList = preferencesDataStore.globalResolverList.first()
+                    val firstGlobal = globalList.split(",", "\n").map { it.trim() }.firstOrNull { it.isNotBlank() }
+                    if (firstGlobal != null) {
+                        Log.i(TAG, "Using global DNS resolver override: $firstGlobal")
+                        firstGlobal
+                    } else {
+                        profile.resolvers.firstOrNull()?.host
+                    }
+                } else {
+                    profile.resolvers.firstOrNull()?.host
+                }
+                val dnsServer = resolveToIp(effectiveResolverHost)
                 // Remote DNS: the DNS servers used on the remote side of the tunnel
                 var remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
                 var remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
