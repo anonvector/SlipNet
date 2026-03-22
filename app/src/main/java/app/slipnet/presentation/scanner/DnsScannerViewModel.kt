@@ -94,7 +94,7 @@ data class DnsScannerUiState(
     val e2eMinScore: Int = 2,
     val e2eSortOption: E2eSortOption = E2eSortOption.NONE,
     val e2eConcurrency: String = "3",
-    val e2eFullVerification: Boolean = false,
+    val e2eFullVerification: Boolean = true,
     // Prism probe settings
     val prismTimeoutMs: String = "2000",
     val prismProbeCount: String = "5",
@@ -462,9 +462,10 @@ class DnsScannerViewModel @Inject constructor(
     private fun restoreFromScanStateHolder() {
         val holder = ScanStateHolder.state.value
         if ((holder.isScanning || holder.isE2eRunning) && holder.results.isNotEmpty()) {
-            Log.i("DnsScanner", "Restoring ${holder.results.size} results from ScanStateHolder")
+            Log.i("DnsScanner", "Restoring ${holder.results.size} results from ScanStateHolder (profileId=${holder.profileId})")
             _uiState.update { s ->
                 s.copy(
+                    profileId = s.profileId ?: holder.profileId,
                     scannerState = s.scannerState.copy(
                         isScanning = holder.isScanning,
                         scannedCount = holder.scannedCount,
@@ -473,6 +474,19 @@ class DnsScannerViewModel @Inject constructor(
                         results = holder.results
                     )
                 )
+            }
+            // Load profile if not already set from nav args
+            if (profileId == null && holder.profileId != null) {
+                viewModelScope.launch {
+                    try {
+                        val profile = profileRepository.getProfileById(holder.profileId)
+                        if (profile != null) {
+                            _uiState.update { it.copy(profile = profile) }
+                        }
+                    } catch (e: Exception) {
+                        Log.w("DnsScanner", "Failed to restore profile from ScanStateHolder", e)
+                    }
+                }
             }
         }
     }
@@ -494,7 +508,10 @@ class DnsScannerViewModel @Inject constructor(
                 val hash = results.hashCode()
                 if (hash != lastResultsHash) {
                     lastResultsHash = hash
-                    ScanStateHolder.update { it.copy(results = results) }
+                    ScanStateHolder.update { it.copy(
+                        results = results,
+                        profileId = state.profileId
+                    ) }
                 }
             }
         }

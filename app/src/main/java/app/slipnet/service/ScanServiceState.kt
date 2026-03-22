@@ -10,5 +10,7 @@ data class ScanServiceState(
     val workingCount: Int = 0,
     val stopRequested: Boolean = false,
     /** Working scan results preserved across activity recreation. */
-    val results: List<ResolverScanResult> = emptyList()
+    val results: List<ResolverScanResult> = emptyList(),
+    /** Profile ID for restoring E2E test context after activity recreation. */
+    val profileId: Long? = null
 )
