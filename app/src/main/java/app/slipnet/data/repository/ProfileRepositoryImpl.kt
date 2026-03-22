@@ -71,4 +71,8 @@ class ProfileRepositoryImpl @Inject constructor(
     override suspend fun prepareTopSortOrder() {
         profileDao.incrementAllSortOrders()
     }
+
+    override suspend fun togglePinned(id: Long) {
+        profileDao.togglePinned(id)
+    }
 }

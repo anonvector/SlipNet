@@ -479,26 +479,16 @@ fun EditProfileScreen(
                                             style = MaterialTheme.typography.bodyLarge
                                         )
                                         Text(
-                                            text = if (uiState.noizdnsStealth) "Overridden by stealth mode"
-                                                   else if (uiState.dnsPayloadSize == 0) "Full capacity (fastest)"
+                                            text = if (uiState.dnsPayloadSize == 0) "Full capacity (fastest)"
                                                    else "${uiState.dnsPayloadSize} bytes per query",
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = if (uiState.noizdnsStealth) MaterialTheme.colorScheme.primary
-                                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     Icon(
                                         Icons.Default.KeyboardArrowRight,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (uiState.noizdnsStealth) {
-                                    Text(
-                                        text = "Stealth mode sets query size to 50 bytes and adds 0–20 bytes of random padding per query, so each DNS query is randomly sized between 50–70 bytes.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
                                     )
                                 }
 
@@ -1015,26 +1005,16 @@ fun EditProfileScreen(
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Text(
-                                text = if (uiState.noizdnsStealth) "Overridden by stealth mode"
-                                       else if (uiState.dnsPayloadSize == 0) "Full capacity (fastest)"
+                                text = if (uiState.dnsPayloadSize == 0) "Full capacity (fastest)"
                                        else "${uiState.dnsPayloadSize} bytes per query",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (uiState.noizdnsStealth) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Icon(
                             Icons.Default.KeyboardArrowRight,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (uiState.noizdnsStealth) {
-                        Text(
-                            text = "Stealth mode sets query size to 50 bytes and adds 0–20 bytes of random padding per query, so each DNS query is randomly sized between 50–70 bytes.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
                         )
                     }
 

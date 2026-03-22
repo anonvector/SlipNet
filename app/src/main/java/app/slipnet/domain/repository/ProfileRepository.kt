@@ -16,4 +16,5 @@ interface ProfileRepository {
     suspend fun updateProfileOrder(orderedIds: List<Long>)
     suspend fun getMaxSortOrder(): Int
     suspend fun prepareTopSortOrder()
+    suspend fun togglePinned(id: Long)
 }

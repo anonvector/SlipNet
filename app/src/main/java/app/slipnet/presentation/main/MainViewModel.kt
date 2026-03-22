@@ -462,6 +462,12 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun togglePinProfile(profile: ServerProfile) {
+        viewModelScope.launch {
+            profileRepository.togglePinned(profile.id)
+        }
+    }
+
     fun deleteProfile(profile: ServerProfile) {
         viewModelScope.launch {
             val result = deleteProfileUseCase(profile.id)
@@ -716,6 +722,25 @@ class MainViewModel @Inject constructor(
             } finally {
                 _uiState.value = _uiState.value.copy(isPingRunning = false)
             }
+        }
+    }
+
+    fun pingSingleProfile(profile: ServerProfile) {
+        if (profile.tunnelType == TunnelType.SNOWFLAKE) return
+
+        _uiState.value = _uiState.value.copy(
+            pingResults = _uiState.value.pingResults + (profile.id to PingResult.Pending)
+        )
+
+        viewModelScope.launch {
+            val result = if (profile.tunnelType in E2E_TUNNEL_TYPES) {
+                testProfileE2e(profile)
+            } else {
+                pingProfileTcp(profile)
+            }
+            _uiState.value = _uiState.value.copy(
+                pingResults = _uiState.value.pingResults + (profile.id to result)
+            )
         }
     }
 
