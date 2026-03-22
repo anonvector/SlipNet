@@ -3725,34 +3725,20 @@ class SlipNetVpnService : VpnService() {
                 }
 
                 // In proxy-only mode, no tun2socks to worry about.
+                // Otherwise, always restart tun2socks to ensure clean recovery.
                 if (isProxyOnly) {
                     vpnRepository.setProxyConnected(profile)
-                } else if (HevSocks5Tunnel.isRunning()) {
-                    // tun2socks is still running — give it a moment to reconnect
-                    // to the new proxy on the same port. If traffic doesn't resume,
-                    // fall back to a full tun2socks restart.
-                    delay(2000)
-                    val txBefore = HevSocks5Tunnel.getStats()?.txBytes ?: 0L
-                    delay(1000)
-                    val txAfter = HevSocks5Tunnel.getStats()?.txBytes ?: 0L
-                    if (txAfter <= txBefore) {
-                        // No traffic flowing — tun2socks didn't auto-reconnect.
-                        // Full restart with existing VPN interface.
-                        Log.w(TAG, "tun2socks didn't recover after proxy restart, restarting tun2socks")
-                        withContext(Dispatchers.IO) {
-                            try { HevSocks5Tunnel.stop() } catch (_: Exception) {}
+                } else {
+                    withContext(Dispatchers.IO) {
+                        try { HevSocks5Tunnel.stop() } catch (_: Exception) {}
+                    }
+                    vpnInterface?.let { pfd ->
+                        val tun2socksResult = vpnRepository.startTun2Socks(profile, pfd)
+                        if (tun2socksResult.isFailure) {
+                            Log.e(TAG, "Failed to restart tun2socks", tun2socksResult.exceptionOrNull())
+                            handleTunnelFailure("failed to restart tun2socks after network change")
+                            return@launch
                         }
-                        vpnInterface?.let { pfd ->
-                            val tun2socksResult = vpnRepository.startTun2Socks(profile, pfd)
-                            if (tun2socksResult.isFailure) {
-                                Log.e(TAG, "Failed to restart tun2socks", tun2socksResult.exceptionOrNull())
-                                handleTunnelFailure("failed to restart tun2socks after network change")
-                                return@launch
-                            }
-                        }
-                        Log.i(TAG, "tun2socks restarted successfully")
-                    } else {
-                        Log.d(TAG, "tun2socks auto-reconnected (tx: $txBefore → $txAfter)")
                     }
                 }
 
