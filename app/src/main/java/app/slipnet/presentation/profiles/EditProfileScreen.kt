@@ -1191,6 +1191,21 @@ fun EditProfileScreen(
                 val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake && !uiState.isNaiveBased &&
                         !uiState.isSocks5 && !(uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH)
                 if (showResolvers) {
+                    if (globalResolverEnabled) {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            ),
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                        ) {
+                            Text(
+                                text = "Global DNS resolver override is active in Settings. Profile resolvers will be ignored at connection time.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    }
                     if (uiState.resolversHidden) {
                         // Hidden resolver: show toggle for custom override
                         Text(
