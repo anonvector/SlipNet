@@ -86,6 +86,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.data.local.datastore.DarkMode
+import app.slipnet.data.local.datastore.DnsWorkerMode
 import app.slipnet.data.local.datastore.DomainRoutingMode
 import app.slipnet.data.local.datastore.SplitTunnelingMode
 import app.slipnet.data.local.datastore.SshCipher
@@ -134,6 +135,7 @@ fun SettingsScreen(
     var showRemoteDnsDialog by remember { mutableStateOf(false) }
     var showGlobalResolverDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
+    var showDnsWorkerDialog by remember { mutableStateOf(false) }
     var showResetSettingsDialog by remember { mutableStateOf(false) }
 
     // Proxy settings - local state for port text fields to avoid cursor jumps from async DataStore round-trip
@@ -444,6 +446,15 @@ fun SettingsScreen(
                         "Default (8.8.8.8, 1.1.1.1)"
                     },
                     onClick = { showRemoteDnsDialog = true }
+                )
+
+                SettingsDivider()
+
+                ClickableSettingItem(
+                    icon = Icons.Default.Hub,
+                    title = "DNS workers",
+                    description = "${uiState.dnsWorkerMode.displayName} (SOCKS tunnels only, SSH always uses 5)",
+                    onClick = { showDnsWorkerDialog = true }
                 )
             }
 
@@ -799,6 +810,53 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showMtuDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showDnsWorkerDialog) {
+        AlertDialog(
+            onDismissRequest = { showDnsWorkerDialog = false },
+            title = { Text("DNS Workers") },
+            text = {
+                Column {
+                    Text(
+                        text = "Controls how DNS is resolved through the tunnel. Fewer workers = more stable on restricted networks. Per-query creates a fresh connection for each DNS lookup.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+                    DnsWorkerMode.entries.forEach { mode ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    viewModel.setDnsWorkerMode(mode)
+                                    showDnsWorkerDialog = false
+                                }
+                                .padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = uiState.dnsWorkerMode == mode,
+                                onClick = {
+                                    viewModel.setDnsWorkerMode(mode)
+                                    showDnsWorkerDialog = false
+                                }
+                            )
+                            Text(
+                                text = mode.displayName,
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDnsWorkerDialog = false }) {
                     Text("Cancel")
                 }
             }
@@ -2146,6 +2204,14 @@ private fun DonateCard() {
                                 modifier = Modifier.size(18.dp)
                             )
                         }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    val uriHandler = LocalUriHandler.current
+                    TextButton(
+                        onClick = { uriHandler.openUri("") },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Buy Me a Coffee")
                     }
                     Text(
                         text = "Even a small amount makes a difference. Thank you.",
