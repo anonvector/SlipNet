@@ -61,6 +61,7 @@ class SlipNetVpnService : VpnService() {
         private const val TAG = "SlipNetVpnService"
         const val ACTION_CONNECT = "app.slipnet.CONNECT"
         const val ACTION_DISCONNECT = "app.slipnet.DISCONNECT"
+        const val ACTION_RECONNECT = "app.slipnet.RECONNECT"
         const val EXTRA_PROFILE_ID = "profile_id"
         const val EXTRA_CHAIN_ID = "chain_id"
 
@@ -149,6 +150,10 @@ class SlipNetVpnService : VpnService() {
     private var lastTxBytes = 0L
     private var lastRxBytes = 0L
 
+    // Notification traffic stats polling
+    private var trafficNotificationJob: Job? = null
+    private var prevNotifStats = app.slipnet.domain.model.TrafficStats.EMPTY
+
     // Seamless reconnect state: tracks how many times we've tried a lightweight
     // proxy-only restart before escalating to full teardown.
     private var seamlessReconnectAttempts = 0
@@ -195,6 +200,9 @@ class SlipNetVpnService : VpnService() {
             }
             ACTION_DISCONNECT -> {
                 disconnect()
+            }
+            ACTION_RECONNECT -> {
+                handleNetworkChange("manual reconnect")
             }
             null -> {
                 // Service was restarted by the system after being killed
@@ -4072,7 +4080,11 @@ class SlipNetVpnService : VpnService() {
                 notificationManager.notify(NotificationHelper.VPN_NOTIFICATION_ID, notification)
 
                 when (state) {
+                    is ConnectionState.Connected -> {
+                        startTrafficNotificationPolling()
+                    }
                     is ConnectionState.Error -> {
+                        stopTrafficNotificationPolling()
                         // Don't stop service during kill switch — we're blocking traffic and reconnecting
                         if (isKillSwitchActive) return@collect
 
@@ -4092,15 +4104,54 @@ class SlipNetVpnService : VpnService() {
                     // user reconnects quickly on the same service instance, this observer
                     // may still be processing the old Disconnected state and would kill
                     // the new connection.
-                    else -> { }
+                    else -> {
+                        stopTrafficNotificationPolling()
+                    }
                 }
             }
         }
     }
 
+    private fun startTrafficNotificationPolling() {
+        trafficNotificationJob?.cancel()
+        prevNotifStats = app.slipnet.domain.model.TrafficStats.EMPTY
+        trafficNotificationJob = serviceScope.launch {
+            while (isActive) {
+                delay(1000)
+                vpnRepository.refreshTrafficStats()
+                val current = vpnRepository.trafficStats.value
+                val upSpeed = (current.bytesSent - prevNotifStats.bytesSent).coerceAtLeast(0)
+                val downSpeed = (current.bytesReceived - prevNotifStats.bytesReceived).coerceAtLeast(0)
+                prevNotifStats = current
+
+                val state = vpnRepository.connectionState.first()
+                if (state is ConnectionState.Connected) {
+                    val notification = notificationHelper.createVpnNotification(
+                        state = state,
+                        isProxyOnly = isProxyOnly,
+                        trafficStats = current,
+                        uploadSpeed = upSpeed,
+                        downloadSpeed = downSpeed
+                    )
+                    val notificationManager = getSystemService(NotificationManager::class.java)
+                    notificationManager.notify(NotificationHelper.VPN_NOTIFICATION_ID, notification)
+                }
+            }
+        }
+    }
+
+    private fun stopTrafficNotificationPolling() {
+        trafficNotificationJob?.cancel()
+        trafficNotificationJob = null
+        prevNotifStats = app.slipnet.domain.model.TrafficStats.EMPTY
+    }
+
     private fun disconnect() {
         // Mark as user-initiated so onDestroy() doesn't show disconnect notification
         isUserInitiatedDisconnect = true
+
+        // Stop traffic stats polling
+        stopTrafficNotificationPolling()
 
         // Clear kill switch so teardown proceeds normally
         isKillSwitchActive = false
