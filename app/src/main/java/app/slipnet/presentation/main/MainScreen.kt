@@ -451,6 +451,16 @@ fun MainScreen(
                                 enabled = uiState.profiles.isNotEmpty()
                             )
                             DropdownMenuItem(
+                                text = {
+                                    Text(if (uiState.isPingRunning) "Stop Ping" else "Ping Servers")
+                                },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    viewModel.pingAllProfilesSimple()
+                                },
+                                enabled = uiState.profiles.isNotEmpty()
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Export All Profiles") },
                                 onClick = {
                                     showOverflowMenu = false
@@ -692,7 +702,6 @@ fun MainScreen(
                                             exportLockMode = "qr"
                                         },
                                         onPinClick = { viewModel.togglePinProfile(profile) },
-                                        onPingClick = { viewModel.pingSingleProfile(profile) },
                                         modifier = Modifier
                                             .longPressDraggableHandle()
                                             .shadow(elevation, RoundedCornerShape(12.dp))
