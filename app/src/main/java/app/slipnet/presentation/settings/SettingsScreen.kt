@@ -414,7 +414,7 @@ fun SettingsScreen(
                 subtitle = "Changes apply on next connection"
             ) {
                 SwitchSettingItem(
-                    icon = Icons.Default.Language,
+                    icon = Icons.Default.Sync,
                     title = "Global DNS resolver override",
                     description = if (uiState.globalResolverEnabled) {
                         val list = uiState.globalResolverList.ifBlank { "Not set" }
@@ -427,14 +427,14 @@ fun SettingsScreen(
                 )
                 if (uiState.globalResolverEnabled) {
                     ClickableSettingItem(
-                        icon = Icons.Default.Language,
+                        icon = Icons.Default.Hub,
                         title = "Global resolver IPs",
                         description = uiState.globalResolverList.ifBlank { "Tap to set resolver IPs" },
                         onClick = { showGlobalResolverDialog = true }
                     )
                 }
                 ClickableSettingItem(
-                    icon = Icons.Default.Language,
+                    icon = Icons.Default.Public,
                     title = "Remote DNS server",
                     description = if (uiState.remoteDnsMode == "custom") {
                         val primary = uiState.customRemoteDns.ifBlank { "8.8.8.8" }
@@ -1014,13 +1014,15 @@ fun SettingsScreen(
     // Global Resolver Override Dialog
     if (showGlobalResolverDialog) {
         var resolverText by remember { mutableStateOf(uiState.globalResolverList) }
+        val resolverCount = resolverText.split(",", "\n").map { it.trim() }.count { it.isNotBlank() }
+        val tooMany = resolverCount > 8
         AlertDialog(
             onDismissRequest = { showGlobalResolverDialog = false },
             title = { Text("Global DNS Resolvers") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Enter DNS resolver IPs, one per line or comma-separated. These will override the resolvers in all DNS tunnel profiles (DNSTT, NoizDNS, Slipstream).",
+                        "Enter DNS resolver IPs, one per line or comma-separated (max 8). These override the resolvers in all DNS tunnel profiles.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     OutlinedTextField(
@@ -1029,15 +1031,32 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth().height(120.dp),
                         placeholder = { Text("e.g. 8.8.8.8, 1.1.1.1") },
                         singleLine = false,
-                        maxLines = 5
+                        maxLines = 8,
+                        isError = tooMany
                     )
+                    if (tooMany) {
+                        Text(
+                            "Maximum 8 resolvers ($resolverCount entered)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    } else if (resolverCount > 0) {
+                        Text(
+                            "$resolverCount resolver${if (resolverCount > 1) "s" else ""}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    viewModel.setGlobalResolverList(resolverText.trim())
-                    showGlobalResolverDialog = false
-                }) { Text("Save") }
+                TextButton(
+                    onClick = {
+                        viewModel.setGlobalResolverList(resolverText.trim())
+                        showGlobalResolverDialog = false
+                    },
+                    enabled = !tooMany
+                ) { Text("Save") }
             },
             dismissButton = {
                 TextButton(onClick = { showGlobalResolverDialog = false }) { Text("Cancel") }
