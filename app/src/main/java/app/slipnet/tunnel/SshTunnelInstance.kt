@@ -52,7 +52,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
         private const val CHANNEL_RETRY_COUNT = 2
         private const val CHANNEL_RETRY_DELAY_MS = 100L  // fast retry
         private const val DNS_POOL_SIZE = 5
-        private const val DNS_KEEPALIVE_INTERVAL_MS = 40_000L
+        private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
         // Fallback DNS when server has no local resolver (works on any server)
         private const val FALLBACK_DNS_HOST = "1.1.1.1"
         // Auto cipher: prefer hardware-accelerated ciphers first
@@ -658,9 +658,22 @@ class SshTunnelInstance(val instanceId: String = "default") {
         }
     }
 
+    // DNS keepalive query: A record for "." (root). Minimal, always succeeds,
+    // keeps the TCP connection alive so the remote DNS server doesn't close it.
+    private val DNS_KEEPALIVE_QUERY = byteArrayOf(
+        0x00, 0x00,                         // ID = 0
+        0x01, 0x00,                         // QR=0, RD=1
+        0x00, 0x01,                         // QDCOUNT = 1
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ANCOUNT, NSCOUNT, ARCOUNT = 0
+        0x00,                               // root label (.)
+        0x00, 0x01,                         // QTYPE = A
+        0x00, 0x01                          // QCLASS = IN
+    )
+
     /**
-     * Periodic health check for DNS workers. Detects dead workers proactively
-     * and recreates them before they're needed, preventing cascade failures.
+     * Periodic keepalive: send a dummy DNS query on each live worker to prevent
+     * the remote DNS server from closing idle TCP connections. Dead workers are
+     * recreated.
      */
     private fun startDnsKeepalive() {
         dnsKeepaliveJob?.cancel(true)
@@ -679,10 +692,26 @@ class SshTunnelInstance(val instanceId: String = "default") {
                     if (worker == null || !worker.isAlive) {
                         deadCount++
                         recreateDnsWorkerSync(i, s)
+                        continue
+                    }
+                    // Send a keepalive query to prevent idle timeout
+                    if (worker.lock.tryLock()) {
+                        try {
+                            sendDnsQuery(worker, DNS_KEEPALIVE_QUERY)
+                            logd("DNS keepalive: worker $i pinged")
+                        } catch (e: Exception) {
+                            logd("DNS keepalive: worker $i dead (${e.message}), recreating")
+                            dnsWorkers[i] = null
+                            try { worker.channel.disconnect() } catch (_: Exception) {}
+                            deadCount++
+                            recreateDnsWorkerSync(i, s)
+                        } finally {
+                            worker.lock.unlock()
+                        }
                     }
                 }
                 if (deadCount > 0) {
-                    logd("DNS keepalive: $deadCount dead workers found, recreation attempted")
+                    logd("DNS keepalive: $deadCount dead workers recreated")
                 }
 
                 try {

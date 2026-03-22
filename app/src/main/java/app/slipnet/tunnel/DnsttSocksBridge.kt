@@ -47,7 +47,7 @@ object DnsttSocksBridge {
     private const val RELAY_IDLE_TIMEOUT_MS = 300_000  // 5 min idle timeout for relay sockets
     private const val DNS_POOL_SIZE_DEFAULT = 5
     private const val DNS_POOL_SIZE_AUTHORITATIVE = 10
-    private const val DNS_KEEPALIVE_INTERVAL_MS = 40_000L
+    private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
     @Volatile var authoritativeMode = false
     private val dnsPoolSize: Int get() = if (authoritativeMode) DNS_POOL_SIZE_AUTHORITATIVE else DNS_POOL_SIZE_DEFAULT
     private const val DNS_WORKER_TIMEOUT_MS = 15_000
@@ -449,8 +449,22 @@ object DnsttSocksBridge {
         }
     }
 
+    // DNS keepalive query: A record for "." (root). Minimal, always succeeds,
+    // keeps the TCP connection alive so the remote DNS server doesn't close it.
+    private val DNS_KEEPALIVE_QUERY = byteArrayOf(
+        0x00, 0x00,                         // ID = 0
+        0x01, 0x00,                         // QR=0, RD=1
+        0x00, 0x01,                         // QDCOUNT = 1
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ANCOUNT, NSCOUNT, ARCOUNT = 0
+        0x00,                               // root label (.)
+        0x00, 0x01,                         // QTYPE = A
+        0x00, 0x01                          // QCLASS = IN
+    )
+
     /**
-     * Periodic health check: detect dead workers and recreate them proactively.
+     * Periodic keepalive: send a dummy DNS query on each live worker to prevent
+     * the remote DNS server from closing idle TCP connections. Dead workers are
+     * recreated.
      */
     private fun startDnsKeepalive() {
         dnsKeepaliveThread?.interrupt()
@@ -466,10 +480,26 @@ object DnsttSocksBridge {
                     if (worker == null || !worker.isAlive) {
                         deadCount++
                         recreateDnsWorkerSync(i)
+                        continue
+                    }
+                    // Send a keepalive query to prevent idle timeout
+                    if (worker.lock.tryLock()) {
+                        try {
+                            sendDnsQuery(worker, DNS_KEEPALIVE_QUERY)
+                            logd("DNS keepalive: worker $i pinged")
+                        } catch (e: Exception) {
+                            logd("DNS keepalive: worker $i dead (${e.message}), recreating")
+                            dnsWorkers[i] = null
+                            try { worker.socket.close() } catch (_: Exception) {}
+                            deadCount++
+                            recreateDnsWorkerSync(i)
+                        } finally {
+                            worker.lock.unlock()
+                        }
                     }
                 }
                 if (deadCount > 0) {
-                    logd("DNS keepalive: $deadCount dead workers found, recreation attempted")
+                    logd("DNS keepalive: $deadCount dead workers recreated")
                 }
 
                 try {
