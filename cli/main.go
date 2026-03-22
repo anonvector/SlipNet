@@ -495,17 +495,55 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
 
-	fmt.Println()
-	fmt.Println("  Disconnecting...")
-	done := make(chan struct{})
-	go func() { client.Stop(); close(done) }()
-	select {
-	case <-done:
-		fmt.Println("  Done.")
-	case <-time.After(5 * time.Second):
-		fmt.Println("  Shutdown timed out, forcing exit.")
+	// Monitor tunnel health and auto-reconnect when session dies.
+	reconnectDelay := 3 * time.Second
+	for {
+		select {
+		case <-sigCh:
+			fmt.Println()
+			fmt.Println("  Disconnecting...")
+			done := make(chan struct{})
+			go func() { client.Stop(); close(done) }()
+			select {
+			case <-done:
+				fmt.Println("  Done.")
+			case <-time.After(5 * time.Second):
+				fmt.Println("  Shutdown timed out, forcing exit.")
+			}
+			return
+		case <-time.After(5 * time.Second):
+			if !client.IsRunning() {
+				fmt.Printf("\n  Tunnel died, reconnecting in %v...\n", reconnectDelay)
+				client.Stop()
+				time.Sleep(reconnectDelay)
+
+				client, err = mobile.NewClient(dnsAddr, profile.Domain, profile.PublicKey, listenAddr)
+				if err != nil {
+					fmt.Printf("  Failed to create client: %v\n", err)
+					continue
+				}
+				client.SetAuthoritativeMode(authMode)
+				if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
+					client.SetNoizMode(true)
+				}
+				if querySize > 0 {
+					client.SetMaxPayload(querySize)
+				}
+				if utlsOverride != "" {
+					client.SetUTLSFingerprint(utlsOverride)
+				}
+				if profile.SOCKSUser != "" && isSocks5Tunnel {
+					client.SetSocksCredentials(profile.SOCKSUser, profile.SOCKSPass)
+				}
+
+				if err := client.Start(); err != nil {
+					fmt.Printf("  Reconnect failed: %v\n", err)
+					continue
+				}
+				fmt.Println("  Reconnected!")
+			}
+		}
 	}
 }
 
