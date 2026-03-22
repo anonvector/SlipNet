@@ -321,7 +321,6 @@ class NotificationHelper @Inject constructor(
     ): Notification {
         val mainIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("navigate_to", "scanner")
         }
         val mainPendingIntent = PendingIntent.getActivity(
             context,

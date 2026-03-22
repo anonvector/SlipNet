@@ -13,11 +13,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.navigation.compose.rememberNavController
 import app.slipnet.data.local.datastore.DarkMode
@@ -43,10 +41,7 @@ class MainActivity : ComponentActivity() {
     private val _deepLinkUri = MutableStateFlow<String?>(null)
     val deepLinkUri: StateFlow<String?> = _deepLinkUri.asStateFlow()
 
-    private val _navigateTo = MutableStateFlow<String?>(null)
-    val navigateTo: StateFlow<String?> = _navigateTo.asStateFlow()
 
-    fun consumeNavigateTo() { _navigateTo.value = null }
 
     fun consumeDeepLink() {
         _deepLinkUri.value = null
@@ -86,20 +81,6 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val navController = rememberNavController()
                     NavGraph(navController = navController)
-
-                    // Navigate to scanner if launched from scan notification
-                    val activity = LocalContext.current as MainActivity
-                    val navigateTarget by activity.navigateTo.collectAsState()
-                    LaunchedEffect(navigateTarget) {
-                        if (navigateTarget == "scanner") {
-                            navController.navigate(
-                                app.slipnet.presentation.navigation.NavRoutes.DnsScanner.createRoute()
-                            ) {
-                                launchSingleTop = true
-                            }
-                            activity.consumeNavigateTo()
-                        }
-                    }
                 }
             }
         }
@@ -115,7 +96,6 @@ class MainActivity : ComponentActivity() {
         if (uri != null && (uri.startsWith("slipnet://") || uri.startsWith("slipnet-enc://"))) {
             _deepLinkUri.value = uri
         }
-        intent?.getStringExtra("navigate_to")?.let { _navigateTo.value = it }
     }
 
     private fun requestNotificationPermissionIfNeeded() {
