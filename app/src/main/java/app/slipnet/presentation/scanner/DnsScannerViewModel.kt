@@ -446,6 +446,7 @@ class DnsScannerViewModel @Inject constructor(
     }
 
     init {
+        restoreFromScanStateHolder()
         loadSavedSession()
         loadRecentDns()
         loadCountryCidrInfo()
@@ -454,12 +455,46 @@ class DnsScannerViewModel @Inject constructor(
         observeScanServiceState()
     }
 
+    /**
+     * If a scan is still running (activity was recreated but process survived),
+     * restore results from ScanStateHolder so progress isn't lost.
+     */
+    private fun restoreFromScanStateHolder() {
+        val holder = ScanStateHolder.state.value
+        if ((holder.isScanning || holder.isE2eRunning) && holder.results.isNotEmpty()) {
+            Log.i("DnsScanner", "Restoring ${holder.results.size} results from ScanStateHolder")
+            _uiState.update { s ->
+                s.copy(
+                    scannerState = s.scannerState.copy(
+                        isScanning = holder.isScanning,
+                        scannedCount = holder.scannedCount,
+                        totalCount = holder.totalCount,
+                        workingCount = holder.workingCount,
+                        results = holder.results
+                    )
+                )
+            }
+        }
+    }
+
     private fun observeScanServiceState() {
         viewModelScope.launch {
             ScanStateHolder.state.collect { s ->
                 if (s.stopRequested) {
                     ScanStateHolder.update { it.copy(stopRequested = false) }
                     stopScan()
+                }
+            }
+        }
+        // Sync results to ScanStateHolder so they survive activity recreation.
+        viewModelScope.launch {
+            var lastResultsHash = 0
+            _uiState.collect { state ->
+                val results = state.scannerState.results
+                val hash = results.hashCode()
+                if (hash != lastResultsHash) {
+                    lastResultsHash = hash
+                    ScanStateHolder.update { it.copy(results = results) }
                 }
             }
         }
