@@ -1014,8 +1014,12 @@ fun SettingsScreen(
     // Global Resolver Override Dialog
     if (showGlobalResolverDialog) {
         var resolverText by remember { mutableStateOf(uiState.globalResolverList) }
-        val resolverCount = resolverText.split(",", "\n").map { it.trim() }.count { it.isNotBlank() }
+        val ipPattern = remember { Regex("""^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$""") }
+        val entries = resolverText.split(",", "\n").map { it.trim() }.filter { it.isNotBlank() }
+        val resolverCount = entries.size
         val tooMany = resolverCount > 8
+        val invalidEntries = entries.filter { !ipPattern.matches(it) }
+        val hasInvalid = invalidEntries.isNotEmpty()
         AlertDialog(
             onDismissRequest = { showGlobalResolverDialog = false },
             title = { Text("Global DNS Resolvers") },
@@ -1032,11 +1036,17 @@ fun SettingsScreen(
                         placeholder = { Text("e.g. 8.8.8.8, 1.1.1.1") },
                         singleLine = false,
                         maxLines = 8,
-                        isError = tooMany
+                        isError = tooMany || hasInvalid
                     )
                     if (tooMany) {
                         Text(
                             "Maximum 8 resolvers ($resolverCount entered)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    } else if (hasInvalid) {
+                        Text(
+                            "Invalid IP: ${invalidEntries.first()}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )
@@ -1052,10 +1062,12 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        viewModel.setGlobalResolverList(resolverText.trim())
+                        // Normalize: strip ports, clean up separators
+                        val cleaned = entries.joinToString(", ") { it.split(":").first() }
+                        viewModel.setGlobalResolverList(cleaned)
                         showGlobalResolverDialog = false
                     },
-                    enabled = !tooMany
+                    enabled = !tooMany && !hasInvalid && resolverCount > 0
                 ) { Text("Save") }
             },
             dismissButton = {
