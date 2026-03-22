@@ -962,7 +962,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
             }
             return
         }
-        channelSemaphore.release()
+        // Semaphore is held until the channel is fully closed — this limits
+        // active channels, not just concurrent handshakes.
 
         logd("CONNECT: $destHost:$destPort OK")
 
@@ -992,6 +993,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
         } catch (_: Exception) {
         } finally {
             try { channel.disconnect() } catch (_: Exception) {}
+            channelSemaphore.release()
             c2sFuture?.cancel(true)
         }
     }
