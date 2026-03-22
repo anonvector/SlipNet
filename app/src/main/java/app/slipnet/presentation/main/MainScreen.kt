@@ -169,6 +169,7 @@ fun MainScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val activity = context.findActivity()
 
     // Handle deep link (slipnet:// URI from external QR scanner or link)
@@ -267,18 +268,46 @@ fun MainScreen(
         }
     }
 
-    // Handle export
-    LaunchedEffect(uiState.exportedJson) {
-        uiState.exportedJson?.let { json ->
-            val sendIntent = Intent().apply {
-                action = Intent.ACTION_SEND
-                putExtra(Intent.EXTRA_TEXT, json)
-                type = "text/plain"
+    // Handle export — show dialog with Copy and Share options
+    uiState.exportedJson?.let { json ->
+        AlertDialog(
+            onDismissRequest = { viewModel.clearExportedJson() },
+            title = { Text("Export") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Config is ready to share.", style = MaterialTheme.typography.bodyMedium)
+                    OutlinedTextField(
+                        value = json,
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier.fillMaxWidth().height(100.dp),
+                        maxLines = 4,
+                        textStyle = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val sendIntent = Intent().apply {
+                        action = Intent.ACTION_SEND
+                        putExtra(Intent.EXTRA_TEXT, json)
+                        type = "text/plain"
+                    }
+                    context.startActivity(Intent.createChooser(sendIntent, "Export Profile"))
+                    viewModel.clearExportedJson()
+                }) { Text("Share") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(json))
+                        viewModel.clearExportedJson()
+                        scope.launch { snackbarHostState.showSnackbar("Copied to clipboard") }
+                    }) { Text("Copy") }
+                    TextButton(onClick = { viewModel.clearExportedJson() }) { Text("Cancel") }
+                }
             }
-            val shareIntent = Intent.createChooser(sendIntent, "Export Profile")
-            context.startActivity(shareIntent)
-            viewModel.clearExportedJson()
-        }
+        )
     }
 
     LaunchedEffect(uiState.error) {
@@ -1348,11 +1377,18 @@ fun MainScreen(
                     ) {
                         TextButton(
                             onClick = {
+                                clipboardManager.getText()?.text?.let { clip ->
+                                    if (clip.isNotBlank()) importText = clip
+                                }
+                            }
+                        ) { Text("Paste") }
+                        TextButton(
+                            onClick = {
                                 importFileLauncher.launch(arrayOf("text/plain", "*/*"))
                                 showImportDialog = false
                                 importText = ""
                             }
-                        ) { Text("Import from File") }
+                        ) { Text("File") }
                         TextButton(
                             onClick = {
                                 showImportDialog = false
@@ -1364,7 +1400,7 @@ fun MainScreen(
                                     setCaptureActivity(QrScannerActivity::class.java)
                                 })
                             }
-                        ) { Text("Scan QR Code") }
+                        ) { Text("QR Code") }
                     }
                 }
             },
