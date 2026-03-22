@@ -134,6 +134,8 @@ data class EditProfileUiState(
     val naivePasswordError: String? = null,
     // Preserved sort order for updates (not editable)
     val sortOrder: Int = 0,
+    // Preserved pin state for updates (not editable)
+    val isPinned: Boolean = false,
     // Locked profile state
     val isLocked: Boolean = false,
     val lockPasswordHash: String = "",
@@ -202,7 +204,8 @@ class EditProfileViewModel @Inject constructor(
     private val getProfileByIdUseCase: GetProfileByIdUseCase,
     private val saveProfileUseCase: SaveProfileUseCase,
     private val setActiveProfileUseCase: SetActiveProfileUseCase,
-    private val connectionManager: VpnConnectionManager
+    private val connectionManager: VpnConnectionManager,
+    private val preferencesDataStore: app.slipnet.data.local.datastore.PreferencesDataStore
 ) : ViewModel() {
 
     private val profileId: Long? = savedStateHandle.get<Long>("profileId")
@@ -214,12 +217,18 @@ class EditProfileViewModel @Inject constructor(
     )
     val uiState: StateFlow<EditProfileUiState> = _uiState.asStateFlow()
 
+    private val _globalResolverEnabled = MutableStateFlow(false)
+    val globalResolverEnabled: StateFlow<Boolean> = _globalResolverEnabled.asStateFlow()
+
     init {
         if (profileId != null && profileId != 0L) {
             loadProfile(profileId)
         } else {
             // New profile: pre-fill local DNS resolver for tunnel types that need one
             prefillLocalResolver()
+        }
+        viewModelScope.launch {
+            preferencesDataStore.globalResolverEnabled.collect { _globalResolverEnabled.value = it }
         }
     }
 
@@ -299,6 +308,7 @@ class EditProfileViewModel @Inject constructor(
                     naiveUsername = profile.naiveUsername,
                     naivePassword = profile.naivePassword,
                     sortOrder = profile.sortOrder,
+                    isPinned = profile.isPinned,
                     isLocked = profile.isLocked,
                     lockPasswordHash = profile.lockPasswordHash,
                     expirationDate = profile.expirationDate,
@@ -1187,6 +1197,7 @@ class EditProfileViewModel @Inject constructor(
                     naiveUsername = if (state.isNaiveBased) state.naiveUsername.trim() else "",
                     naivePassword = if (state.isNaiveBased) state.naivePassword else "",
                     sortOrder = state.sortOrder,
+                    isPinned = state.isPinned,
                     isLocked = state.isLocked,
                     lockPasswordHash = state.lockPasswordHash,
                     expirationDate = state.expirationDate,

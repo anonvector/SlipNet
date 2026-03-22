@@ -106,6 +106,7 @@ fun EditProfileScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val globalResolverEnabled by viewModel.globalResolverEnabled.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollState = rememberScrollState()
     var showUnlockDialog by remember { mutableStateOf(false) }
@@ -363,6 +364,21 @@ fun EditProfileScreen(
 
                             // Resolver field (not shown when DNSTT with DoH transport)
                             if (!(uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH)) {
+                                if (globalResolverEnabled) {
+                                    Card(
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                                        ),
+                                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                                    ) {
+                                        Text(
+                                            text = "Global DNS resolver override is active in Settings. Profile resolvers will be ignored at connection time.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.padding(12.dp)
+                                        )
+                                    }
+                                }
                                 if (uiState.resolversHidden) {
                                     // Hidden resolver: show toggle for custom override
                                     Text(
