@@ -725,6 +725,76 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun pingAllProfilesSimple() {
+        if (_uiState.value.isPingRunning) {
+            cancelPing()
+            return
+        }
+
+        val profiles = _uiState.value.profiles
+        if (profiles.isEmpty()) return
+
+        val skipped = setOf(TunnelType.SNOWFLAKE)
+        val initial = profiles.associate { profile ->
+            profile.id to if (profile.tunnelType in skipped) {
+                PingResult.Skipped
+            } else {
+                PingResult.Pending
+            }
+        }
+        _uiState.value = _uiState.value.copy(pingResults = initial, isPingRunning = true)
+
+        pingJob = viewModelScope.launch {
+            try {
+                val jobs = profiles.filter { it.tunnelType !in skipped }.map { profile ->
+                    launch {
+                        val target = getSimplePingTarget(profile)
+                        val result = if (target != null) {
+                            pingTcp(target.first, target.second)
+                        } else {
+                            PingResult.Error("No target")
+                        }
+                        _uiState.value = _uiState.value.copy(
+                            pingResults = _uiState.value.pingResults + (profile.id to result)
+                        )
+                    }
+                }
+                jobs.forEach { it.join() }
+            } finally {
+                _uiState.value = _uiState.value.copy(isPingRunning = false)
+            }
+        }
+    }
+
+    private fun getSimplePingTarget(profile: ServerProfile): Pair<String, Int>? {
+        // Try direct TCP target first
+        getTcpTarget(profile)?.let { return it }
+        // For DNS-tunneled profiles, ping the first resolver
+        val resolver = profile.resolvers.firstOrNull() ?: return null
+        return resolver.host to resolver.port
+    }
+
+    private suspend fun pingTcp(host: String, port: Int): PingResult {
+        return withContext(Dispatchers.IO) {
+            try {
+                val socket = Socket()
+                val start = System.nanoTime()
+                socket.connect(InetSocketAddress(host, port), 5000)
+                val elapsed = (System.nanoTime() - start) / 1_000_000
+                socket.close()
+                PingResult.Success(elapsed)
+            } catch (e: Exception) {
+                val msg = when (e) {
+                    is java.net.SocketTimeoutException -> "Timeout"
+                    is java.net.ConnectException -> "Refused"
+                    is java.net.UnknownHostException -> "DNS failed"
+                    else -> e.message?.take(20) ?: "Failed"
+                }
+                PingResult.Error(msg)
+            }
+        }
+    }
+
     fun pingSingleProfile(profile: ServerProfile) {
         if (profile.tunnelType == TunnelType.SNOWFLAKE) return
 
