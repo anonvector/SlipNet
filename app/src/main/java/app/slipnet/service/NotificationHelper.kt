@@ -9,6 +9,7 @@ import androidx.core.app.NotificationCompat
 import app.slipnet.R
 import app.slipnet.SlipNetApp
 import app.slipnet.domain.model.ConnectionState
+import app.slipnet.domain.model.TrafficStats
 import app.slipnet.presentation.MainActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -49,7 +50,10 @@ class NotificationHelper @Inject constructor(
 
     fun createVpnNotification(
         state: ConnectionState,
-        isProxyOnly: Boolean = false
+        isProxyOnly: Boolean = false,
+        trafficStats: TrafficStats? = null,
+        uploadSpeed: Long = 0,
+        downloadSpeed: Long = 0
     ): Notification {
         val mainIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -90,14 +94,37 @@ class NotificationHelper @Inject constructor(
                     intent = disconnectIntent
                 )
 
+                val reconnectIntent = Intent(context, SlipNetVpnService::class.java).apply {
+                    action = SlipNetVpnService.ACTION_RECONNECT
+                }
+                val reconnectPendingIntent = createServicePendingIntent(
+                    requestCode = REQUEST_CODE_RECONNECT,
+                    intent = reconnectIntent
+                )
+
+                val speedText = if (trafficStats != null && (uploadSpeed > 0 || downloadSpeed > 0 || trafficStats.totalBytes > 0)) {
+                    "\u2191 ${TrafficStats.formatSpeed(uploadSpeed)}  \u2193 ${TrafficStats.formatSpeed(downloadSpeed)}"
+                } else {
+                    if (isProxyOnly) "Proxy is active" else "VPN is active"
+                }
+
                 builder
                     .setContentTitle("Connected: ${state.profile.name}")
-                    .setContentText(if (isProxyOnly) "Proxy is active" else "VPN is active")
+                    .setContentText(speedText)
+                    .addAction(
+                        R.drawable.ic_shield,
+                        "Reconnect",
+                        reconnectPendingIntent
+                    )
                     .addAction(
                         R.drawable.ic_shield,
                         "Disconnect",
                         disconnectPendingIntent
                     )
+
+                if (trafficStats != null && trafficStats.totalBytes > 0) {
+                    builder.setSubText("\u2191 ${trafficStats.formatBytesSent()}  \u2193 ${trafficStats.formatBytesReceived()}")
+                }
             }
             is ConnectionState.Disconnecting -> {
                 builder
