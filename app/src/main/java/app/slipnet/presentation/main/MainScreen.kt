@@ -489,6 +489,15 @@ fun MainScreen(
                                 },
                                 enabled = uiState.profiles.isNotEmpty()
                             )
+                            if (uiState.pingResults.isNotEmpty() && !uiState.isPingRunning) {
+                                DropdownMenuItem(
+                                    text = { Text("Clear Ping Results") },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        viewModel.clearPingResults()
+                                    }
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("Export All Profiles") },
                                 onClick = {

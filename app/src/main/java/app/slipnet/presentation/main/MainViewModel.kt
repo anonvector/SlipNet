@@ -820,6 +820,10 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(isPingRunning = false)
     }
 
+    fun clearPingResults() {
+        _uiState.value = _uiState.value.copy(pingResults = emptyMap())
+    }
+
     /**
      * E2E test for DNS-tunneled profiles: starts a real tunnel with the first resolver,
      * performs a handshake and HTTP/SSH verification, then reports total latency.
