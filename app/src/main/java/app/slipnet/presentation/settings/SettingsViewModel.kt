@@ -51,6 +51,9 @@ data class SettingsUiState(
     // Geo-Bypass Settings
     val geoBypassEnabled: Boolean = false,
     val geoBypassCountry: GeoBypassCountry = GeoBypassCountry.IR,
+    // Global DNS Resolver Override
+    val globalResolverEnabled: Boolean = false,
+    val globalResolverList: String = "",
     // Remote DNS Settings
     val remoteDnsMode: String = "default",
     val customRemoteDns: String = "",
@@ -194,11 +197,18 @@ class SettingsViewModel @Inject constructor(
                 )
             }
 
-            combine(withGeoFlow, remoteDnsFlow) { state, remoteDns ->
+            val globalResolverFlow = combine(
+                preferencesDataStore.globalResolverEnabled,
+                preferencesDataStore.globalResolverList
+            ) { enabled, list -> Pair(enabled, list) }
+
+            combine(withGeoFlow, remoteDnsFlow, globalResolverFlow) { state, remoteDns, globalResolver ->
                 state.copy(
                     remoteDnsMode = remoteDns.first,
                     customRemoteDns = remoteDns.second,
-                    customRemoteDnsFallback = remoteDns.third
+                    customRemoteDnsFallback = remoteDns.third,
+                    globalResolverEnabled = globalResolver.first,
+                    globalResolverList = globalResolver.second
                 )
             }.collect { newState ->
                 // Preserve update check state across DataStore re-emissions
@@ -380,6 +390,18 @@ class SettingsViewModel @Inject constructor(
     }
 
     // Remote DNS Settings
+    fun setGlobalResolverEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setGlobalResolverEnabled(enabled)
+        }
+    }
+
+    fun setGlobalResolverList(list: String) {
+        viewModelScope.launch {
+            preferencesDataStore.setGlobalResolverList(list)
+        }
+    }
+
     fun setRemoteDnsMode(mode: String) {
         viewModelScope.launch {
             preferencesDataStore.setRemoteDnsMode(mode)

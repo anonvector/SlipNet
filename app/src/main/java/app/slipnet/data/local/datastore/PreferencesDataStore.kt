@@ -79,6 +79,9 @@ class PreferencesDataStore @Inject constructor(
         // Geo-Bypass Keys
         val GEO_BYPASS_ENABLED = booleanPreferencesKey("geo_bypass_enabled")
         val GEO_BYPASS_COUNTRY = stringPreferencesKey("geo_bypass_country")
+        // Global DNS Resolver Override
+        val GLOBAL_RESOLVER_ENABLED = booleanPreferencesKey("global_resolver_enabled")
+        val GLOBAL_RESOLVER_LIST = stringPreferencesKey("global_resolver_list")
         // Remote DNS Keys
         val REMOTE_DNS_MODE = stringPreferencesKey("remote_dns_mode")
         val CUSTOM_REMOTE_DNS = stringPreferencesKey("custom_remote_dns")
@@ -569,6 +572,24 @@ class PreferencesDataStore @Inject constructor(
         const val DEFAULT_REMOTE_DNS = "8.8.8.8"
         const val DEFAULT_REMOTE_DNS_FALLBACK = "1.1.1.1"
         const val DEFAULT_MTU = 1280
+    }
+
+    // --- Global DNS Resolver Override ---
+
+    val globalResolverEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.GLOBAL_RESOLVER_ENABLED] ?: false
+    }
+
+    val globalResolverList: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.GLOBAL_RESOLVER_LIST] ?: ""
+    }
+
+    suspend fun setGlobalResolverEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.GLOBAL_RESOLVER_ENABLED] = enabled }
+    }
+
+    suspend fun setGlobalResolverList(list: String) {
+        dataStore.edit { it[Keys.GLOBAL_RESOLVER_LIST] = list }
     }
 
     /**
