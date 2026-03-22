@@ -414,7 +414,7 @@ fun SettingsScreen(
                 subtitle = "Changes apply on next connection"
             ) {
                 SwitchSettingItem(
-                    icon = Icons.Default.Storage,
+                    icon = Icons.Default.Language,
                     title = "Global DNS resolver override",
                     description = if (uiState.globalResolverEnabled) {
                         val list = uiState.globalResolverList.ifBlank { "Not set" }
@@ -427,7 +427,7 @@ fun SettingsScreen(
                 )
                 if (uiState.globalResolverEnabled) {
                     ClickableSettingItem(
-                        icon = Icons.Default.Edit,
+                        icon = Icons.Default.Language,
                         title = "Global resolver IPs",
                         description = uiState.globalResolverList.ifBlank { "Tap to set resolver IPs" },
                         onClick = { showGlobalResolverDialog = true }
