@@ -72,7 +72,8 @@ class ProfileMapper @Inject constructor(
             dnsPayloadSize = entity.dnsPayloadSize,
             resolversHidden = entity.resolversHidden,
             defaultResolvers = defaultResolvers,
-            socks5ServerPort = entity.socks5ServerPort
+            socks5ServerPort = entity.socks5ServerPort,
+            isPinned = entity.isPinned
         )
     }
 
@@ -125,7 +126,8 @@ class ProfileMapper @Inject constructor(
             dnsPayloadSize = profile.dnsPayloadSize,
             resolversHidden = profile.resolversHidden,
             defaultResolversJson = defaultResolversJson,
-            socks5ServerPort = profile.socks5ServerPort
+            socks5ServerPort = profile.socks5ServerPort,
+            isPinned = profile.isPinned
         )
     }
 

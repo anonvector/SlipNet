@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class, ChainEntity::class],
-    version = 25,
+    version = 26,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -326,6 +326,12 @@ abstract class SlipNetDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE server_profiles ADD COLUMN default_resolvers_json TEXT NOT NULL DEFAULT '[]'")
                 // Copy current resolvers as defaults for profiles that already have hidden resolvers
                 db.execSQL("UPDATE server_profiles SET default_resolvers_json = resolvers_json WHERE resolvers_hidden = 1")
+            }
+        }
+
+        val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0")
             }
         }
 

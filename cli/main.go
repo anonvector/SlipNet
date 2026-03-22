@@ -247,7 +247,6 @@ func main() {
 	var hostOverride string
 	var forceDirectMode bool
 	var querySize int
-	var queryPadding int
 	var uriParts []string
 
 	for i := 1; i < len(os.Args); i++ {
@@ -295,17 +294,6 @@ func main() {
 			} else {
 				log.Fatal("--query-size requires a value (e.g., --query-size 100)")
 			}
-		case "--query-padding":
-			if i+1 < len(os.Args) {
-				v, err := strconv.Atoi(os.Args[i+1])
-				if err != nil || v < 0 {
-					log.Fatal("--query-padding requires a value >= 0 (bytes)")
-				}
-				queryPadding = v
-				i++
-			} else {
-				log.Fatal("--query-padding requires a value (e.g., --query-padding 20)")
-			}
 		case "--direct", "-direct":
 			forceDirectMode = true
 		case "--version", "-version", "-v":
@@ -327,11 +315,11 @@ func main() {
 
 	// Join all non-flag args in case terminal line-wrapping split the URI
 	uri := strings.TrimSpace(strings.Join(uriParts, ""))
-	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize, queryPadding)
+	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize)
 }
 
 // connectWithParams runs the tunnel connection with the given parameters.
-func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool, querySize int, queryPadding int) {
+func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool, querySize int) {
 	profile, err := parseURI(uri)
 	if err != nil {
 		log.Fatalf("Failed to parse URI: %v", err)
@@ -475,9 +463,6 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 
 	if querySize > 0 {
 		client.SetMaxPayload(querySize)
-	}
-	if queryPadding > 0 {
-		client.SetQueryPadding(queryPadding)
 	}
 
 	if utlsOverride != "" {
@@ -818,10 +803,6 @@ Options (connect):
   --query-size BYTES  Max DNS query payload size in bytes (default: full capacity)
                       Lower values produce smaller queries for restrictive networks
                       Minimum: 50. Presets: 100 (large), 80 (medium), 60 (small), 50 (minimum)
-  --query-padding N   Add 0–N random padding bytes to each query via EDNS0 (RFC 7830)
-                      Randomizes query wire size to avoid fixed-size fingerprinting
-                      Use with --query-size for both small AND randomly-sized queries
-                      Example: --query-size 50 --query-padding 20  →  50–70 byte queries
   --version           Show version
   --help              Show this help
 

@@ -153,6 +153,13 @@ class SlipNetVpnService : VpnService() {
     // proxy-only restart before escalating to full teardown.
     private var seamlessReconnectAttempts = 0
 
+    // Timestamp when the connection was fully established. Network change events
+    // arriving within a few seconds of this are spurious (common on Chinese OEM
+    // ROMs like MIUI/HyperOS that fire network callbacks when the VPN interface
+    // is first created) and should be ignored.
+    private var connectionEstablishedAt = 0L
+    private val NETWORK_CHANGE_GRACE_MS = 5_000L
+
     // Persistence for service resilience
     private lateinit var prefs: SharedPreferences
 
@@ -236,6 +243,7 @@ class SlipNetVpnService : VpnService() {
         prefs.edit()
             .putBoolean(PREF_WAS_CONNECTED, false)
             .apply()
+        connectionEstablishedAt = 0
         Log.d(TAG, "Cleared connection state")
     }
 
@@ -2573,6 +2581,7 @@ class SlipNetVpnService : VpnService() {
         // Mark connection as successful for auto-reconnect eligibility
         connectionWasSuccessful = true
         autoReconnectAttempt = 0
+        connectionEstablishedAt = System.currentTimeMillis()
 
         // Notify connection manager for bookkeeping (profile preferences, etc.)
         connectionManager.onVpnEstablished()
@@ -3242,6 +3251,19 @@ class SlipNetVpnService : VpnService() {
      */
     private fun handleNetworkChange(reason: String = "unknown") {
         serviceScope.launch {
+            // Ignore spurious network changes fired shortly after connection.
+            // Chinese OEM ROMs (MIUI/HyperOS, EMUI) trigger network callbacks
+            // when the VPN interface is first created, causing the proxy to be
+            // torn down before any data flows. Skip unless this is a tunnel
+            // recovery (seamless reconnect), which must always proceed.
+            if (!reason.startsWith("tunnel recovery") && connectionEstablishedAt > 0) {
+                val elapsed = System.currentTimeMillis() - connectionEstablishedAt
+                if (elapsed < NETWORK_CHANGE_GRACE_MS) {
+                    Log.d(TAG, "Ignoring network change '$reason' — ${elapsed}ms after connection (grace period ${NETWORK_CHANGE_GRACE_MS}ms)")
+                    return@launch
+                }
+            }
+
             // Prevent concurrent reconnection attempts
             if (isReconnecting) {
                 Log.d(TAG, "Skipping reconnection for '$reason' - already reconnecting")

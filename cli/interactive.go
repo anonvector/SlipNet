@@ -134,8 +134,7 @@ func interactiveConnectWithURI(uri string) {
 	forceDirectMode := strings.HasPrefix(strings.ToLower(directStr), "y")
 
 	var querySize int
-	var queryPadding int
-	// Query size and padding apply to DNSTT/NoizDNS tunnel types
+	// Query size applies to DNSTT/NoizDNS tunnel types
 	if profile.TunnelType == "dnstt" || profile.TunnelType == "dnstt_ssh" || profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" || profile.TunnelType == "" {
 		fmt.Println()
 		fmt.Println("  DNS query size (smaller = stealthier, slower):")
@@ -172,32 +171,6 @@ func interactiveConnectWithURI(uri string) {
 			}
 		}
 
-		if querySize > 0 {
-			fmt.Println()
-			fmt.Println("  Random query padding (adds 0–N bytes to each query to vary size):")
-			fmt.Println("    0) None (default)")
-			fmt.Println("    1) 20 bytes  — 50–70 byte range when combined with size 50")
-			fmt.Println("    2) Custom")
-			fmt.Println()
-			qpChoice := promptDefault("  Select", "0")
-			switch qpChoice {
-			case "0", "":
-				// none
-			case "1":
-				queryPadding = 20
-			case "2":
-				custom := prompt("  Enter max padding bytes (> 0): ")
-				if v, err := strconv.Atoi(custom); err == nil && v > 0 {
-					queryPadding = v
-				} else {
-					fmt.Println("  Invalid value, no padding.")
-				}
-			default:
-				if v, err := strconv.Atoi(qpChoice); err == nil && v > 0 {
-					queryPadding = v
-				}
-			}
-		}
 	}
 
 	// Build args and invoke the existing connect logic
@@ -213,9 +186,6 @@ func interactiveConnectWithURI(uri string) {
 	}
 	if querySize > 0 {
 		args = append(args, "--query-size", strconv.Itoa(querySize))
-	}
-	if queryPadding > 0 {
-		args = append(args, "--query-padding", strconv.Itoa(queryPadding))
 	}
 	args = append(args, "--port", strconv.Itoa(profile.Port))
 	args = append(args, uri)
@@ -733,7 +703,7 @@ func runConnectFromArgs(args []string) {
 	}
 
 	uri := strings.TrimSpace(strings.Join(uriParts, ""))
-	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize, 0)
+	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize)
 }
 
 func clearScreen() {

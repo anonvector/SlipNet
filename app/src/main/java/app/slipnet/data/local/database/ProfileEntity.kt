@@ -142,5 +142,8 @@ data class ProfileEntity(
     val defaultResolversJson: String = "[]",
 
     @ColumnInfo(name = "socks5_server_port", defaultValue = "1080")
-    val socks5ServerPort: Int = 1080
+    val socks5ServerPort: Int = 1080,
+
+    @ColumnInfo(name = "is_pinned", defaultValue = "0")
+    val isPinned: Boolean = false
 )

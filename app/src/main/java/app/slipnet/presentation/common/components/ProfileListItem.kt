@@ -17,6 +17,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.NetworkPing
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Card
@@ -59,6 +62,8 @@ fun ProfileListItem(
     onDeleteClick: () -> Unit,
     onExportClick: () -> Unit,
     onShareQrClick: () -> Unit,
+    onPinClick: () -> Unit,
+    onPingClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showExportMenu by remember { mutableStateOf(false) }
@@ -118,6 +123,15 @@ fun ProfileListItem(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
+                    if (profile.isPinned) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.Default.PushPin,
+                            contentDescription = "Pinned",
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     if (profile.isLocked) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Icon(
@@ -312,25 +326,52 @@ fun ProfileListItem(
                     )
                 }
 
-                // Export with submenu (shown for unlocked profiles or locked profiles that allow sharing)
-                if (!profile.isLocked || profile.allowSharing) {
-                    Box {
-                        IconButton(
-                            onClick = { showExportMenu = true },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Share,
-                                contentDescription = "Export",
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                // More menu: pin + export options
+                Box {
+                    IconButton(
+                        onClick = { showExportMenu = true },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "More options",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
 
-                        DropdownMenu(
-                            expanded = showExportMenu,
-                            onDismissRequest = { showExportMenu = false }
-                        ) {
+                    DropdownMenu(
+                        expanded = showExportMenu,
+                        onDismissRequest = { showExportMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(if (profile.isPinned) "Unpin" else "Pin to top") },
+                            onClick = {
+                                showExportMenu = false
+                                onPinClick()
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.PushPin,
+                                    contentDescription = null,
+                                    tint = if (profile.isPinned)
+                                        MaterialTheme.colorScheme.primary
+                                    else
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Ping server") },
+                            onClick = {
+                                showExportMenu = false
+                                onPingClick()
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.NetworkPing, contentDescription = null)
+                            }
+                        )
+                        if (!profile.isLocked || profile.allowSharing) {
                             DropdownMenuItem(
                                 text = { Text("Export") },
                                 onClick = {

@@ -691,6 +691,8 @@ fun MainScreen(
                                             exportLockPassword = ""
                                             exportLockMode = "qr"
                                         },
+                                        onPinClick = { viewModel.togglePinProfile(profile) },
+                                        onPingClick = { viewModel.pingSingleProfile(profile) },
                                         modifier = Modifier
                                             .longPressDraggableHandle()
                                             .shadow(elevation, RoundedCornerShape(12.dp))

@@ -68,7 +68,9 @@ data class ServerProfile(
     // Original default resolvers from import (preserved when user overrides with custom resolvers)
     val defaultResolvers: List<DnsResolver> = emptyList(),
     // SOCKS5 proxy server port (for SOCKS5 tunnel type)
-    val socks5ServerPort: Int = 1080
+    val socks5ServerPort: Int = 1080,
+    // Pinned to top of profile list
+    val isPinned: Boolean = false
 ) {
     val isExpired: Boolean get() = expirationDate > 0 && System.currentTimeMillis() > expirationDate
 }

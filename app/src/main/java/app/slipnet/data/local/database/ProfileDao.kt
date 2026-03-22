@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ProfileDao {
-    @Query("SELECT * FROM server_profiles ORDER BY sort_order ASC")
+    @Query("SELECT * FROM server_profiles ORDER BY is_pinned DESC, sort_order ASC")
     fun getAllProfiles(): Flow<List<ProfileEntity>>
 
     @Query("SELECT * FROM server_profiles WHERE is_active = 1 LIMIT 1")
@@ -50,4 +50,7 @@ interface ProfileDao {
 
     @Query("UPDATE server_profiles SET sort_order = :sortOrder WHERE id = :id")
     suspend fun updateSortOrder(id: Long, sortOrder: Int)
+
+    @Query("UPDATE server_profiles SET is_pinned = NOT is_pinned WHERE id = :id")
+    suspend fun togglePinned(id: Long)
 }
