@@ -42,6 +42,8 @@ object SlipstreamSocksBridge {
     private const val TAG = "SlipstreamSocksBridge"
     @Volatile var debugLogging = false
     @Volatile var domainRouter: DomainRouter = DomainRouter.DISABLED
+    @Volatile var uploadLimiter: RateLimiter? = null
+    @Volatile var downloadLimiter: RateLimiter? = null
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
@@ -131,12 +133,30 @@ object SlipstreamSocksBridge {
         return false
     }
 
-    private fun recordConnectSuccess() { connectFailures.set(0) }
+    // Capacity exhaustion: timestamp of the last successful CONNECT.
+    private val lastConnectSuccessMs = AtomicLong(0)
+    private const val CAPACITY_EXHAUSTION_THRESHOLD_MS = 20_000L  // no successful CONNECT for 20s
+
+    private fun recordConnectSuccess() {
+        connectFailures.set(0)
+        lastConnectSuccessMs.set(System.currentTimeMillis())
+    }
     private fun recordConnectFailure() {
         if (connectFailures.incrementAndGet() >= CONNECT_CIRCUIT_THRESHOLD) {
             connectCircuitOpenUntil = System.currentTimeMillis() + CONNECT_CIRCUIT_COOLDOWN_MS
             logd("CONNECT: circuit breaker OPEN — cooling down ${CONNECT_CIRCUIT_COOLDOWN_MS}ms")
         }
+    }
+
+    /**
+     * Returns true when no CONNECT has succeeded for [CAPACITY_EXHAUSTION_THRESHOLD_MS].
+     * Catches total tunnel failure but not degraded tunnels with sporadic successes —
+     * degraded-but-working tunnels should not be reconnected as that makes things worse.
+     */
+    fun isCapacityExhausted(): Boolean {
+        val last = lastConnectSuccessMs.get()
+        if (last == 0L) return false
+        return System.currentTimeMillis() - last > CAPACITY_EXHAUSTION_THRESHOLD_MS
     }
 
     fun start(
@@ -163,11 +183,12 @@ object SlipstreamSocksBridge {
         this.socksPassword = socksPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
         this.dnsFallbackHost = dnsFallback ?: FALLBACK_DNS_HOST
-        // Reset circuit breakers
+        // Reset circuit breakers and capacity tracking
         consecutiveFailures.set(0)
         circuitOpenUntil = 0
         connectFailures.set(0)
         connectCircuitOpenUntil = 0
+        lastConnectSuccessMs.set(0)
 
         return try {
             val ss = bindServerSocket(listenHost, listenPort)
@@ -349,14 +370,18 @@ object SlipstreamSocksBridge {
 
     /**
      * Recreate a dead DNS worker with creation lock to prevent duplicate recreation.
+     * Respects the circuit breaker to avoid spamming the tunnel with doomed connections.
      */
     private fun recreateDnsWorkerSync(idx: Int): DnsWorker? {
+        if (isCircuitOpen()) return null
         try {
             if (!workerCreationLocks[idx].tryLock(1, TimeUnit.SECONDS)) return null
         } catch (_: InterruptedException) {
             return null
         }
         try {
+            // Re-check after acquiring lock — circuit may have opened while waiting
+            if (isCircuitOpen()) return null
             // Double-check: another thread may have already recreated it
             val existing = dnsWorkers[idx]
             if (existing != null && existing.isAlive) return existing
@@ -626,7 +651,6 @@ object SlipstreamSocksBridge {
                     // Delay before replying so the app's TCP stack backs off
                     // instead of retrying immediately and burning data.
                     if (addrType == 0x04) {
-                        logd("CONNECT: rejected IPv6 $destHost:$destPort locally")
                         try { Thread.sleep(2000) } catch (_: InterruptedException) {}
                         output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                         output.flush()
@@ -789,6 +813,10 @@ object SlipstreamSocksBridge {
             remoteSocket = Socket()
             remoteSocket.connect(InetSocketAddress(slipstreamHost, slipstreamPort), TCP_CONNECT_TIMEOUT_MS)
             remoteSocket.tcpNoDelay = true
+            // Set read timeout for the SOCKS5 handshake phase so that hung
+            // reads (e.g. QUIC transport died but localhost TCP stays open)
+            // don't permanently hold a semaphore slot.
+            remoteSocket.soTimeout = TCP_CONNECT_TIMEOUT_MS
             remoteSockets.add(remoteSocket)
         } catch (e: Exception) {
             connectSemaphore.release()
@@ -900,7 +928,7 @@ object SlipstreamSocksBridge {
             remoteSocket.use { remote ->
                 val t1 = Thread({
                     try {
-                        copyStream(clientInput, remoteOutput, tunnelTxBytes)
+                        copyStream(clientInput, remoteOutput, tunnelTxBytes, uploadLimiter)
                     } catch (e: Exception) {
                         logd("slip-bridge-c2s: ${e.message}")
                     } finally {
@@ -911,7 +939,7 @@ object SlipstreamSocksBridge {
                 t1.start()
 
                 try {
-                    copyStream(remoteInput, clientOutput, tunnelRxBytes)
+                    copyStream(remoteInput, clientOutput, tunnelRxBytes, downloadLimiter)
                 } catch (e: Exception) {
                     logd("slip-bridge-s2c: ${e.message}")
                 } finally {
@@ -944,7 +972,7 @@ object SlipstreamSocksBridge {
 
             val t1 = Thread({
                 try {
-                    copyStream(clientInput, remoteOutput)
+                    copyStream(clientInput, remoteOutput, limiter = uploadLimiter)
                 } catch (_: Exception) {
                 } finally {
                     try { remoteOutput.close() } catch (_: Exception) {}
@@ -954,7 +982,7 @@ object SlipstreamSocksBridge {
             t1.start()
 
             try {
-                copyStream(remoteInput, clientOutput)
+                copyStream(remoteInput, clientOutput, limiter = downloadLimiter)
             } catch (_: Exception) {
             } finally {
                 try { remote.close() } catch (_: Exception) {}
@@ -1294,11 +1322,12 @@ object SlipstreamSocksBridge {
         }
     }
 
-    private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null) {
+    private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null, limiter: RateLimiter? = null) {
         val buffer = ByteArray(BUFFER_SIZE)
         while (!Thread.currentThread().isInterrupted) {
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) break
+            limiter?.acquire(bytesRead)
             output.write(buffer, 0, bytesRead)
             output.flush()
             counter?.addAndGet(bytesRead.toLong())
