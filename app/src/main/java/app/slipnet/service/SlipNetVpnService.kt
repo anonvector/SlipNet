@@ -99,7 +99,7 @@ class SlipNetVpnService : VpnService() {
         // before escalating to kill-switch / auto-reconnect / stop.
         private const val MAX_SEAMLESS_RECONNECTS = 2
         private const val MAX_SEAMLESS_RECONNECTS_DNSTT = 4 // DNSTT is slower — give it more attempts
-        private val SEAMLESS_RECONNECT_DELAYS_MS = longArrayOf(3000, 5000, 8000, 10000)
+        private val SEAMLESS_RECONNECT_DELAYS_MS = longArrayOf(1000, 3000, 5000, 8000)
 
         // Boot retry settings (exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s, …)
         // 10 retries ≈ 3 minutes total before giving up
