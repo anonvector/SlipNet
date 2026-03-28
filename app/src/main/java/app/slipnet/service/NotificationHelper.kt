@@ -73,6 +73,7 @@ class NotificationHelper @Inject constructor(
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSortKey("0") // Pin position so frequent updates don't cause reordering
 
         when (state) {
             is ConnectionState.Disconnected -> {
