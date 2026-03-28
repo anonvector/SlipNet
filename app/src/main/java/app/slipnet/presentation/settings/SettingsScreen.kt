@@ -612,6 +612,7 @@ fun SettingsScreen(
                         uiState.sshMaxChannels > 12 -> "High values may cause instability on DNS tunnels"
                         else -> null
                     },
+                    subtitleColor = if (uiState.sshMaxChannelsIsCustom && uiState.sshMaxChannels > 12) Color(0xFFFF9800) else null,
                     value = uiState.sshMaxChannels,
                     valueRange = 1f..64f,
                     steps = 63,
@@ -1672,6 +1673,7 @@ private fun SliderSettingItem(
     icon: ImageVector,
     title: String,
     subtitle: String? = null,
+    subtitleColor: Color? = null,
     value: Int,
     valueRange: ClosedFloatingPointRange<Float>,
     steps: Int,
@@ -1707,7 +1709,7 @@ private fun SliderSettingItem(
                     Text(
                         text = subtitle,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = subtitleColor ?: MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
