@@ -560,25 +560,22 @@ class SshTunnelInstance(val instanceId: String = "default") {
     }
 
     /**
-     * Active liveness probe: tries to open an SSH channel to verify the session
-     * can actually communicate with the server. sendKeepAliveMsg() is unreliable
-     * because it writes to the local TCP buffer and returns true even when the
-     * underlying tunnel (DNSTT) is dead.
-     * Call from a background thread — this blocks for up to [timeoutMs].
+     * Active liveness probe: sends an SSH keepalive AND checks if the DNS circuit
+     * breaker is open (meaning real channel opens are failing). sendKeepAliveMsg()
+     * alone is unreliable (writes to local buffer, always succeeds), but combined
+     * with the circuit breaker state it detects dead tunnels without the overhead
+     * of opening a real channel every probe cycle.
      */
     fun probeSessionAlive(timeoutMs: Int = 10000): Boolean {
         val s = session ?: return false
         if (!s.isConnected) return false
+        // If the DNS circuit breaker is open, real connections are failing —
+        // the tunnel is dead regardless of what sendKeepAliveMsg says.
+        if (isDnsCircuitOpen()) return false
         return try {
-            // Try opening a channel — this is the only reliable way to verify
-            // the session can actually reach the server. On a dead tunnel,
-            // openChannel will throw "channel is not opened" or timeout.
-            s.timeout = timeoutMs
-            val ch = s.openChannel("subsystem")
-            ch.disconnect()
+            s.sendKeepAliveMsg()
             true
         } catch (_: Exception) {
-            // Channel open failed — session is dead or tunnel is broken
             false
         }
     }
