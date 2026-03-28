@@ -172,6 +172,8 @@ class SlipNetVpnService : VpnService() {
     // Notification traffic stats polling
     private var trafficNotificationJob: Job? = null
     private var prevNotifStats = app.slipnet.domain.model.TrafficStats.EMPTY
+    private var lastNotifTotalBytes = -1L  // -1 forces first update
+    private var lastNotifHadSpeed = false
 
     // Seamless reconnect state: tracks how many times we've tried a lightweight
     // proxy-only restart before escalating to full teardown.
@@ -4281,15 +4283,23 @@ class SlipNetVpnService : VpnService() {
 
                 val state = vpnRepository.connectionState.first()
                 if (state is ConnectionState.Connected) {
-                    val notification = notificationHelper.createVpnNotification(
-                        state = state,
-                        isProxyOnly = isProxyOnly,
-                        trafficStats = current,
-                        uploadSpeed = upSpeed,
-                        downloadSpeed = downSpeed
-                    )
-                    val notificationManager = getSystemService(NotificationManager::class.java)
-                    notificationManager.notify(NotificationHelper.VPN_NOTIFICATION_ID, notification)
+                    // Only update notification when displayed values change.
+                    // Redundant updates cause notification reordering on MIUI/HyperOS.
+                    val newTotal = current.totalBytes
+                    val newSpeed = upSpeed + downSpeed
+                    if (newTotal != lastNotifTotalBytes || (newSpeed > 0) != (lastNotifHadSpeed)) {
+                        lastNotifTotalBytes = newTotal
+                        lastNotifHadSpeed = newSpeed > 0
+                        val notification = notificationHelper.createVpnNotification(
+                            state = state,
+                            isProxyOnly = isProxyOnly,
+                            trafficStats = current,
+                            uploadSpeed = upSpeed,
+                            downloadSpeed = downSpeed
+                        )
+                        val notificationManager = getSystemService(NotificationManager::class.java)
+                        notificationManager.notify(NotificationHelper.VPN_NOTIFICATION_ID, notification)
+                    }
                 }
             }
         }
@@ -4299,6 +4309,8 @@ class SlipNetVpnService : VpnService() {
         trafficNotificationJob?.cancel()
         trafficNotificationJob = null
         prevNotifStats = app.slipnet.domain.model.TrafficStats.EMPTY
+        lastNotifTotalBytes = -1L
+        lastNotifHadSpeed = false
     }
 
     private fun disconnect() {
