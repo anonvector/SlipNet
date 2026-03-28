@@ -74,6 +74,8 @@ class NotificationHelper @Inject constructor(
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setSortKey("0") // Pin position so frequent updates don't cause reordering
+            .setWhen(0) // Fixed timestamp prevents MIUI/HyperOS from reordering on update
+            .setShowWhen(false)
 
         when (state) {
             is ConnectionState.Disconnected -> {
