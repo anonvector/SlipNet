@@ -123,6 +123,29 @@ class SshTunnelInstance(val instanceId: String = "default") {
     private val workerCreationLocks = Array(DNS_POOL_SIZE) { ReentrantLock() }
     private var dnsKeepaliveJob: Future<*>? = null
 
+    // Circuit breaker for DNS worker recreation — prevents spamming the tunnel
+    // with doomed SSH channel opens when the tunnel is congested or dead.
+    private val dnsConsecutiveFailures = AtomicInteger(0)
+    @Volatile private var dnsCircuitOpenUntil: Long = 0
+    private companion object DnsCircuit {
+        private const val DNS_CIRCUIT_THRESHOLD = 5
+        private const val DNS_CIRCUIT_COOLDOWN_MS = 3000L
+    }
+    private fun isDnsCircuitOpen(): Boolean {
+        if (System.currentTimeMillis() < dnsCircuitOpenUntil) return true
+        if (dnsConsecutiveFailures.get() >= DNS_CIRCUIT_THRESHOLD) {
+            dnsConsecutiveFailures.set(0)
+        }
+        return false
+    }
+    private fun recordDnsWorkerSuccess() { dnsConsecutiveFailures.set(0) }
+    private fun recordDnsWorkerFailure() {
+        if (dnsConsecutiveFailures.incrementAndGet() >= DNS_CIRCUIT_THRESHOLD) {
+            dnsCircuitOpenUntil = System.currentTimeMillis() + DNS_CIRCUIT_COOLDOWN_MS
+            logd("FWD_UDP: circuit breaker OPEN — cooling down ${DNS_CIRCUIT_COOLDOWN_MS}ms")
+        }
+    }
+
     /**
      * Configure SSH tunnel settings. Call before startDirect/startOverProxy/startOverSocks5Proxy.
      *
@@ -506,6 +529,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
         dnsServerIndex.set(0)
         tunnelTxBytes.set(0)
         tunnelRxBytes.set(0)
+        dnsConsecutiveFailures.set(0)
+        dnsCircuitOpenUntil = 0
 
         logd("SSH tunnel stopped")
     }
@@ -624,15 +649,19 @@ class SshTunnelInstance(val instanceId: String = "default") {
     /**
      * Recreate a dead DNS worker synchronously with creation lock.
      * Used by both the keepalive thread and inline recreation in forwardDnsViaSsh.
+     * Respects the circuit breaker to avoid spamming the tunnel with doomed channel opens.
      * Returns the new worker if created, null if lock contention or failure.
      */
     private fun recreateDnsWorkerSync(idx: Int, s: Session): DnsWorker? {
+        if (isDnsCircuitOpen()) return null
         try {
             if (!workerCreationLocks[idx].tryLock(1, TimeUnit.SECONDS)) return null
         } catch (_: InterruptedException) {
             return null
         }
         try {
+            // Re-check after acquiring lock — circuit may have opened while waiting
+            if (isDnsCircuitOpen()) return null
             // Double-check: another thread may have already recreated it
             val existing = dnsWorkers[idx]
             if (existing != null && existing.isAlive) return existing
@@ -648,11 +677,13 @@ class SshTunnelInstance(val instanceId: String = "default") {
             ch.connect(CHANNEL_CONNECT_TIMEOUT_MS)
             val worker = DnsWorker(ch, ch.inputStream, ch.outputStream)
             dnsWorkers[idx] = worker
+            recordDnsWorkerSuccess()
             logd("DNS worker $idx recreated → $server")
             return worker
         } catch (e: Exception) {
             logd("DNS worker $idx recreation failed: ${e.message}")
             dnsWorkers[idx] = null
+            recordDnsWorkerFailure()
             return null
         } finally {
             workerCreationLocks[idx].unlock()
