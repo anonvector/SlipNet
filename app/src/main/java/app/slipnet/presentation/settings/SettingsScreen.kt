@@ -96,6 +96,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.filled.Lan
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Numbers
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -135,6 +136,7 @@ fun SettingsScreen(
     var showRemoteDnsDialog by remember { mutableStateOf(false) }
     var showGlobalResolverDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
+    var showBandwidthLimitDialog by remember { mutableStateOf(false) }
     var showDnsWorkerDialog by remember { mutableStateOf(false) }
     var showResetSettingsDialog by remember { mutableStateOf(false) }
 
@@ -316,7 +318,7 @@ fun SettingsScreen(
                     icon = Icons.Default.Numbers,
                     title = "Listen Port",
                     value = proxyPort,
-                    placeholder = "1080",
+                    placeholder = "10880",
                     supportingText = "Local SOCKS5 proxy port",
                     keyboardType = KeyboardType.Number,
                     onValueChange = { text ->
@@ -392,6 +394,19 @@ fun SettingsScreen(
 
                 SettingsDivider()
 
+                ClickableSettingItem(
+                    icon = Icons.Default.Speed,
+                    title = "Bandwidth Limit",
+                    description = run {
+                        val ul = if (uiState.uploadLimitKbps > 0) "${uiState.uploadLimitKbps} KB/s" else "Unlimited"
+                        val dl = if (uiState.downloadLimitKbps > 0) "${uiState.downloadLimitKbps} KB/s" else "Unlimited"
+                        "Upload: $ul / Download: $dl"
+                    },
+                    onClick = { showBandwidthLimitDialog = true }
+                )
+
+                SettingsDivider()
+
                 SwitchSettingItem(
                     icon = Icons.Default.Lan,
                     title = "Append HTTP Proxy to VPN",
@@ -453,7 +468,10 @@ fun SettingsScreen(
                 ClickableSettingItem(
                     icon = Icons.Default.Hub,
                     title = "DNS workers",
-                    description = "${uiState.dnsWorkerMode.displayName} (SOCKS tunnels only, SSH always uses 5)",
+                    description = buildString {
+                        append("${uiState.dnsWorkerMode.displayName} (SOCKS tunnels only, SSH always uses 5)")
+                        if (uiState.dnsWorkerMode.poolSize >= 3) append(" — may increase data usage")
+                    },
                     onClick = { showDnsWorkerDialog = true }
                 )
             }
@@ -589,13 +607,30 @@ fun SettingsScreen(
                 SliderSettingItem(
                     icon = Icons.Default.Hub,
                     title = "Max Channels",
-                    subtitle = if (!uiState.sshMaxChannelsIsCustom) "Auto (adapts per tunnel type)" else null,
+                    subtitle = when {
+                        !uiState.sshMaxChannelsIsCustom -> "Auto (adapts per tunnel type)"
+                        uiState.sshMaxChannels > 12 -> "High values may cause instability on DNS tunnels"
+                        else -> null
+                    },
                     value = uiState.sshMaxChannels,
                     valueRange = 1f..64f,
                     steps = 63,
                     valueFormatter = { "${it.roundToInt()}" },
                     onValueChange = { viewModel.setSshMaxChannels(it.roundToInt()) },
                     onReset = if (uiState.sshMaxChannelsIsCustom) {{ viewModel.resetSshMaxChannelsToAuto() }} else null
+                )
+
+                SettingsDivider()
+
+                SwitchSettingItem(
+                    icon = Icons.Default.Shield,
+                    title = "Prevent DNS Fallback",
+                    description = if (uiState.preventDnsFallback)
+                        "DNS queries fail if SSH tunnel is down (no leak)"
+                    else
+                        "Falls back to direct DNS if SSH fails (may expose queries)",
+                    checked = uiState.preventDnsFallback,
+                    onCheckedChange = { viewModel.setPreventDnsFallback(it) }
                 )
             }
 
@@ -816,6 +851,19 @@ fun SettingsScreen(
         )
     }
 
+    if (showBandwidthLimitDialog) {
+        BandwidthLimitDialog(
+            currentUploadKbps = uiState.uploadLimitKbps,
+            currentDownloadKbps = uiState.downloadLimitKbps,
+            onDismiss = { showBandwidthLimitDialog = false },
+            onApply = { upKbps, downKbps ->
+                viewModel.setUploadLimitKbps(upKbps)
+                viewModel.setDownloadLimitKbps(downKbps)
+                showBandwidthLimitDialog = false
+            }
+        )
+    }
+
     if (showDnsWorkerDialog) {
         AlertDialog(
             onDismissRequest = { showDnsWorkerDialog = false },
@@ -852,6 +900,14 @@ fun SettingsScreen(
                                 modifier = Modifier.padding(start = 8.dp)
                             )
                         }
+                    }
+                    if (uiState.dnsWorkerMode.poolSize >= 3) {
+                        Text(
+                            text = "Higher worker counts increase background data usage due to keepalive traffic on each connection. Use 2 or per-query if data usage is a concern.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
                     }
                 }
             },
@@ -2227,4 +2283,63 @@ private fun DonateCard() {
             }
         )
     }
+}
+
+@Composable
+private fun BandwidthLimitDialog(
+    currentUploadKbps: Int,
+    currentDownloadKbps: Int,
+    onDismiss: () -> Unit,
+    onApply: (uploadKbps: Int, downloadKbps: Int) -> Unit
+) {
+    var uploadText by remember { mutableStateOf(if (currentUploadKbps > 0) currentUploadKbps.toString() else "") }
+    var downloadText by remember { mutableStateOf(if (currentDownloadKbps > 0) currentDownloadKbps.toString() else "") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Bandwidth Limit") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Set speed limits in KB/s. Leave empty or 0 for unlimited. Applies on next connection.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = uploadText,
+                    onValueChange = { uploadText = it.filter { c -> c.isDigit() }.take(6) },
+                    label = { Text("Upload (KB/s)") },
+                    placeholder = { Text("Unlimited") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = downloadText,
+                    onValueChange = { downloadText = it.filter { c -> c.isDigit() }.take(6) },
+                    label = { Text("Download (KB/s)") },
+                    placeholder = { Text("Unlimited") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val up = uploadText.toIntOrNull() ?: 0
+                    val down = downloadText.toIntOrNull() ?: 0
+                    onApply(up.coerceAtLeast(0), down.coerceAtLeast(0))
+                }
+            ) {
+                Text("Apply")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
