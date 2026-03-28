@@ -55,6 +55,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
         private const val CHANNEL_RETRY_DELAY_MS = 100L  // fast retry
         private const val DNS_POOL_SIZE = 0
         private const val DNS_KEEPALIVE_INTERVAL_MS = 40_000L
+        private const val DNS_CIRCUIT_THRESHOLD = 5
+        private const val DNS_CIRCUIT_COOLDOWN_MS = 3000L
         // Fallback DNS when server has no local resolver (works on any server)
         private const val FALLBACK_DNS_HOST = "1.1.1.1"
         // Auto cipher: prefer hardware-accelerated ciphers first
@@ -127,10 +129,6 @@ class SshTunnelInstance(val instanceId: String = "default") {
     // with doomed SSH channel opens when the tunnel is congested or dead.
     private val dnsConsecutiveFailures = AtomicInteger(0)
     @Volatile private var dnsCircuitOpenUntil: Long = 0
-    private companion object DnsCircuit {
-        private const val DNS_CIRCUIT_THRESHOLD = 5
-        private const val DNS_CIRCUIT_COOLDOWN_MS = 3000L
-    }
     private fun isDnsCircuitOpen(): Boolean {
         if (System.currentTimeMillis() < dnsCircuitOpenUntil) return true
         if (dnsConsecutiveFailures.get() >= DNS_CIRCUIT_THRESHOLD) {
