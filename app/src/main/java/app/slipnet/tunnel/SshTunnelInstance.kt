@@ -37,6 +37,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
     private val TAG = "SshTunnel[$instanceId]"
     var debugLogging = false
     var domainRouter: DomainRouter = DomainRouter.DISABLED
+    var uploadLimiter: RateLimiter? = null
+    var downloadLimiter: RateLimiter? = null
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
 
     companion object {
@@ -51,8 +53,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
         private const val CHANNEL_ACQUIRE_TIMEOUT_MS = 30000L
         private const val CHANNEL_RETRY_COUNT = 2
         private const val CHANNEL_RETRY_DELAY_MS = 100L  // fast retry
-        private const val DNS_POOL_SIZE = 5
-        private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
+        private const val DNS_POOL_SIZE = 0
+        private const val DNS_KEEPALIVE_INTERVAL_MS = 40_000L
         // Fallback DNS when server has no local resolver (works on any server)
         private const val FALLBACK_DNS_HOST = "1.1.1.1"
         // Auto cipher: prefer hardware-accelerated ciphers first
@@ -99,9 +101,10 @@ class SshTunnelInstance(val instanceId: String = "default") {
     private var directDns = true
     // Consecutive DNS-via-SSH failure count. After DNS_SSH_MAX_FAILURES, auto-switch to direct.
     private val dnsSshFailCount = AtomicInteger(0)
-    // When true, DNS fallback to direct DatagramSocket is disabled (DNSTT+SSH mode).
+    // When true, DNS fallback to direct DatagramSocket is disabled.
     // This prevents DNS leaks: if DNS-via-SSH fails, the query fails rather than leaking.
-    private var preventDnsFallback = false
+    // Defaults to true so DNS never leaks to the system resolver unless explicitly allowed.
+    private var preventDnsFallback = true
     // Persistent DNS workers: pre-opened SSH channels shared across all FWD_UDP handlers.
     // Eliminates per-query channel open overhead (the main DNSTT bottleneck).
     private class DnsWorker(
@@ -114,8 +117,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
     }
     private val dnsWorkers = arrayOfNulls<DnsWorker>(DNS_POOL_SIZE)
     private val dnsRoundRobin = AtomicInteger(0)
-    private var dnsTargetHost: String = "8.8.8.8"
-    private var dnsFallbackHost: String = FALLBACK_DNS_HOST
+    @Volatile private var dnsServers: Array<String> = arrayOf("8.8.8.8")
+    private val dnsServerIndex = AtomicInteger(0)
     // Per-worker creation locks to prevent duplicate recreation by concurrent threads
     private val workerCreationLocks = Array(DNS_POOL_SIZE) { ReentrantLock() }
     private var dnsKeepaliveJob: Future<*>? = null
@@ -199,8 +202,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
 
         stop()
         directDns = !forwardDnsThroughSsh
-        dnsTargetHost = remoteDnsHost
-        dnsFallbackHost = remoteDnsFallback
+        dnsServers = buildDnsServerList(remoteDnsHost, remoteDnsFallback)
+        dnsServerIndex.set(0)
         dnsSshFailCount.set(0)
 
         return try {
@@ -294,8 +297,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
         stop()
         directDns = false
         preventDnsFallback = blockDirectDns
-        dnsTargetHost = remoteDnsHost
-        dnsFallbackHost = remoteDnsFallback
+        dnsServers = buildDnsServerList(remoteDnsHost, remoteDnsFallback)
+        dnsServerIndex.set(0)
         dnsSshFailCount.set(0)
 
         return try {
@@ -370,6 +373,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
         socksPassword: String?,
         listenPort: Int,
         listenHost: String = "127.0.0.1",
+        blockDirectDns: Boolean = true,
         sshAuthType: SshAuthType = SshAuthType.PASSWORD,
         sshPrivateKey: String = "",
         sshKeyPassphrase: String = "",
@@ -385,15 +389,16 @@ class SshTunnelInstance(val instanceId: String = "default") {
         Log.i(TAG, "  $proxyLabel proxy: $proxyHost:$proxyPort")
         Log.i(TAG, "  SOCKS5 auth: ${if (!socksUsername.isNullOrBlank()) "enabled" else "disabled"}")
         Log.i(TAG, "  SOCKS5 Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  Block direct DNS: $blockDirectDns")
         Log.i(TAG, "  DNS: through SSH to server's local resolver")
         Log.i(TAG, "  Remote DNS: $remoteDnsHost (fallback: $remoteDnsFallback)")
         Log.i(TAG, "========================================")
 
         stop()
         directDns = false
-        preventDnsFallback = false
-        dnsTargetHost = remoteDnsHost
-        dnsFallbackHost = remoteDnsFallback
+        preventDnsFallback = blockDirectDns
+        dnsServers = buildDnsServerList(remoteDnsHost, remoteDnsFallback)
+        dnsServerIndex.set(0)
         dnsSshFailCount.set(0)
 
         return try {
@@ -497,7 +502,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
             Log.w(TAG, "Error disconnecting SSH: ${e.message}")
         }
         session = null
-        preventDnsFallback = false
+        preventDnsFallback = true
+        dnsServerIndex.set(0)
         tunnelTxBytes.set(0)
         tunnelRxBytes.set(0)
 
@@ -526,21 +532,30 @@ class SshTunnelInstance(val instanceId: String = "default") {
     /** Returns true when all DNS workers in the pool are dead. */
     fun isDnsPoolDead(): Boolean {
         if (!running.get()) return false
+        if (DNS_POOL_SIZE == 0) return false  // no pool = per-query mode, never "dead"
         return (0 until DNS_POOL_SIZE).none { dnsWorkers[it]?.isAlive == true }
     }
 
     /**
-     * Active liveness probe: sends an SSH keepalive and waits for a reply.
-     * Returns true if the server responded, false if the session is dead or unresponsive.
+     * Active liveness probe: tries to open an SSH channel to verify the session
+     * can actually communicate with the server. sendKeepAliveMsg() is unreliable
+     * because it writes to the local TCP buffer and returns true even when the
+     * underlying tunnel (DNSTT) is dead.
      * Call from a background thread — this blocks for up to [timeoutMs].
      */
     fun probeSessionAlive(timeoutMs: Int = 10000): Boolean {
         val s = session ?: return false
         if (!s.isConnected) return false
         return try {
-            s.sendKeepAliveMsg()
+            // Try opening a channel — this is the only reliable way to verify
+            // the session can actually reach the server. On a dead tunnel,
+            // openChannel will throw "channel is not opened" or timeout.
+            s.timeout = timeoutMs
+            val ch = s.openChannel("subsystem")
+            ch.disconnect()
             true
         } catch (_: Exception) {
+            // Channel open failed — session is dead or tunnel is broken
             false
         }
     }
@@ -578,43 +593,27 @@ class SshTunnelInstance(val instanceId: String = "default") {
      * Create persistent DNS workers — pre-opened SSH channels to the DNS server.
      * All FWD_UDP handlers share these workers, eliminating per-query channel open overhead.
      *
-     * For DNSTT+SSH (preventDnsFallback mode), uses the SSH server's local resolver
-     * (127.0.0.53) by default. External DNS servers (e.g. 1.1.1.1) close TCP connections
-     * after idle timeout, killing workers and causing DNS cascade failures.
+     * DNS queries are distributed round-robin across all configured servers
+     * (e.g. 8.8.8.8 and 1.1.1.1) so transient failures on one don't block resolution.
      */
     private fun prewarmDnsChannels() {
         val s = session ?: return
-        // dnsTargetHost is already set by the start method from the user's global remote DNS setting.
-        Log.i(TAG, "DNS workers target: $dnsTargetHost:53 (preventDnsFallback=$preventDnsFallback)")
+        val servers = dnsServers
+        Log.i(TAG, "DNS servers: ${servers.joinToString(", ")} (preventDnsFallback=$preventDnsFallback)")
         executor?.submit {
             for (i in 0 until DNS_POOL_SIZE) {
                 if (!running.get()) break
+                // Round-robin across servers for worker creation too
+                val server = servers[i % servers.size]
                 try {
                     val ch = s.openChannel("direct-tcpip") as ChannelDirectTCPIP
-                    ch.setHost(dnsTargetHost)
+                    ch.setHost(server)
                     ch.setPort(53)
                     ch.connect(CHANNEL_CONNECT_TIMEOUT_MS)
                     dnsWorkers[i] = DnsWorker(ch, ch.inputStream, ch.outputStream)
-                    logd("DNS worker ${i + 1}/$DNS_POOL_SIZE ready → $dnsTargetHost:53")
+                    logd("DNS worker ${i + 1}/$DNS_POOL_SIZE ready → $server:53")
                 } catch (e: Exception) {
-                    if (i == 0) {
-                        // Primary DNS unreachable — fall back to secondary DNS
-                        Log.w(TAG, "DNS worker 1 failed on $dnsTargetHost, falling back to $dnsFallbackHost")
-                        dnsTargetHost = dnsFallbackHost
-                        try {
-                            val fallbackCh = s.openChannel("direct-tcpip") as ChannelDirectTCPIP
-                            fallbackCh.setHost(dnsTargetHost)
-                            fallbackCh.setPort(53)
-                            fallbackCh.connect(CHANNEL_CONNECT_TIMEOUT_MS)
-                            dnsWorkers[i] = DnsWorker(fallbackCh, fallbackCh.inputStream, fallbackCh.outputStream)
-                            logd("DNS worker 1/$DNS_POOL_SIZE ready → $dnsTargetHost:53 (fallback)")
-                            continue
-                        } catch (e2: Exception) {
-                            logd("DNS worker 1 fallback also failed: ${e2.message}")
-                            break
-                        }
-                    }
-                    logd("DNS worker ${i + 1} failed: ${e.message}")
+                    logd("DNS worker ${i + 1} failed on $server: ${e.message}")
                     break
                 }
             }
@@ -641,13 +640,15 @@ class SshTunnelInstance(val instanceId: String = "default") {
 
             if (!s.isConnected || !running.get()) return null
 
+            val servers = dnsServers
+            val server = servers[idx % servers.size]
             val ch = s.openChannel("direct-tcpip") as ChannelDirectTCPIP
-            ch.setHost(dnsTargetHost)
+            ch.setHost(server)
             ch.setPort(53)
             ch.connect(CHANNEL_CONNECT_TIMEOUT_MS)
             val worker = DnsWorker(ch, ch.inputStream, ch.outputStream)
             dnsWorkers[idx] = worker
-            logd("DNS worker $idx recreated")
+            logd("DNS worker $idx recreated → $server")
             return worker
         } catch (e: Exception) {
             logd("DNS worker $idx recreation failed: ${e.message}")
@@ -824,7 +825,6 @@ class SshTunnelInstance(val instanceId: String = "default") {
                     // Delay before replying so the app's TCP stack backs off
                     // instead of retrying immediately and burning data.
                     if (addrType == 0x04) {
-                        logd("CONNECT: rejected IPv6 $destHost:$destPort locally")
                         try { Thread.sleep(2000) } catch (_: InterruptedException) {}
                         output.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                         output.flush()
@@ -980,7 +980,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
         val bridgePool = executor
         val c2sFuture = bridgePool?.submit {
             try {
-                copyStream(clientInput, channelOutput, tunnelTxBytes)
+                copyStream(clientInput, channelOutput, tunnelTxBytes, uploadLimiter)
             } catch (_: Exception) {
             } finally {
                 try { channelOutput.close() } catch (_: Exception) {}
@@ -988,7 +988,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
         }
 
         try {
-            copyStream(channelInput, clientOutput, tunnelRxBytes)
+            copyStream(channelInput, clientOutput, tunnelRxBytes, downloadLimiter)
         } catch (_: Exception) {
         } finally {
             try { channel.disconnect() } catch (_: Exception) {}
@@ -1005,7 +1005,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
             val bridgePool = executor
             val c2sFuture = bridgePool?.submit {
                 try {
-                    copyStream(clientInput, remoteOutput)
+                    copyStream(clientInput, remoteOutput, limiter = uploadLimiter)
                 } catch (_: Exception) {
                 } finally {
                     try { remoteOutput.close() } catch (_: Exception) {}
@@ -1013,7 +1013,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
             }
 
             try {
-                copyStream(remoteInput, clientOutput)
+                copyStream(remoteInput, clientOutput, limiter = downloadLimiter)
             } catch (_: Exception) {
             } finally {
                 try { remote.close() } catch (_: Exception) {}
@@ -1260,6 +1260,11 @@ class SshTunnelInstance(val instanceId: String = "default") {
             return null
         }
 
+        // No pool — go straight to per-query fallback
+        if (DNS_POOL_SIZE == 0) {
+            return forwardDnsViaSshFallback(currentSession, host, payload)
+        }
+
         val startIdx = (dnsRoundRobin.getAndIncrement() and 0x7FFFFFFF) % DNS_POOL_SIZE
 
         // Phase 1: Try all existing live workers (non-blocking lock to avoid waiting)
@@ -1311,46 +1316,66 @@ class SshTunnelInstance(val instanceId: String = "default") {
     }
 
     /**
-     * Fallback: open a one-shot SSH channel for a single DNS query.
-     * Used when persistent workers aren't ready yet or have all died.
+     * Open a one-shot SSH channel for a single DNS query, round-robin across all
+     * configured DNS servers. If the chosen server fails, try the next one.
+     * All queries go through SSH direct-tcpip — no DNS leak.
      */
     private fun forwardDnsViaSshFallback(currentSession: Session, host: String, payload: ByteArray): ByteArray? {
-        val dnsHost = dnsTargetHost
-
         if (!channelSemaphore.tryAcquire(CHANNEL_ACQUIRE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             return null
         }
 
+        val servers = dnsServers
+        val startIdx = (dnsServerIndex.getAndIncrement() and 0x7FFFFFFF) % servers.size
+
         var channel: ChannelDirectTCPIP? = null
         try {
-            channel = openChannelWithRetry(currentSession, dnsHost, 53)
-
-            val chOut = channel.outputStream
-            val chIn = channel.inputStream
-
-            val lenBuf = ByteArray(2)
-            lenBuf[0] = ((payload.size shr 8) and 0xFF).toByte()
-            lenBuf[1] = (payload.size and 0xFF).toByte()
-            chOut.write(lenBuf)
-            chOut.write(payload)
-            chOut.flush()
-
-            val respLen = ByteArray(2)
-            readFullyFromStream(chIn, respLen)
-            val responseLength = ((respLen[0].toInt() and 0xFF) shl 8) or (respLen[1].toInt() and 0xFF)
-
-            if (responseLength <= 0 || responseLength > 65535) return null
-
-            val response = ByteArray(responseLength)
-            readFullyFromStream(chIn, response)
-            return response
-        } catch (e: Exception) {
-            logd("FWD_UDP: DNS fallback to $dnsHost failed: ${e.message}")
+            // Try each server in round-robin order
+            for (i in servers.indices) {
+                val server = servers[(startIdx + i) % servers.size]
+                channel?.let { try { it.disconnect() } catch (_: Exception) {} }
+                channel = null
+                try {
+                    channel = openChannelWithRetry(currentSession, server, 53)
+                    val result = sendDnsQueryOnChannel(channel, payload)
+                    if (result != null) return result
+                } catch (e: Exception) {
+                    logd("FWD_UDP: DNS query to $server failed: ${e.message}")
+                }
+            }
             return null
         } finally {
             channel?.let { try { it.disconnect() } catch (_: Exception) {} }
             channelSemaphore.release()
         }
+    }
+
+    /** Build deduplicated DNS server list from primary and fallback. */
+    private fun buildDnsServerList(primary: String, fallback: String): Array<String> {
+        return if (primary == fallback) arrayOf(primary)
+        else arrayOf(primary, fallback)
+    }
+
+    private fun sendDnsQueryOnChannel(channel: ChannelDirectTCPIP, payload: ByteArray): ByteArray? {
+        val chOut = channel.outputStream
+        val chIn = channel.inputStream
+
+        val lenBuf = ByteArray(2)
+        lenBuf[0] = ((payload.size shr 8) and 0xFF).toByte()
+        lenBuf[1] = (payload.size and 0xFF).toByte()
+        chOut.write(lenBuf)
+        chOut.write(payload)
+        chOut.flush()
+
+        val respLen = ByteArray(2)
+        readFullyFromStream(chIn, respLen)
+        val responseLength = ((respLen[0].toInt() and 0xFF) shl 8) or (respLen[1].toInt() and 0xFF)
+
+        if (responseLength <= 0 || responseLength > 65535) return null
+
+        val response = ByteArray(responseLength)
+        readFullyFromStream(chIn, response)
+        return response
     }
 
     private fun readFullyFromStream(input: InputStream, buffer: ByteArray) {
@@ -1362,11 +1387,12 @@ class SshTunnelInstance(val instanceId: String = "default") {
         }
     }
 
-    private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null) {
+    private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null, limiter: RateLimiter? = null) {
         val buffer = ByteArray(BUFFER_SIZE)
         while (!Thread.currentThread().isInterrupted) {
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) break
+            limiter?.acquire(bytesRead)
             output.write(buffer, 0, bytesRead)
             counter?.addAndGet(bytesRead.toLong())
             // Flush when no more data is immediately available
