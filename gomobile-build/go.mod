@@ -3,6 +3,7 @@ module gomobile-build
 go 1.24.0
 
 require (
+	dnstt-mobile v0.0.0
 	golang.org/x/mobile v0.0.0-20260204172633-1dceadbbeea3
 	noizdns v0.0.0
 	snowflake-mobile v0.0.0

@@ -1082,7 +1082,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         val totalStart = SystemClock.elapsedRealtime()
         val tunnelName = if (noizMode) "NoizDNS" else "DNSTT"
         val dnsttPort = findFreePort()
-        var client: mobile.DnsttClient? = null
+        var client: Any? = null // mobile.DnsttClient or noizdns.DnsttClient
         try {
             val result = withTimeoutOrNull(timeoutMs) {
                 // Phase 1: Start tunnel
@@ -1095,17 +1095,20 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                     )
 
                 val listenAddr = "127.0.0.1:$dnsttPort"
-                val newClient = mobile.Mobile.newClient(dnsServer, profile.domain, profile.dnsttPublicKey, listenAddr)
-                newClient.setAuthoritativeMode(profile.dnsttAuthoritative)
-                if (profile.dnsPayloadSize > 0) {
-                    newClient.setMaxPayload(profile.dnsPayloadSize.toLong())
-                }
                 if (noizMode) {
-                    newClient.setNoizMode(true)
-                    newClient.setDeviceManufacturer(android.os.Build.MANUFACTURER)
+                    val c = noizdns.Noizdns.newClient(dnsServer, profile.domain, profile.dnsttPublicKey, listenAddr)
+                    c.setAuthoritativeMode(profile.dnsttAuthoritative)
+                    if (profile.dnsPayloadSize > 0) c.setMaxPayload(profile.dnsPayloadSize.toLong())
+                    c.setDeviceManufacturer(android.os.Build.MANUFACTURER)
+                    client = c
+                    c.start()
+                } else {
+                    val c = mobile.Mobile.newClient(dnsServer, profile.domain, profile.dnsttPublicKey, listenAddr)
+                    c.setAuthoritativeMode(profile.dnsttAuthoritative)
+                    if (profile.dnsPayloadSize > 0) c.setMaxPayload(profile.dnsPayloadSize.toLong())
+                    client = c
+                    c.start()
                 }
-                client = newClient
-                newClient.start()
 
                 // Phase 2: Wait for DNSTT running
                 onPhaseUpdate("Waiting for $tunnelName...")
@@ -1114,7 +1117,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 val readyStart = SystemClock.elapsedRealtime()
                 var running = false
                 while (SystemClock.elapsedRealtime() - readyStart < readyTimeout) {
-                    if (newClient.isRunning) {
+                    if ((client as? mobile.DnsttClient)?.isRunning == true ||
+                        (client as? noizdns.DnsttClient)?.isRunning == true) {
                         running = true
                         break
                     }
@@ -1218,7 +1222,10 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 phase = E2eTestPhase.TUNNEL_SETUP
             )
         } finally {
-            try { client?.stop() } catch (_: Exception) {}
+            try {
+                (client as? mobile.DnsttClient)?.stop()
+                (client as? noizdns.DnsttClient)?.stop()
+            } catch (_: Exception) {}
         }
     }
 
