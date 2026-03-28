@@ -97,7 +97,7 @@ class SlipNetVpnService : VpnService() {
 
         // Seamless reconnect: try restarting just the proxy (keeping TUN + tun2socks alive)
         // before escalating to kill-switch / auto-reconnect / stop.
-        private const val MAX_SEAMLESS_RECONNECTS = 2
+        private const val MAX_SEAMLESS_RECONNECTS = 3
         private const val MAX_SEAMLESS_RECONNECTS_DNSTT = 4 // DNSTT is slower — give it more attempts
         private val SEAMLESS_RECONNECT_DELAYS_MS = longArrayOf(1000, 3000, 5000, 8000)
 
