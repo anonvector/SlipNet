@@ -3,43 +3,19 @@ package app.slipnet.tunnel
 import android.net.VpnService
 import android.os.Build
 import app.slipnet.util.AppLog as Log
+import mobile.Mobile
+import mobile.DnsttClient
 import java.lang.ref.WeakReference
 import java.net.ServerSocket
 
 /**
- * Wrapper around Go mobile DNSTT clients.
- * DNSTT mode uses the original dnstt-mobile library (stable, persistent sockets).
- * NoizDNS mode uses the noizdns library (stealth features, cover traffic).
- */
-private interface GoClient {
-    val isRunning: Boolean
-    fun start()
-    fun stop()
-}
-
-private class DnsttGoClient(private val c: mobile.DnsttClient) : GoClient {
-    override val isRunning: Boolean get() = c.isRunning
-    override fun start() = c.start()
-    override fun stop() = c.stop()
-}
-
-private class NoizDnsGoClient(private val c: noizdns.DnsttClient) : GoClient {
-    override val isRunning: Boolean get() = c.isRunning
-    override fun start() = c.start()
-    override fun stop() = c.stop()
-}
-
-/**
  * Bridge to the Go-based DNSTT library.
  * Provides a SOCKS5 proxy that tunnels traffic through DNS.
- *
- * When noizMode=false, uses dnstt-mobile (original library, SmartUDPConn, stable polling).
- * When noizMode=true, uses noizdns (stealth encoding, cover traffic).
  */
 object DnsttBridge {
     private const val TAG = "DnsttBridge"
 
-    private var client: GoClient? = null
+    private var client: DnsttClient? = null
     private var currentPort: Int = 0
     // Port that may still be held by a dying Go process even after client is nulled.
     // stopClient() clears client immediately, but the Go listener may linger.
@@ -147,36 +123,32 @@ object DnsttBridge {
                 }
             }
 
-            // Create the Go client: dnstt-mobile for DNSTT, noizdns for NoizDNS
-            val goClient: GoClient = if (noizMode) {
-                val c = noizdns.Noizdns.newClient(dnsAddr, tunnelDomain, publicKey, listenAddr)
-                c.setAuthoritativeMode(authoritativeMode)
-                if (maxPayload > 0) c.setMaxPayload(maxPayload.toLong())
-                c.setDeviceManufacturer(Build.MANUFACTURER)
-                if (stealthMode) c.setStealthMode(true)
-                if (!socksProxyAddr.isNullOrEmpty()) {
-                    c.setSOCKS5Proxy(socksProxyAddr, socksProxyUser ?: "", socksProxyPass ?: "")
-                }
-                NoizDnsGoClient(c)
-            } else {
-                val c = mobile.Mobile.newClient(dnsAddr, tunnelDomain, publicKey, listenAddr)
-                c.setAuthoritativeMode(authoritativeMode)
-                if (maxPayload > 0) c.setMaxPayload(maxPayload.toLong())
-                if (!socksProxyAddr.isNullOrEmpty()) {
-                    c.setSOCKS5Proxy(socksProxyAddr, socksProxyUser ?: "", socksProxyPass ?: "")
-                }
-                DnsttGoClient(c)
+            // Create the DNSTT client via Go mobile bindings
+            val newClient = Mobile.newClient(dnsAddr, tunnelDomain, publicKey, listenAddr)
+            newClient.setAuthoritativeMode(authoritativeMode)
+            if (maxPayload > 0) {
+                newClient.setMaxPayload(maxPayload.toLong())
             }
-            client = goClient
+            if (noizMode) {
+                newClient.setNoizMode(true)
+                newClient.setDeviceManufacturer(Build.MANUFACTURER)
+                if (stealthMode) {
+                    newClient.setStealthMode(true)
+                }
+            }
+            if (!socksProxyAddr.isNullOrEmpty()) {
+                newClient.setSOCKS5Proxy(socksProxyAddr, socksProxyUser ?: "", socksProxyPass ?: "")
+            }
+            client = newClient
             currentPort = actualPort
 
             // Start the client
-            goClient.start()
+            newClient.start()
 
             // Wait a bit and verify it's running
             Thread.sleep(100)
 
-            if (goClient.isRunning) {
+            if (newClient.isRunning) {
                 Log.i(TAG, "DNSTT client started successfully on port $actualPort")
 
                 // Verify SOCKS5 proxy is listening
