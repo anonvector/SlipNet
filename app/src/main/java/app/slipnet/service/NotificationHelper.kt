@@ -34,6 +34,7 @@ class NotificationHelper @Inject constructor(
         const val SCAN_NOTIFICATION_ID = 6
         private const val REQUEST_CODE_SCAN_STOP = 106
         private const val REQUEST_CODE_BOOT_RETRY_CANCEL = 107
+        private const val REQUEST_CODE_SCAN = 108
     }
 
     private fun createServicePendingIntent(
@@ -397,7 +398,7 @@ class NotificationHelper @Inject constructor(
         }
         val mainPendingIntent = PendingIntent.getActivity(
             context,
-            REQUEST_CODE_MAIN,
+            REQUEST_CODE_SCAN,
             mainIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
