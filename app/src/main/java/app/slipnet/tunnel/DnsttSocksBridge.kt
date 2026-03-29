@@ -624,8 +624,11 @@ object DnsttSocksBridge {
         // Circuit breaker: skip if tunnel is overwhelmed
         if (isCircuitOpen()) { notifyPoolDeadIfNeeded(); return null }
 
+        // Snapshot pool size to avoid race between check and modulo
+        val poolSize = dnsPoolSize
+
         // Per-query mode: skip worker pool, go straight to one-shot connection
-        if (dnsPoolSize <= 0) {
+        if (poolSize <= 0) {
             val tcpResult = forwardDnsTcpOneShot(payload, dnsTargetHost)
             if (tcpResult != null) {
                 recordDnsSuccess()
@@ -644,11 +647,11 @@ object DnsttSocksBridge {
             return null
         }
 
-        val startIdx = (dnsRoundRobin.getAndIncrement() and 0x7FFFFFFF) % dnsPoolSize
+        val startIdx = (dnsRoundRobin.getAndIncrement() and 0x7FFFFFFF) % poolSize
 
         // Phase 1: Try all existing live workers (non-blocking lock to skip busy ones)
-        for (i in 0 until dnsPoolSize) {
-            val idx = (startIdx + i) % dnsPoolSize
+        for (i in 0 until poolSize) {
+            val idx = (startIdx + i) % poolSize
             val worker = dnsWorkers[idx] ?: continue
             if (!worker.isAlive) {
                 dnsWorkers[idx] = null
@@ -680,8 +683,8 @@ object DnsttSocksBridge {
         if (isCircuitOpen()) { notifyPoolDeadIfNeeded(); return null }
 
         // Phase 2: All workers dead/busy — recreate one inline
-        for (i in 0 until dnsPoolSize) {
-            val idx = (startIdx + i) % dnsPoolSize
+        for (i in 0 until poolSize) {
+            val idx = (startIdx + i) % poolSize
             val newWorker = recreateDnsWorkerSync(idx)
             if (newWorker == null) { recordDnsFailure(); continue }
             if (!newWorker.lock.tryLock(5, TimeUnit.SECONDS)) continue

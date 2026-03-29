@@ -41,8 +41,6 @@ class MainActivity : ComponentActivity() {
     private val _deepLinkUri = MutableStateFlow<String?>(null)
     val deepLinkUri: StateFlow<String?> = _deepLinkUri.asStateFlow()
 
-
-
     fun consumeDeepLink() {
         _deepLinkUri.value = null
     }

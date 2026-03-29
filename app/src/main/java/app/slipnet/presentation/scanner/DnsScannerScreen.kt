@@ -226,7 +226,7 @@ fun DnsScannerScreen(
             TopAppBar(
                 title = { Text("DNS Scanner") },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
+                    IconButton(onClick = { viewModel.stopAll(); onNavigateBack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -934,7 +934,7 @@ private fun ConfigurationSection(
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Text(
-                            text = "Skip HTTP check (saves ~1–5s per resolver). Tunnel proof still required.",
+                            text = "Verify HTTP connectivity through the tunnel (adds ~1–5s per resolver).",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
