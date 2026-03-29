@@ -145,8 +145,8 @@ data class EditProfileUiState(
     val boundDeviceId: String = "",
     // NoizDNS stealth mode
     val noizdnsStealth: Boolean = false,
-    // DNS query payload size (0 = max/full capacity)
-    val dnsPayloadSize: Int = 0,
+    // DNS query payload size (default 100, 0 = full capacity)
+    val dnsPayloadSize: Int = 100,
     // Hidden resolvers (imported profile had resolvers hidden by exporter)
     val resolversHidden: Boolean = false,
     // Original default resolvers from import (preserved when user overrides with custom ones)
@@ -341,13 +341,15 @@ class EditProfileViewModel @Inject constructor(
     }
 
     fun updateResolvers(resolvers: String) {
+        // Normalize newlines to commas so pasted multi-line lists display correctly
+        val normalized = resolvers.replace("\n", ",")
         // Validate in real-time but only show error if user has typed something
-        val error = if (resolvers.isNotBlank()) {
-            validateResolvers(resolvers)
+        val error = if (normalized.isNotBlank()) {
+            validateResolvers(normalized)
         } else {
             null
         }
-        _uiState.value = _uiState.value.copy(resolvers = resolvers, resolversError = error)
+        _uiState.value = _uiState.value.copy(resolvers = normalized, resolversError = error)
     }
 
     fun updateUseCustomResolver(enabled: Boolean) {
@@ -1239,7 +1241,7 @@ class EditProfileViewModel @Inject constructor(
     }
 
     private fun parseResolvers(input: String, authoritativeMode: Boolean): List<DnsResolver> {
-        return input.split(",")
+        return input.split(",", "\n")
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .map { resolver ->
@@ -1312,12 +1314,12 @@ class EditProfileViewModel @Inject constructor(
     /**
      * Validates DNS resolver format.
      * Expected format: "host:port" or "host" (port defaults to 53)
-     * Multiple resolvers can be comma-separated.
+     * Multiple resolvers can be comma-separated or newline-separated.
      * Supports IPv4, IPv6, and domain names.
      * @return error message if invalid, null if valid
      */
     private fun validateResolvers(input: String): String? {
-        val resolvers = input.split(",").map { it.trim() }.filter { it.isNotBlank() }
+        val resolvers = input.split(",", "\n").map { it.trim() }.filter { it.isNotBlank() }
 
         if (resolvers.isEmpty()) {
             return "At least one resolver is required"

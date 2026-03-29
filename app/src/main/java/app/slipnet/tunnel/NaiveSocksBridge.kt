@@ -38,6 +38,8 @@ object NaiveSocksBridge {
     private const val TAG = "NaiveSocksBridge"
     @Volatile var debugLogging = false
     @Volatile var domainRouter: DomainRouter = DomainRouter.DISABLED
+    @Volatile var uploadLimiter: RateLimiter? = null
+    @Volatile var downloadLimiter: RateLimiter? = null
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
@@ -436,6 +438,10 @@ object NaiveSocksBridge {
 
                     // SOCKS5 greeting
                     val version = input.read()
+                    if (version == -1) {
+                        // EOF — readiness probe or client closed immediately; not an error
+                        return@Thread
+                    }
                     if (version != 0x05) {
                         Log.w(TAG, "Invalid SOCKS5 version: $version")
                         return@Thread
@@ -617,6 +623,9 @@ object NaiveSocksBridge {
             remoteSocket = Socket()
             remoteSocket.connect(InetSocketAddress(naiveHost, naivePort), TCP_CONNECT_TIMEOUT_MS)
             remoteSocket.tcpNoDelay = true
+            // Set read timeout for the SOCKS5 handshake phase so that hung
+            // reads don't permanently hold connection slots.
+            remoteSocket.soTimeout = TCP_CONNECT_TIMEOUT_MS
             remoteSockets.add(remoteSocket)
         } catch (e: Exception) {
             logd("CONNECT: failed to connect to NaiveProxy: ${e.message}")
@@ -686,7 +695,7 @@ object NaiveSocksBridge {
             remoteSocket.use { remote ->
                 val t1 = Thread({
                     try {
-                        copyStream(clientInput, remoteOutput)
+                        copyStream(clientInput, remoteOutput, uploadLimiter)
                     } catch (_: Exception) {
                     } finally {
                         try { remoteOutput.close() } catch (_: Exception) {}
@@ -696,7 +705,7 @@ object NaiveSocksBridge {
                 t1.start()
 
                 try {
-                    copyStream(remoteInput, clientOutput)
+                    copyStream(remoteInput, clientOutput, downloadLimiter)
                 } catch (_: Exception) {
                 } finally {
                     try { remote.close() } catch (_: Exception) {}
@@ -725,7 +734,7 @@ object NaiveSocksBridge {
 
             val t1 = Thread({
                 try {
-                    copyStream(clientInput, remoteOutput)
+                    copyStream(clientInput, remoteOutput, uploadLimiter)
                 } catch (_: Exception) {
                 } finally {
                     try { remoteOutput.close() } catch (_: Exception) {}
@@ -735,7 +744,7 @@ object NaiveSocksBridge {
             t1.start()
 
             try {
-                copyStream(remoteInput, clientOutput)
+                copyStream(remoteInput, clientOutput, downloadLimiter)
             } catch (_: Exception) {
             } finally {
                 try { remote.close() } catch (_: Exception) {}
@@ -1013,12 +1022,13 @@ object NaiveSocksBridge {
         }
     }
 
-    private fun copyStream(input: InputStream, output: OutputStream) {
+    private fun copyStream(input: InputStream, output: OutputStream, limiter: RateLimiter? = null) {
         val buffered = BufferedOutputStream(output, BUFFER_SIZE)
         val buffer = ByteArray(BUFFER_SIZE)
         while (!Thread.currentThread().isInterrupted) {
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) break
+            limiter?.acquire(bytesRead)
             buffered.write(buffer, 0, bytesRead)
             if (bytesRead < BUFFER_SIZE || input.available() == 0) {
                 buffered.flush()

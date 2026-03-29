@@ -164,6 +164,10 @@ object TorSocksBridge {
 
                     // SOCKS5 greeting
                     val version = input.read()
+                    if (version == -1) {
+                        // EOF — readiness probe or client closed immediately; not an error
+                        return@Thread
+                    }
                     if (version != 0x05) {
                         Log.w(TAG, "Invalid SOCKS5 version: $version")
                         return@Thread

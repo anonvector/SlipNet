@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"noizdns/mobile"
@@ -49,18 +48,19 @@ func RunE2ETests(resolvers []string, config E2EConfig, onResult func(E2EResult))
 	sem := make(chan struct{}, config.Concurrency)
 	var wg sync.WaitGroup
 
-	// Each test needs a unique local port
-	var portCounter int32 = 19000
-
 	for _, ip := range resolvers {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(host string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					onResult(E2EResult{Host: host, Error: fmt.Sprintf("panic: %v", r)})
+				}
+			}()
 
-			// Find a free port
-			port := allocatePort(&portCounter)
+			port := allocatePort()
 			if port == 0 {
 				onResult(E2EResult{Host: host, Error: "no free port"})
 				return
@@ -73,18 +73,14 @@ func RunE2ETests(resolvers []string, config E2EConfig, onResult func(E2EResult))
 	wg.Wait()
 }
 
-func allocatePort(counter *int32) int {
-	// Try ports starting from counter value
-	for i := 0; i < 100; i++ {
-		p := int(atomic.AddInt32(counter, 1) - 1)
-		addr := fmt.Sprintf("127.0.0.1:%d", p)
-		ln, err := net.Listen("tcp", addr)
-		if err == nil {
-			ln.Close()
-			return p
-		}
+func allocatePort() int {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0
 	}
-	return 0
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	return port
 }
 
 func testResolverE2E(parentCtx context.Context, resolverIP string, localPort int, config E2EConfig) E2EResult {
@@ -120,26 +116,41 @@ func testResolverE2E(parentCtx context.Context, resolverIP string, localPort int
 
 	// Run client.Start() with deadline — the API has no context support,
 	// so we race it against the overall timeout in a goroutine.
-	// Stop is always async to avoid inflating TotalMs with teardown time.
-	stopBg := func() { go client.Stop() }
+	// Stop runs in a goroutine but we wait up to 2s so the port is released
+	// before the concurrency slot is freed — prevents port collisions.
+	stopSync := func() {
+		done := make(chan struct{})
+		go func() { client.Stop(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
 
 	startCh := make(chan error, 1)
-	go func() { startCh <- client.Start() }()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				startCh <- fmt.Errorf("panic: %v", r)
+			}
+		}()
+		startCh <- client.Start()
+	}()
 	select {
 	case err = <-startCh:
 		if err != nil {
-			stopBg()
+			stopSync()
 			result.Error = fmt.Sprintf("start tunnel: %v", err)
 			result.TotalMs = time.Since(totalStart).Milliseconds()
 			return result
 		}
 	case <-ctx.Done():
-		stopBg()
+		stopSync()
 		result.Error = "timeout starting tunnel"
 		result.TotalMs = time.Since(totalStart).Milliseconds()
 		return result
 	}
-	defer stopBg()
+	defer stopSync()
 
 	// Wait for tunnel port to be ready (respect overall deadline and cancellation)
 	portTimeout := time.Until(time.Now().Add(5 * time.Second))
@@ -306,12 +317,12 @@ func waitForPort(ctx context.Context, addr string, timeout time.Duration) bool {
 		if ctx.Err() != nil {
 			return false
 		}
-		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
 		if err == nil {
 			conn.Close()
 			return true
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	return false
 }

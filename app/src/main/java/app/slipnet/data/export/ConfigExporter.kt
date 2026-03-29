@@ -84,6 +84,9 @@ class ConfigExporter @Inject constructor() {
         return exportable.joinToString("\n") { encodeProfile(it) }
     }
 
+    /** Strip the field delimiter so user-supplied strings can't shift field positions. */
+    private fun sanitize(value: String): String = value.replace(FIELD_DELIMITER, "")
+
     private fun buildProfileData(profile: ServerProfile, hideResolvers: Boolean = false): String {
         val resolversStr = profile.resolvers.joinToString(RESOLVER_DELIMITER) { resolver ->
             "${resolver.host}${RESOLVER_PART_DELIMITER}${resolver.port}${RESOLVER_PART_DELIMITER}${if (resolver.authoritative) "1" else "0"}"
@@ -118,26 +121,26 @@ class ConfigExporter @Inject constructor() {
         return listOf(
             VERSION,
             tunnelTypeStr,
-            profile.name,
-            profile.domain,
+            sanitize(profile.name),
+            sanitize(profile.domain),
             visibleResolvers,
             if (profile.authoritativeMode) "1" else "0",
             profile.keepAliveInterval.toString(),
             profile.congestionControl.value,
             profile.tcpListenPort.toString(),
-            profile.tcpListenHost,
+            sanitize(profile.tcpListenHost),
             if (profile.gsoEnabled) "1" else "0",
-            profile.dnsttPublicKey,
-            profile.socksUsername ?: "",
-            profile.socksPassword ?: "",
+            sanitize(profile.dnsttPublicKey),
+            sanitize(profile.socksUsername ?: ""),
+            sanitize(profile.socksPassword ?: ""),
             if (profile.tunnelType == TunnelType.SSH || profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.SLIPSTREAM_SSH || profile.tunnelType == TunnelType.NAIVE_SSH) "1" else "0",
-            profile.sshUsername,
-            profile.sshPassword,
+            sanitize(profile.sshUsername),
+            sanitize(profile.sshPassword),
             profile.sshPort.toString(),
             "0",
-            profile.sshHost,
+            sanitize(profile.sshHost),
             "0", // position 20: was useServerDns (removed)
-            profile.dohUrl,
+            sanitize(profile.dohUrl),
             profile.dnsTransport.value,
             profile.sshAuthType.value,
             Base64.encodeToString(profile.sshPrivateKey.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
@@ -145,13 +148,13 @@ class ConfigExporter @Inject constructor() {
             Base64.encodeToString(profile.torBridgeLines.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
             if (profile.dnsttAuthoritative) "1" else "0",
             profile.naivePort.toString(),
-            profile.naiveUsername,
+            sanitize(profile.naiveUsername),
             Base64.encodeToString(profile.naivePassword.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
             if (profile.isLocked) "1" else "0",
-            profile.lockPasswordHash,
+            sanitize(profile.lockPasswordHash),
             profile.expirationDate.toString(),
             if (profile.allowSharing) "1" else "0",
-            profile.boundDeviceId,
+            sanitize(profile.boundDeviceId),
             if (hideResolvers) "1" else "0",
             hiddenResolvers,
             if (profile.noizdnsStealth) "1" else "0",

@@ -84,7 +84,7 @@ type ScanResult struct {
 }
 
 // ScanResolvers scans a list of resolver IPs concurrently.
-// querySize caps the tunnel-realism probe to match the user's --query-size (0 = full capacity).
+// querySize caps the tunnel-realism probe to match the user's --max-query-size (0 = full capacity).
 func ScanResolvers(resolvers []string, port int, testDomain string, timeoutMs int, concurrency int, querySize int, onResult func(ScanResult)) {
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
@@ -713,7 +713,7 @@ func extractTXTData(resp []byte) string {
 // RunVerifyScanner sends HMAC-authenticated verification probes to each
 // resolver. Each resolver gets probeCount probes and must pass at least
 // passThreshold to be considered verified. Results are shown in real time.
-func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, probeCount int, passThreshold int, pubkey []byte, responseSize int, prefilter bool, outputFile string) {
+func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, probeCount int, passThreshold int, pubkey []byte, responseSize int, prefilter bool, e2eConfig *E2EConfig, outputFile string) {
 	if probeCount <= 0 {
 		probeCount = 5
 	}
@@ -876,7 +876,32 @@ func RunVerifyScanner(resolvers []string, testDomain string, port int, timeoutMs
 	}
 	fmt.Println()
 
-	saveResultsPrompt(verifiedIPs, nil, outputFile, stopped.Load())
+	// Run E2E tunnel tests on verified resolvers if configured.
+	if e2eConfig != nil && len(verifiedIPs) > 0 && !stopped.Load() {
+		fmt.Println("  ── E2E Tunnel Tests ──────────────────────────────")
+		fmt.Println()
+		fmt.Printf("  Testing %d verified resolvers...\n", len(verifiedIPs))
+		fmt.Println()
+		var e2ePassedIPs []string
+		var e2eMu sync.Mutex
+		RunE2ETests(verifiedIPs, *e2eConfig, func(r E2EResult) {
+			if r.Success {
+				e2eMu.Lock()
+				e2ePassedIPs = append(e2ePassedIPs, r.Host)
+				e2eMu.Unlock()
+				fmt.Printf("  ✓ %-18s  tunnel=%dms  http=%dms  total=%dms\n",
+					r.Host, r.TunnelMs, r.HTTPMs, r.TotalMs)
+			} else {
+				fmt.Printf("  ✗ %-18s  %s\n", r.Host, r.Error)
+			}
+		})
+		fmt.Println()
+		fmt.Printf("  %d/%d resolvers passed E2E\n", len(e2ePassedIPs), len(verifiedIPs))
+		fmt.Println()
+		saveResultsPrompt(verifiedIPs, e2ePassedIPs, outputFile, stopped.Load())
+	} else {
+		saveResultsPrompt(verifiedIPs, nil, outputFile, stopped.Load())
+	}
 }
 
 // LoadIPList parses a text file/string into a list of IP addresses.
@@ -905,7 +930,7 @@ func LoadIPList(content string) []string {
 
 // RunScanner is the main entry point for the CLI scanner.
 // If e2eConfig is non-nil, E2E tests run in parallel as resolvers meeting the score threshold are found.
-// querySize caps DNS probes to match the user's --query-size (0 = full capacity).
+// querySize caps DNS probes to match the user's --max-query-size (0 = full capacity).
 func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, querySize int, e2eConfig *E2EConfig, outputFile string) {
 	total := len(resolvers)
 	var scanned int64
@@ -929,7 +954,6 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 	var e2eMu sync.Mutex
 	var e2eResults []E2EResult
 	var e2ePassedIPs []string
-	var portCounter int32 = 19000
 
 	// Print mutex for clean terminal output
 	var printMu sync.Mutex
@@ -993,42 +1017,60 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 			go func() {
 				defer e2eWg.Done()
 				for ip := range e2eChan {
-					if stopped.Load() {
-						continue
-					}
-					p := allocatePort(&portCounter)
-					if p == 0 {
-						continue
-					}
-					result := testResolverE2E(e2eCtx, ip, p, *e2eConfig)
-					n := atomic.AddInt64(&e2eTested, 1)
-
-					e2eMu.Lock()
-					e2eResults = append(e2eResults, result)
-					if result.Success {
-						atomic.AddInt64(&e2ePassed, 1)
-						e2ePassedIPs = append(e2ePassedIPs, result.Host)
-					}
-					e2eMu.Unlock()
-
-					ep := atomic.LoadInt64(&e2ePassed)
-					printMu.Lock()
-					if result.Success {
-						fmt.Printf("\r  ✓ E2E %-18s PASS  %5dms        (E2E: %d/%d)\n", result.Host, result.TotalMs, ep, n)
-					} else {
-						errMsg := result.Error
-						if errMsg == "" {
-							errMsg = "unknown"
+					func(host string) {
+						defer func() {
+							if r := recover(); r != nil {
+								result := E2EResult{Host: host, Error: fmt.Sprintf("panic: %v", r)}
+								n := atomic.AddInt64(&e2eTested, 1)
+								e2eMu.Lock()
+								e2eResults = append(e2eResults, result)
+								e2eMu.Unlock()
+								ep := atomic.LoadInt64(&e2ePassed)
+								printMu.Lock()
+								fmt.Printf("\r  ✗ E2E %-18s FAIL  panic        (E2E: %d/%d)\n", host, ep, n)
+								s := atomic.LoadInt64(&scanned)
+								w := atomic.LoadInt64(&working)
+								fmt.Printf("  Scanning... %d/%d  (working: %d)  |  E2E: %d/%d passed", s, total, w, ep, n)
+								printMu.Unlock()
+							}
+						}()
+						if stopped.Load() {
+							return
 						}
-						if len(errMsg) > 20 {
-							errMsg = errMsg[:20]
+						p := allocatePort()
+						if p == 0 {
+							return
 						}
-						fmt.Printf("\r  ✗ E2E %-18s FAIL  %s        (E2E: %d/%d)\n", result.Host, errMsg, ep, n)
-					}
-					s := atomic.LoadInt64(&scanned)
-					w := atomic.LoadInt64(&working)
-					fmt.Printf("  Scanning... %d/%d  (working: %d)  |  E2E: %d/%d passed", s, total, w, ep, n)
-					printMu.Unlock()
+						result := testResolverE2E(e2eCtx, host, p, *e2eConfig)
+						n := atomic.AddInt64(&e2eTested, 1)
+
+						e2eMu.Lock()
+						e2eResults = append(e2eResults, result)
+						if result.Success {
+							atomic.AddInt64(&e2ePassed, 1)
+							e2ePassedIPs = append(e2ePassedIPs, result.Host)
+						}
+						e2eMu.Unlock()
+
+						ep := atomic.LoadInt64(&e2ePassed)
+						printMu.Lock()
+						if result.Success {
+							fmt.Printf("\r  ✓ E2E %-18s PASS  %5dms        (E2E: %d/%d)\n", result.Host, result.TotalMs, ep, n)
+						} else {
+							errMsg := result.Error
+							if errMsg == "" {
+								errMsg = "unknown"
+							}
+							if len(errMsg) > 20 {
+								errMsg = errMsg[:20]
+							}
+							fmt.Printf("\r  ✗ E2E %-18s FAIL  %s        (E2E: %d/%d)\n", result.Host, errMsg, ep, n)
+						}
+						s := atomic.LoadInt64(&scanned)
+						w := atomic.LoadInt64(&working)
+						fmt.Printf("  Scanning... %d/%d  (working: %d)  |  E2E: %d/%d passed", s, total, w, ep, n)
+						printMu.Unlock()
+					}(ip)
 				}
 			}()
 		}
@@ -1258,7 +1300,6 @@ func RunE2EOnlyScanner(resolvers []string, config E2EConfig, outputFile string) 
 	var mu sync.Mutex
 	var results []E2EResult
 	var passedIPs []string
-	var portCounter int32 = 19000
 
 	// Suppress noizdns tunnel library logging during E2E
 	log.SetOutput(io.Discard)
@@ -1345,12 +1386,26 @@ func RunE2EOnlyScanner(resolvers []string, config E2EConfig, outputFile string) 
 		go func(host string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					result := E2EResult{Host: host, Error: fmt.Sprintf("panic: %v", r)}
+					atomic.AddInt64(&tested, 1)
+					mu.Lock()
+					results = append(results, result)
+					mu.Unlock()
+					printMu.Lock()
+					fmt.Printf("\r  %-18s %5dms  %5dms  %5dms  FAIL  %s\n",
+						result.Host, result.TunnelMs, result.HTTPMs, result.TotalMs, "panic")
+					printProgress()
+					printMu.Unlock()
+				}
+			}()
 
 			if stopped.Load() {
 				return
 			}
 
-			p := allocatePort(&portCounter)
+			p := allocatePort()
 			if p == 0 {
 				return
 			}

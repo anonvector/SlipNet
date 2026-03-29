@@ -106,14 +106,20 @@ class NotificationHelper @Inject constructor(
                     intent = reconnectIntent
                 )
 
-                val bodyText = if (trafficStats != null && trafficStats.totalBytes > 0) {
-                    "\u2191 ${trafficStats.formatBytesSent()}  \u2193 ${trafficStats.formatBytesReceived()}"
+                val hasTraffic = trafficStats != null && trafficStats.totalBytes > 0
+
+                val bodyText = if (hasTraffic) {
+                    val upLine = "\u2191 ${trafficStats!!.formatBytesSent()}" +
+                        if (uploadSpeed > 0) "  ${TrafficStats.formatSpeed(uploadSpeed)}" else ""
+                    val downLine = "\u2193 ${trafficStats.formatBytesReceived()}" +
+                        if (downloadSpeed > 0) "  ${TrafficStats.formatSpeed(downloadSpeed)}" else ""
+                    "$upLine\n$downLine"
                 } else {
                     if (isProxyOnly) "Proxy is active" else "VPN is active"
                 }
 
-                if (trafficStats != null && (uploadSpeed > 0 || downloadSpeed > 0)) {
-                    builder.setSubText("\u2191 ${TrafficStats.formatSpeed(uploadSpeed)}  \u2193 ${TrafficStats.formatSpeed(downloadSpeed)}")
+                if (hasTraffic) {
+                    builder.setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
                 }
 
                 builder

@@ -60,9 +60,9 @@ data class ServerProfile(
     val boundDeviceId: String = "",
     // NoizDNS stealth mode: trades speed for DPI resistance (jitter, slow polling, cover traffic)
     val noizdnsStealth: Boolean = false,
-    // DNS query payload size cap (KCP MTU). 0 = full capacity (default).
-    // Lower values produce smaller, less conspicuous DNS queries.
-    val dnsPayloadSize: Int = 0,
+    // DNS query payload size cap (KCP MTU). Default 100 bytes.
+    // Lower values produce smaller, less conspicuous DNS queries. 0 = full capacity.
+    val dnsPayloadSize: Int = 100,
     // When true, resolvers are hidden from the user (set during import of hidden-resolver profiles)
     val resolversHidden: Boolean = false,
     // Original default resolvers from import (preserved when user overrides with custom resolvers)

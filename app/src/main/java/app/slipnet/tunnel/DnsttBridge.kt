@@ -264,7 +264,7 @@ object DnsttBridge {
                 return true
             }
             Log.d(TAG, "Waiting for port $port to be released...")
-            Thread.sleep(200)
+            Thread.sleep(50)
         }
         return !isPortInUse(port)
     }

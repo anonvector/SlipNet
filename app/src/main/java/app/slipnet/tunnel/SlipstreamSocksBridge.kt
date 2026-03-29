@@ -44,14 +44,16 @@ object SlipstreamSocksBridge {
     @Volatile var domainRouter: DomainRouter = DomainRouter.DISABLED
     @Volatile var uploadLimiter: RateLimiter? = null
     @Volatile var downloadLimiter: RateLimiter? = null
+    @Volatile var dnsWorkerPoolSize = 5  // configurable from settings; 0 = no pool
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
     private const val BUFFER_SIZE = 65536  // 64KB for better throughput (was 32KB)
     private const val TCP_CONNECT_TIMEOUT_MS = 10000
     private const val RELAY_IDLE_TIMEOUT_MS = 300_000  // 5 min idle timeout for relay sockets
-    private const val DNS_POOL_SIZE = 5
-    private const val DNS_KEEPALIVE_INTERVAL_MS = 40_000L
+    private const val DNS_POOL_SIZE_MAX = 10  // max possible pool for array allocation
+    private val dnsPoolSize: Int get() = dnsWorkerPoolSize.coerceAtLeast(0)
+    private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
     private const val DNS_WORKER_TIMEOUT_MS = 15_000
     // Clean DNS resolved at the REMOTE server (through Dante SOCKS5 CONNECT).
     // Unlike SSH (direct-tcpip bypasses Dante), Slipstream goes through Dante which
@@ -72,8 +74,11 @@ object SlipstreamSocksBridge {
     private val remoteSockets = CopyOnWriteArrayList<Socket>()
 
     // Tunnel-level byte counters (only counts data actually relayed through the tunnel)
-    private val tunnelTxBytes = AtomicLong(0)  // client → tunnel (upload)
-    private val tunnelRxBytes = AtomicLong(0)  // tunnel → client (download)
+    // carriedTx/Rx accumulate totals across reconnects so stats don't reset to zero.
+    private val tunnelTxBytes = AtomicLong(0)  // client → tunnel (upload), current session
+    private val tunnelRxBytes = AtomicLong(0)  // tunnel → client (download), current session
+    private val carriedTxBytes = AtomicLong(0)  // accumulated from previous sessions
+    private val carriedRxBytes = AtomicLong(0)
 
     // --- DNS Worker Pool ---
     // Persistent SOCKS5 connections through Slipstream→Dante to DNS server.
@@ -88,11 +93,11 @@ object SlipstreamSocksBridge {
         val isAlive: Boolean get() = !socket.isClosed && socket.isConnected
     }
 
-    private val dnsWorkers = arrayOfNulls<DnsWorker>(DNS_POOL_SIZE)
+    private var dnsWorkers = arrayOfNulls<DnsWorker>(DNS_POOL_SIZE_MAX)
     private val dnsRoundRobin = AtomicInteger(0)
     private var dnsTargetHost: String = PRIMARY_DNS_HOST
     private var dnsFallbackHost: String = FALLBACK_DNS_HOST
-    private val workerCreationLocks = Array(DNS_POOL_SIZE) { ReentrantLock() }
+    private var workerCreationLocks = Array(DNS_POOL_SIZE_MAX) { ReentrantLock() }
     private var dnsKeepaliveThread: Thread? = null
 
     // Circuit breaker for DNS worker recreation
@@ -149,13 +154,15 @@ object SlipstreamSocksBridge {
     }
 
     /**
-     * Returns true when no CONNECT has succeeded for [CAPACITY_EXHAUSTION_THRESHOLD_MS].
-     * Catches total tunnel failure but not degraded tunnels with sporadic successes —
-     * degraded-but-working tunnels should not be reconnected as that makes things worse.
+     * Returns true when CONNECT slots are actually stuck — no success for
+     * [CAPACITY_EXHAUSTION_THRESHOLD_MS] AND at least one semaphore slot is in use.
+     * When the phone is idle and no CONNECTs are attempted, all permits are available
+     * and this correctly returns false (no stuck slots, just no traffic).
      */
     fun isCapacityExhausted(): Boolean {
         val last = lastConnectSuccessMs.get()
         if (last == 0L) return false
+        if (connectSemaphore.availablePermits() == MAX_CONCURRENT_CONNECTS) return false
         return System.currentTimeMillis() - last > CAPACITY_EXHAUSTION_THRESHOLD_MS
     }
 
@@ -189,6 +196,10 @@ object SlipstreamSocksBridge {
         connectFailures.set(0)
         connectCircuitOpenUntil = 0
         lastConnectSuccessMs.set(0)
+        // Resize worker pool to configured size
+        val poolSize = dnsPoolSize
+        dnsWorkers = arrayOfNulls(poolSize)
+        workerCreationLocks = Array(poolSize) { ReentrantLock() }
 
         return try {
             val ss = bindServerSocket(listenHost, listenPort)
@@ -210,8 +221,10 @@ object SlipstreamSocksBridge {
                 logd("Acceptor thread exited")
             }, "slip-bridge-acceptor").also { it.isDaemon = true; it.start() }
 
-            // Pre-warm DNS worker pool in background
-            prewarmDnsWorkers()
+            // Pre-warm DNS worker pool in background (skip in per-query mode)
+            if (dnsPoolSize > 0) {
+                prewarmDnsWorkers()
+            }
 
             Log.i(TAG, "Bridge started on $listenHost:$listenPort")
             Result.success(Unit)
@@ -239,7 +252,7 @@ object SlipstreamSocksBridge {
         dnsKeepaliveThread = null
 
         // Close all DNS workers (connections to Slipstream port)
-        for (i in 0 until DNS_POOL_SIZE) {
+        for (i in 0 until dnsPoolSize) {
             val worker = dnsWorkers[i]
             dnsWorkers[i] = null
             if (worker != null) {
@@ -258,16 +271,24 @@ object SlipstreamSocksBridge {
         }
         connectionThreads.clear()
 
-        tunnelTxBytes.set(0)
-        tunnelRxBytes.set(0)
+        carriedTxBytes.addAndGet(tunnelTxBytes.getAndSet(0))
+        carriedRxBytes.addAndGet(tunnelRxBytes.getAndSet(0))
 
         logd("Bridge stopped")
     }
 
     fun isRunning(): Boolean = running.get()
 
-    fun getTunnelTxBytes(): Long = tunnelTxBytes.get()
-    fun getTunnelRxBytes(): Long = tunnelRxBytes.get()
+    fun getTunnelTxBytes(): Long = carriedTxBytes.get() + tunnelTxBytes.get()
+    fun getTunnelRxBytes(): Long = carriedRxBytes.get() + tunnelRxBytes.get()
+
+    /** Full reset — call on user-initiated disconnect, not on reconnects. */
+    fun resetTrafficStats() {
+        tunnelTxBytes.set(0)
+        tunnelRxBytes.set(0)
+        carriedTxBytes.set(0)
+        carriedRxBytes.set(0)
+    }
 
     fun isClientHealthy(): Boolean {
         val ss = serverSocket ?: return false
@@ -277,7 +298,8 @@ object SlipstreamSocksBridge {
     /** Returns true when all DNS workers in the pool are dead. */
     fun isDnsPoolDead(): Boolean {
         if (!running.get()) return false
-        return (0 until DNS_POOL_SIZE).none { dnsWorkers[it]?.isAlive == true }
+        if (dnsPoolSize <= 0) return false  // no pool = per-query mode, never "dead"
+        return (0 until dnsPoolSize).none { dnsWorkers[it]?.isAlive == true }
     }
 
     // --- DNS Worker Pool Management ---
@@ -287,15 +309,15 @@ object SlipstreamSocksBridge {
      * through Slipstream→Dante. Each worker is a ready-to-use DNS-over-TCP channel.
      */
     private fun prewarmDnsWorkers() {
-        Log.i(TAG, "DNS workers target: $dnsTargetHost:53 (fallback: $dnsFallbackHost, pool=$DNS_POOL_SIZE)")
+        Log.i(TAG, "DNS workers target: $dnsTargetHost:53 (fallback: $dnsFallbackHost, pool=$dnsPoolSize)")
         val thread = Thread({
-            for (i in 0 until DNS_POOL_SIZE) {
+            for (i in 0 until dnsPoolSize) {
                 if (!running.get() || Thread.currentThread().isInterrupted) break
                 try {
                     val worker = createDnsWorker()
                     if (worker != null) {
                         dnsWorkers[i] = worker
-                        logd("DNS worker ${i + 1}/$DNS_POOL_SIZE ready → $dnsTargetHost:53")
+                        logd("DNS worker ${i + 1}/$dnsPoolSize ready → $dnsTargetHost:53")
                     } else {
                         logd("DNS worker ${i + 1} creation returned null")
                         break
@@ -309,7 +331,7 @@ object SlipstreamSocksBridge {
                             val fallbackWorker = createDnsWorker()
                             if (fallbackWorker != null) {
                                 dnsWorkers[i] = fallbackWorker
-                                logd("DNS worker 1/$DNS_POOL_SIZE ready → $dnsTargetHost:53 (fallback)")
+                                logd("DNS worker 1/$dnsPoolSize ready → $dnsTargetHost:53 (fallback)")
                                 continue
                             }
                         } catch (e2: Exception) {
@@ -322,7 +344,7 @@ object SlipstreamSocksBridge {
                 }
             }
             val count = dnsWorkers.count { it != null }
-            Log.i(TAG, "DNS worker pool: $count/$DNS_POOL_SIZE ready → $dnsTargetHost:53")
+            Log.i(TAG, "DNS worker pool: $count/$dnsPoolSize ready → $dnsTargetHost:53")
         }, "slip-dns-prewarm")
         thread.isDaemon = true
         thread.start()
@@ -402,8 +424,22 @@ object SlipstreamSocksBridge {
         }
     }
 
+    // DNS keepalive query: A record for "." (root). Minimal, always succeeds,
+    // keeps the TCP connection alive so the remote DNS server doesn't close it.
+    private val DNS_KEEPALIVE_QUERY = byteArrayOf(
+        0x00, 0x00,                         // ID = 0
+        0x01, 0x00,                         // QR=0, RD=1
+        0x00, 0x01,                         // QDCOUNT = 1
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ANCOUNT, NSCOUNT, ARCOUNT = 0
+        0x00,                               // root label (.)
+        0x00, 0x01,                         // QTYPE = A
+        0x00, 0x01                          // QCLASS = IN
+    )
+
     /**
-     * Periodic health check: detect dead workers and recreate them proactively.
+     * Periodic keepalive: send a dummy DNS query on each live worker to prevent
+     * the remote DNS server from closing idle TCP connections. Dead workers are
+     * recreated.
      */
     private fun startDnsKeepalive() {
         dnsKeepaliveThread?.interrupt()
@@ -414,15 +450,31 @@ object SlipstreamSocksBridge {
 
             while (running.get() && !Thread.currentThread().isInterrupted) {
                 var deadCount = 0
-                for (i in 0 until DNS_POOL_SIZE) {
+                for (i in 0 until dnsPoolSize) {
                     val worker = dnsWorkers[i]
                     if (worker == null || !worker.isAlive) {
                         deadCount++
                         recreateDnsWorkerSync(i)
+                        continue
+                    }
+                    // Send a keepalive query to prevent idle timeout
+                    if (worker.lock.tryLock()) {
+                        try {
+                            sendDnsQuery(worker, DNS_KEEPALIVE_QUERY)
+                            logd("DNS keepalive: worker $i pinged")
+                        } catch (e: Exception) {
+                            logd("DNS keepalive: worker $i dead (${e.message}), recreating")
+                            dnsWorkers[i] = null
+                            try { worker.socket.close() } catch (_: Exception) {}
+                            deadCount++
+                            recreateDnsWorkerSync(i)
+                        } finally {
+                            worker.lock.unlock()
+                        }
                     }
                 }
                 if (deadCount > 0) {
-                    logd("DNS keepalive: $deadCount dead workers found, recreation attempted")
+                    logd("DNS keepalive: $deadCount dead workers recreated")
                 }
 
                 try {
@@ -483,11 +535,24 @@ object SlipstreamSocksBridge {
         if (!SlipstreamBridge.isNativeRunning()) return null
         if (isCircuitOpen()) return null
 
-        val startIdx = (dnsRoundRobin.getAndIncrement() and 0x7FFFFFFF) % DNS_POOL_SIZE
+        // Per-query mode: skip worker pool, go straight to one-shot connection
+        if (dnsPoolSize <= 0) {
+            val tcpResult = forwardDnsTcpOneShot(payload)
+            if (tcpResult != null) {
+                recordDnsSuccess()
+                tunnelTxBytes.addAndGet(payload.size.toLong())
+                tunnelRxBytes.addAndGet(tcpResult.size.toLong())
+                return tcpResult
+            }
+            recordDnsFailure()
+            return null
+        }
+
+        val startIdx = (dnsRoundRobin.getAndIncrement() and 0x7FFFFFFF) % dnsPoolSize
 
         // Phase 1: Try all existing live workers (non-blocking lock to skip busy ones)
-        for (i in 0 until DNS_POOL_SIZE) {
-            val idx = (startIdx + i) % DNS_POOL_SIZE
+        for (i in 0 until dnsPoolSize) {
+            val idx = (startIdx + i) % dnsPoolSize
             val worker = dnsWorkers[idx] ?: continue
             if (!worker.isAlive) {
                 dnsWorkers[idx] = null
@@ -513,8 +578,8 @@ object SlipstreamSocksBridge {
         if (isCircuitOpen()) return null
 
         // Phase 2: All workers dead/busy — recreate one inline
-        for (i in 0 until DNS_POOL_SIZE) {
-            val idx = (startIdx + i) % DNS_POOL_SIZE
+        for (i in 0 until dnsPoolSize) {
+            val idx = (startIdx + i) % dnsPoolSize
             val newWorker = recreateDnsWorkerSync(idx)
             if (newWorker == null) { recordDnsFailure(); continue }
             if (!newWorker.lock.tryLock(5, TimeUnit.SECONDS)) continue
@@ -579,6 +644,10 @@ object SlipstreamSocksBridge {
 
                     // SOCKS5 greeting
                     val version = input.read()
+                    if (version == -1) {
+                        // EOF — readiness probe or client closed immediately; not an error
+                        return@Thread
+                    }
                     if (version != 0x05) {
                         Log.w(TAG, "Invalid SOCKS5 version: $version")
                         return@Thread

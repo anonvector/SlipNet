@@ -4,8 +4,8 @@ import app.slipnet.util.AppLog as Log
 import java.io.BufferedOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.IOException
 import java.net.InetSocketAddress
-import java.net.Proxy
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Supports HTTP CONNECT (for HTTPS) and plain HTTP forwarding.
  *
  * This works with ALL tunnel types automatically since it connects
- * upstream via the already-running SOCKS5 proxy using java.net.Proxy.
+ * upstream via the already-running SOCKS5 proxy using a manual SOCKS5 handshake.
  *
  * Traffic flow:
  * Other device -> HTTP proxy (listenPort) -> SOCKS5 proxy (socksPort) -> tunnel -> server
@@ -24,12 +24,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 object HttpProxyServer {
     private const val TAG = "HttpProxyServer"
     @Volatile var debugLogging = false
+    @Volatile var uploadLimiter: RateLimiter? = null
+    @Volatile var downloadLimiter: RateLimiter? = null
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
     private const val BUFFER_SIZE = 32768
     private const val TCP_CONNECT_TIMEOUT_MS = 30000
-    private const val RELAY_IDLE_TIMEOUT_MS = 300000
+
 
     private var socksHost: String = "127.0.0.1"
     private var socksPort: Int = 1080
@@ -188,16 +190,12 @@ object HttpProxyServer {
             if (line.isEmpty()) break
         }
 
-        // Connect to target through SOCKS5 proxy.
-        // Use createUnresolved so the domain name is sent to the SOCKS5 proxy
-        // for remote resolution — avoids DNS leaks to the local ISP which would
-        // fail or return spoofed IPs in censored networks.
-        val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(socksHost, socksPort))
+        // Connect to target through SOCKS5 proxy using manual handshake.
+        // Sends DOMAINNAME address type so the bridge resolves DNS remotely —
+        // avoids DNS leaks to the local ISP.
         val remoteSocket: Socket
         try {
-            remoteSocket = Socket(socksProxy)
-            remoteSocket.connect(InetSocketAddress.createUnresolved(host, port), TCP_CONNECT_TIMEOUT_MS)
-            remoteSocket.tcpNoDelay = true
+            remoteSocket = connectViaSocks5(host, port)
         } catch (e: Exception) {
             logd("CONNECT: failed to connect to $host:$port via SOCKS5: ${e.message}")
             sendError(clientSocket, 502, "Bad Gateway")
@@ -211,7 +209,12 @@ object HttpProxyServer {
         clientOutput.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
         clientOutput.flush()
 
-        clientSocket.soTimeout = RELAY_IDLE_TIMEOUT_MS
+        // Disable read timeout for relay — matches SOCKS5 bridge behavior.
+        // With soTimeout > 0, SocketTimeoutException kills long-lived tunnels
+        // (e.g. Telegram MTProto) even when the connection is healthy but idle.
+        clientSocket.soTimeout = 0
+        clientSocket.keepAlive = true
+        remoteSocket.keepAlive = true
 
         // Bridge bidirectionally
         remoteSocket.use { remote ->
@@ -220,21 +223,22 @@ object HttpProxyServer {
 
             val t1 = Thread({
                 try {
-                    copyStream(clientInput, remoteOutput)
+                    copyStream(clientInput, remoteOutput, uploadLimiter)
                 } catch (_: Exception) {
                 } finally {
-                    try { remote.shutdownOutput() } catch (_: Exception) {}
+                    try { remote.close() } catch (_: Exception) {}
+                    try { clientSocket.close() } catch (_: Exception) {}
                 }
             }, "http-proxy-c2s")
             t1.isDaemon = true
             t1.start()
 
             try {
-                copyStream(remoteInput, clientOutput)
+                copyStream(remoteInput, clientOutput, downloadLimiter)
             } catch (_: Exception) {
             } finally {
                 try { remote.close() } catch (_: Exception) {}
-                t1.interrupt()
+                try { clientSocket.close() } catch (_: Exception) {}
             }
         }
     }
@@ -289,13 +293,10 @@ object HttpProxyServer {
             uri
         }
 
-        // Connect through SOCKS5 — use createUnresolved to avoid DNS leaks
-        val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(socksHost, socksPort))
+        // Connect through SOCKS5 using manual handshake — avoids DNS leaks
         val remoteSocket: Socket
         try {
-            remoteSocket = Socket(socksProxy)
-            remoteSocket.connect(InetSocketAddress.createUnresolved(host, port), TCP_CONNECT_TIMEOUT_MS)
-            remoteSocket.tcpNoDelay = true
+            remoteSocket = connectViaSocks5(host, port)
         } catch (e: Exception) {
             logd("HTTP: failed to connect to $host:$port via SOCKS5: ${e.message}")
             sendError(clientSocket, 502, "Bad Gateway")
@@ -332,27 +333,30 @@ object HttpProxyServer {
             remoteOutput.write("\r\n".toByteArray())
             remoteOutput.flush()
 
-            clientSocket.soTimeout = RELAY_IDLE_TIMEOUT_MS
+            clientSocket.soTimeout = 0
+            clientSocket.keepAlive = true
+            remoteSocket.keepAlive = true
 
             // Bidirectional bridge: forwards request body (if any) and response.
             // Server will close after response due to Connection: close.
             val t1 = Thread({
                 try {
-                    copyStream(clientInput, remoteSocket.getOutputStream())
+                    copyStream(clientInput, remoteSocket.getOutputStream(), uploadLimiter)
                 } catch (_: Exception) {
                 } finally {
-                    try { remoteSocket.shutdownOutput() } catch (_: Exception) {}
+                    try { remoteSocket.close() } catch (_: Exception) {}
+                    try { clientSocket.close() } catch (_: Exception) {}
                 }
             }, "http-proxy-c2s")
             t1.isDaemon = true
             t1.start()
 
             try {
-                copyStream(remoteInput, clientOutput)
+                copyStream(remoteInput, clientOutput, downloadLimiter)
             } catch (_: Exception) {
             } finally {
                 try { remoteSocket.close() } catch (_: Exception) {}
-                t1.interrupt()
+                try { clientSocket.close() } catch (_: Exception) {}
             }
         } catch (e: Exception) {
             if (running.get()) {
@@ -420,14 +424,98 @@ object HttpProxyServer {
         } catch (_: Exception) {}
     }
 
-    private fun copyStream(input: InputStream, output: OutputStream) {
+    /**
+     * Connect to a target through the SOCKS5 proxy using a manual handshake.
+     * Uses DOMAINNAME (0x03) address type so the bridge resolves DNS remotely.
+     *
+     * This replaces java.net.Proxy(SOCKS) which wraps the socket in SocksSocketImpl
+     * and can interfere with socket options, buffering, and relay behavior.
+     */
+    private fun connectViaSocks5(host: String, port: Int): Socket {
+        val socket = Socket()
+        socket.connect(InetSocketAddress(socksHost, socksPort), TCP_CONNECT_TIMEOUT_MS)
+        socket.soTimeout = TCP_CONNECT_TIMEOUT_MS // timeout for handshake only
+        socket.tcpNoDelay = true
+
+        val out = socket.getOutputStream()
+        val inp = socket.getInputStream()
+
+        // SOCKS5 greeting: version 5, 1 auth method (no auth)
+        out.write(byteArrayOf(0x05, 0x01, 0x00))
+        out.flush()
+
+        // Server's auth method choice
+        val authResp = ByteArray(2)
+        readExactly(inp, authResp)
+        if (authResp[0] != 0x05.toByte() || authResp[1] != 0x00.toByte()) {
+            socket.close()
+            throw IOException("SOCKS5 auth negotiation failed (method=${authResp[1]})")
+        }
+
+        // CONNECT request with DOMAINNAME address type
+        val domainBytes = host.toByteArray(Charsets.US_ASCII)
+        val req = ByteArray(4 + 1 + domainBytes.size + 2)
+        req[0] = 0x05 // version
+        req[1] = 0x01 // CONNECT
+        req[2] = 0x00 // reserved
+        req[3] = 0x03 // DOMAINNAME
+        req[4] = domainBytes.size.toByte()
+        System.arraycopy(domainBytes, 0, req, 5, domainBytes.size)
+        req[req.size - 2] = (port shr 8).toByte()
+        req[req.size - 1] = (port and 0xFF).toByte()
+        out.write(req)
+        out.flush()
+
+        // Read CONNECT response header (VER, REP, RSV, ATYP)
+        val resp = ByteArray(4)
+        readExactly(inp, resp)
+        if (resp[0] != 0x05.toByte() || resp[1] != 0x00.toByte()) {
+            socket.close()
+            throw IOException("SOCKS5 CONNECT failed (rep=${resp[1]})")
+        }
+
+        // Read and discard bound address based on address type
+        when (resp[3].toInt() and 0xFF) {
+            0x01 -> readExactly(inp, ByteArray(4 + 2))  // IPv4 + port
+            0x03 -> {
+                val len = inp.read()
+                if (len < 0) { socket.close(); throw IOException("SOCKS5: unexpected EOF") }
+                readExactly(inp, ByteArray(len + 2))     // domain + port
+            }
+            0x04 -> readExactly(inp, ByteArray(16 + 2)) // IPv6 + port
+            else -> {
+                socket.close()
+                throw IOException("SOCKS5: unknown address type ${resp[3]}")
+            }
+        }
+
+        socket.soTimeout = 0 // clear handshake timeout before relay
+        socket.keepAlive = true
+        return socket
+    }
+
+    private fun readExactly(input: InputStream, buf: ByteArray) {
+        var off = 0
+        while (off < buf.size) {
+            val n = input.read(buf, off, buf.size - off)
+            if (n < 0) throw IOException("Unexpected end of stream")
+            off += n
+        }
+    }
+
+    private fun copyStream(input: InputStream, output: OutputStream, limiter: RateLimiter? = null) {
         val buffer = ByteArray(BUFFER_SIZE)
         while (!Thread.currentThread().isInterrupted) {
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) break
+            limiter?.acquire(bytesRead)
             output.write(buffer, 0, bytesRead)
-            output.flush()
+            // Flush when no more data is immediately available (matches SOCKS5 bridges)
+            if (input.available() == 0) {
+                output.flush()
+            }
         }
+        output.flush()
     }
 
 }

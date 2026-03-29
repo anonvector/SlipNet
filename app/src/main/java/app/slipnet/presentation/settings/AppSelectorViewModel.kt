@@ -26,7 +26,7 @@ data class AppSelectorUiState(
     val apps: List<InstalledApp> = emptyList(),
     val selectedApps: Set<String> = emptySet(),
     val searchQuery: String = "",
-    val showSystemApps: Boolean = false,
+    val showSystemApps: Boolean = true,
     val showSelectedOnly: Boolean = false,
     val isLoading: Boolean = true
 )
@@ -65,9 +65,14 @@ class AppSelectorViewModel @Inject constructor(
             }
 
             allApps = installed
+            val installedPackages = installed.map { it.packageName }.toSet()
+            val validApps = savedApps.intersect(installedPackages)
+            if (validApps.size < savedApps.size) {
+                preferencesDataStore.setSplitTunnelingApps(validApps)
+            }
             _uiState.value = _uiState.value.copy(
-                apps = filterApps(installed, "", showSystem = false, selectedOnly = false, selectedApps = savedApps),
-                selectedApps = savedApps,
+                apps = filterApps(installed, "", showSystem = true, selectedOnly = false, selectedApps = validApps),
+                selectedApps = validApps,
                 isLoading = false
             )
         }

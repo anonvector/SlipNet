@@ -1107,7 +1107,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 client = newClient
                 newClient.start()
 
-                // Phase 2: Wait for DNSTT running
+                // Phase 2: Wait for DNSTT running*-**-**-*-
                 onPhaseUpdate("Waiting for $tunnelName...")
                 var remaining = timeoutMs - (SystemClock.elapsedRealtime() - totalStart)
                 val readyTimeout = minOf(remaining, 10000L)
@@ -1359,9 +1359,11 @@ class ResolverScannerRepositoryImpl @Inject constructor(
     ): E2eTestResult = withContext(Dispatchers.IO) {
         val totalStart = SystemClock.elapsedRealtime()
         val tunnelName = if (noizMode) "NoizDNS" else "DNSTT"
-        // Same two-layer stack as VPN: DnsttBridge on one port, DnsttSocksBridge on another
+        // Same two-layer stack as VPN: DnsttBridge on one port, DnsttSocksBridge on another.
+        // bridgePort is allocated later (just before DnsttSocksBridge.start) to reduce the
+        // TOCTOU window — allocating both ports up-front lets the OS reclaim bridgePort.
         val dnsttPort = findFreePort()
-        val bridgePort = findFreePort()
+        var bridgePort = 0
         try {
             val result = withTimeoutOrNull(timeoutMs) {
                 // Phase 1: Start tunnel
@@ -1448,6 +1450,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                     // Non-SSH: start DnsttSocksBridge (same as VPN flow) to handle
                     // SOCKS5 auth with Dante and DNS worker pool.
                     onPhaseUpdate("Starting bridge...")
+                    bridgePort = findFreePort()
                     DnsttSocksBridge.authoritativeMode = profile.dnsttAuthoritative
                     val bridgeResult = DnsttSocksBridge.start(
                         dnsttPort = dnsttPort,
@@ -1635,11 +1638,11 @@ class ResolverScannerRepositoryImpl @Inject constructor(
      * Wait for the local tunnel port to accept TCP connections.
      * Same check as VPN service's waitForProxyReady — connect-and-close.
      */
-    private fun waitForPortListening(port: Int, maxAttempts: Int = 20, delayMs: Long = 150): Boolean {
+    private fun waitForPortListening(port: Int, maxAttempts: Int = 40, delayMs: Long = 75): Boolean {
         repeat(maxAttempts) {
             try {
                 Socket().use { socket ->
-                    socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 300)
+                    socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 150)
                     return true
                 }
             } catch (_: Exception) {
@@ -1777,7 +1780,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             val statusCode = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: 0
 
             HttpThroughSocksResult(
-                success = statusCode in 200..299,
+                success = statusCode in 200..399,
                 statusCode = statusCode,
                 latencyMs = latencyMs
             )

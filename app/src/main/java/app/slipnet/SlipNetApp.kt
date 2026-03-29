@@ -4,14 +4,25 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import app.slipnet.data.local.datastore.PreferencesDataStore
 import dagger.hilt.android.HiltAndroidApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 @HiltAndroidApp
 class SlipNetApp : Application() {
 
+    @Inject lateinit var preferencesDataStore: PreferencesDataStore
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
+        appScope.launch { preferencesDataStore.ensureProxyPortInitialized() }
     }
 
     private fun createNotificationChannels() {

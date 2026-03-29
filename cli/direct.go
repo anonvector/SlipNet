@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -169,10 +170,10 @@ func connectSOCKS5(profile *Profile) {
 	}
 
 	if sshUser == "" {
-		fmt.Println("  Error: SSH credentials required to reach SOCKS5 proxy")
-		fmt.Println("  The server's SOCKS5 proxy listens on localhost only.")
-		fmt.Println("  An SSH tunnel is needed to forward traffic to it.")
-		return
+		log.Fatal("SSH credentials required to reach SOCKS5 proxy.\n" +
+			"The server's SOCKS5 proxy listens on localhost only.\n" +
+			"An SSH tunnel is needed to forward traffic to it.\n" +
+			"Add SSH or SOCKS5 credentials to your config and re-export.")
 	}
 
 	// SSH local port forward: local:port -> remote:1080 (microsocks)

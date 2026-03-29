@@ -194,9 +194,9 @@ class MainViewModel @Inject constructor(
         // Clear previous session totals when a new connection starts
         _uiState.value = _uiState.value.copy(sessionTotalUpload = 0, sessionTotalDownload = 0)
         trafficPollingJob = viewModelScope.launch {
-            while (true) {
-                connectionManager.refreshTrafficStats()
-                val current = connectionManager.trafficStats.value
+            // Observe the stats that the VPN service's notification poller already
+            // refreshes — no need to call refreshTrafficStats() a second time.
+            connectionManager.trafficStats.collect { current ->
                 val upSpeed = (current.bytesSent - previousStats.bytesSent).coerceAtLeast(0)
                 val downSpeed = (current.bytesReceived - previousStats.bytesReceived).coerceAtLeast(0)
                 previousStats = current
@@ -205,7 +205,6 @@ class MainViewModel @Inject constructor(
                     uploadSpeed = upSpeed,
                     downloadSpeed = downSpeed
                 )
-                delay(1000)
             }
         }
     }
@@ -366,6 +365,7 @@ class MainViewModel @Inject constructor(
             is ConnectionState.Connected,
             is ConnectionState.Connecting,
             is ConnectionState.Error -> disconnect()
+            is ConnectionState.Disconnecting -> { /* ignore — already disconnecting */ }
             else -> connect()
         }
     }

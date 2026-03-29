@@ -20,6 +20,14 @@ object Socks5ProxyBridge {
         get() = defaultInstance.domainRouter
         set(value) { defaultInstance.domainRouter = value }
 
+    var uploadLimiter: RateLimiter?
+        get() = defaultInstance.uploadLimiter
+        set(value) { defaultInstance.uploadLimiter = value }
+
+    var downloadLimiter: RateLimiter?
+        get() = defaultInstance.downloadLimiter
+        set(value) { defaultInstance.downloadLimiter = value }
+
     fun start(
         remoteHost: String,
         remotePort: Int,
@@ -38,6 +46,7 @@ object Socks5ProxyBridge {
     fun isClientHealthy(): Boolean = defaultInstance.isClientHealthy()
     fun getTunnelTxBytes(): Long = defaultInstance.getTunnelTxBytes()
     fun getTunnelRxBytes(): Long = defaultInstance.getTunnelRxBytes()
+    fun resetTrafficStats() = defaultInstance.resetTrafficStats()
 
     // ── Instance Registry (for chains with multiple SOCKS5 layers) ──────
 

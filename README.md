@@ -184,10 +184,10 @@ Pre-built binaries are available on the Releases page:
 
 # Limit DNS query size (smaller = stealthier, slower)
 # Presets: 100 (large), 80 (medium), 60 (small), 50 (minimum)
-./slipnet --query-size 80 'slipnet://BASE64...'
+./slipnet --max-query-size 80 'slipnet://BASE64...'
 
 # Randomize query size with padding (e.g. 50–70 byte queries)
-./slipnet --query-size 50 --query-padding 20 'slipnet://BASE64...'
+./slipnet --max-query-size 50 --query-padding 20 'slipnet://BASE64...'
 
 # Show version
 ./slipnet --version

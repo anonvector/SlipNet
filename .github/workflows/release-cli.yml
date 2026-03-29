@@ -34,6 +34,10 @@ jobs:
           - goos: linux
             goarch: arm64
             suffix: linux-arm64
+          - goos: linux
+            goarch: arm
+            goarm: '7'
+            suffix: linux-armv7
           - goos: windows
             goarch: amd64
             suffix: windows-amd64
@@ -62,6 +66,7 @@ jobs:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
           LDFLAGS="-s -w -X main.version=${VERSION}"
