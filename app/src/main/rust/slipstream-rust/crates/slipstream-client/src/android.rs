@@ -50,6 +50,9 @@ static CONSECUTIVE_FAILURES: AtomicI32 = AtomicI32::new(0);
 /// Maximum consecutive failures before giving up.
 const MAX_CONSECUTIVE_FAILURES: i32 = 5;
 
+/// Last error message from the client thread (for JNI retrieval).
+static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
+
 /// Handle to the client thread.
 static CLIENT_THREAD: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
@@ -338,6 +341,9 @@ fn start_client_impl<'local>(
     IS_QUIC_READY.store(false, Ordering::SeqCst);
     IS_THREAD_DONE.store(false, Ordering::SeqCst);
     CONSECUTIVE_FAILURES.store(0, Ordering::SeqCst);
+    if let Ok(mut last) = LAST_ERROR.lock() {
+        last.clear();
+    }
 
     // Extract domain
     let domain_str: String = match env.get_string(&domain) {
@@ -553,7 +559,11 @@ fn run_client_thread(
         {
             Ok(rt) => rt,
             Err(e) => {
-                error!("Failed to build tokio runtime: {:?}", e);
+                let msg = format!("Failed to build tokio runtime: {:?}", e);
+                error!("{}", msg);
+                if let Ok(mut last) = LAST_ERROR.lock() {
+                    *last = msg;
+                }
                 return;
             }
         };
@@ -564,13 +574,21 @@ fn run_client_thread(
                 info!("Client exited with code: {}", code);
             }
             Err(e) => {
-                error!("Client error: {:?}", e);
+                let msg = format!("{}", e);
+                error!("Client error: {}", msg);
+                if let Ok(mut last) = LAST_ERROR.lock() {
+                    *last = msg;
+                }
             }
         }
     }));
 
     if let Err(e) = result {
-        error!("Panic in client thread: {:?}", e);
+        let msg = format!("Panic in client thread: {:?}", e);
+        error!("{}", msg);
+        if let Ok(mut last) = LAST_ERROR.lock() {
+            *last = msg;
+        }
     }
 
     // Cleanup
@@ -657,6 +675,20 @@ pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeIsQuicRead
         JNI_TRUE
     } else {
         JNI_FALSE
+    }
+}
+
+/// Get the last error message from the client thread.
+/// Returns an empty string if no error occurred.
+#[no_mangle]
+pub extern "system" fn Java_app_slipnet_tunnel_SlipstreamBridge_nativeGetLastError<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jni::sys::jstring {
+    let msg = LAST_ERROR.lock().map(|e| e.clone()).unwrap_or_default();
+    match env.new_string(&msg) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 

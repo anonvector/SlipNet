@@ -42,7 +42,7 @@ data class SettingsUiState(
     val downloadLimitKbps: Int = 0,
     // Split Tunneling Settings
     val splitTunnelingEnabled: Boolean = false,
-    val splitTunnelingMode: SplitTunnelingMode = SplitTunnelingMode.DISALLOW,
+    val splitTunnelingMode: SplitTunnelingMode = SplitTunnelingMode.ALLOW,
     val splitTunnelingApps: Set<String> = emptySet(),
     // SSH Tunnel Settings
     val sshCipher: SshCipher = SshCipher.AUTO,

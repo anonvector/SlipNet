@@ -156,6 +156,10 @@ object SlipstreamBridge {
                 -11 -> {
                     // -11 means "client died before listener ready" — could be port
                     // conflict OR another startup error (UDP bind, socket protection).
+                    val nativeError = try { nativeGetLastError()?.takeIf { it.isNotEmpty() } } catch (_: Exception) { null }
+                    if (nativeError != null) {
+                        Log.e(TAG, "Native startup error: $nativeError")
+                    }
                     // Only retry on a different port if this one is actually still held.
                     if (isPortInUse(actualPort)) {
                         Log.w(TAG, "Port $actualPort confirmed in use after native failure, trying alternatives...")
@@ -165,7 +169,8 @@ object SlipstreamBridge {
                             idlePollIntervalMs, idleTimeoutMs
                         )
                     } else {
-                        Result.failure(RuntimeException("Failed to start client (startup error, port $actualPort was free)"))
+                        val detail = nativeError ?: "unknown startup error"
+                        Result.failure(RuntimeException("Failed to start client: $detail"))
                     }
                 }
                 else -> Result.failure(RuntimeException("Failed to start client: error $result"))
@@ -353,6 +358,7 @@ object SlipstreamBridge {
     private external fun nativeStopSlipstreamClient()
     private external fun nativeIsClientRunning(): Boolean
     private external fun nativeIsQuicReady(): Boolean
+    private external fun nativeGetLastError(): String?
 
     /**
      * Check if the native client reports it's running (alias for isClientRunning).

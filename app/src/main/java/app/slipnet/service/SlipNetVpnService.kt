@@ -389,14 +389,18 @@ class SlipNetVpnService : VpnService() {
                 Log.w(TAG, "Battery optimization is enabled - VPN may be interrupted by Doze mode")
             }
 
-            // Warn if Private DNS is enabled (bypasses VPN DNS, can break DNS-based tunnels)
+            // Check Private DNS mode. Only "hostname" (user-set provider) is dangerous —
+            // it forces DoT and bypasses VPN DNS entirely. "opportunistic" is the Android
+            // default and falls back to plain DNS through the VPN when the resolver
+            // doesn't support DoT (which is most ISP resolvers).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 try {
                     val privateDnsMode = android.provider.Settings.Global.getString(
                         contentResolver, "private_dns_mode"
                     )
-                    if (privateDnsMode != null && privateDnsMode != "off") {
-                        Log.w(TAG, "Private DNS is enabled (mode=$privateDnsMode) - DNS queries may bypass the VPN tunnel")
+                    when (privateDnsMode) {
+                        "hostname" -> Log.w(TAG, "Private DNS is set to a custom provider - DNS queries will bypass the VPN tunnel")
+                        "opportunistic" -> Log.d(TAG, "Private DNS: opportunistic (default, safe for most networks)")
                     }
                 } catch (_: Exception) {}
             }
@@ -434,6 +438,8 @@ class SlipNetVpnService : VpnService() {
                 SlipstreamSocksBridge.downloadLimiter = dlLimiter
                 NaiveSocksBridge.uploadLimiter = ulLimiter
                 NaiveSocksBridge.downloadLimiter = dlLimiter
+                SshTunnelBridge.uploadLimiter = ulLimiter
+                SshTunnelBridge.downloadLimiter = dlLimiter
                 DohBridge.uploadLimiter = ulLimiter
                 DohBridge.downloadLimiter = dlLimiter
                 HttpProxyServer.uploadLimiter = ulLimiter
@@ -644,6 +650,8 @@ class SlipNetVpnService : VpnService() {
                 SlipstreamSocksBridge.downloadLimiter = dlLimiter
                 NaiveSocksBridge.uploadLimiter = ulLimiter
                 NaiveSocksBridge.downloadLimiter = dlLimiter
+                SshTunnelBridge.uploadLimiter = ulLimiter
+                SshTunnelBridge.downloadLimiter = dlLimiter
                 DohBridge.uploadLimiter = ulLimiter
                 DohBridge.downloadLimiter = dlLimiter
                 HttpProxyServer.uploadLimiter = ulLimiter
@@ -2966,7 +2974,7 @@ class SlipNetVpnService : VpnService() {
         lastRxBytes = 0L
         seamlessReconnectAttempts = 0  // Reset on successful reconnection
 
-        // Event-driven DNS pool death: react in ~5s instead of waiting 3 polls (45s).
+        // Event-driven DNS pool death: react in ~8s instead of waiting 3 polls (45s).
         // The polled check in the loop below remains as a safety net.
         if (currentTunnelType == TunnelType.DNSTT || currentTunnelType == TunnelType.NOIZDNS) {
             DnsttSocksBridge.onDnsPoolDead = {
