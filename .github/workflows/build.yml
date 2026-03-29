@@ -152,6 +152,7 @@ jobs:
         with:
           name: app-release
           path: release-apks/*.apk
+          retention-days: 5
 
   release:
     needs: build
