@@ -2965,6 +2965,19 @@ class SlipNetVpnService : VpnService() {
         lastTxBytes = 0L
         lastRxBytes = 0L
         seamlessReconnectAttempts = 0  // Reset on successful reconnection
+
+        // Event-driven DNS pool death: react in ~5s instead of waiting 3 polls (45s).
+        // The polled check in the loop below remains as a safety net.
+        if (currentTunnelType == TunnelType.DNSTT || currentTunnelType == TunnelType.NOIZDNS) {
+            DnsttSocksBridge.onDnsPoolDead = {
+                serviceScope.launch(Dispatchers.Main) {
+                    if (healthCheckJob?.isActive == true) {
+                        handleTunnelFailure("DNS workers dead")
+                    }
+                }
+            }
+        }
+
         healthCheckJob = serviceScope.launch(Dispatchers.IO) {
             // Give the connection time to establish before monitoring
             delay(10_000L)
@@ -3976,11 +3989,13 @@ class SlipNetVpnService : VpnService() {
             }
             TunnelType.DNSTT -> {
                 Log.d(TAG, "Stopping DNSTT proxy and bridge")
+                DnsttSocksBridge.onDnsPoolDead = null
                 DnsttSocksBridge.stop()
                 DnsttBridge.stopClient()
             }
             TunnelType.NOIZDNS -> {
                 Log.d(TAG, "Stopping NoizDNS proxy and bridge")
+                DnsttSocksBridge.onDnsPoolDead = null
                 DnsttSocksBridge.stop()
                 DnsttBridge.stopClient()
             }

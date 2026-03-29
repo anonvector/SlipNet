@@ -112,6 +112,13 @@ object DnsttSocksBridge {
     private val effectiveCircuitThreshold: Int get() = CIRCUIT_BREAKER_THRESHOLD
     private val effectiveCircuitCooldown: Long get() = CIRCUIT_BREAKER_COOLDOWN_MS
 
+    // Event-driven pool death notification — fires when all workers have been dead
+    // for POOL_DEAD_NOTIFY_DELAY_MS, allowing the VPN service to trigger a reconnect
+    // without waiting for the next health check poll (45s → ~5s detection).
+    @Volatile var onDnsPoolDead: (() -> Unit)? = null
+    @Volatile private var poolDeadSince: Long = 0
+    private const val POOL_DEAD_NOTIFY_DELAY_MS = 5000L
+
     private fun isCircuitOpen(): Boolean {
         if (System.currentTimeMillis() < circuitOpenUntil) return true
         // Reset if cooldown has passed
@@ -123,6 +130,31 @@ object DnsttSocksBridge {
 
     private fun recordDnsSuccess() {
         consecutiveFailures.set(0)
+        poolDeadSince = 0
+    }
+
+    /**
+     * Check if all DNS workers are dead and notify listener after a grace period.
+     * Called from forwardDnsPooled (on circuit breaker trips) and keepalive thread.
+     * The delay prevents false positives from transient congestion.
+     */
+    private fun notifyPoolDeadIfNeeded() {
+        if (!running.get() || dnsPoolSize <= 0) return
+        val allDead = (0 until dnsPoolSize).none { dnsWorkers.getOrNull(it)?.isAlive == true }
+        if (!allDead) {
+            poolDeadSince = 0
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (poolDeadSince == 0L) {
+            poolDeadSince = now
+            return
+        }
+        if (now - poolDeadSince >= POOL_DEAD_NOTIFY_DELAY_MS) {
+            Log.w(TAG, "DNS pool dead for ${(now - poolDeadSince) / 1000}s, notifying listener")
+            poolDeadSince = now  // reset to avoid spamming
+            onDnsPoolDead?.invoke()
+        }
     }
 
     private fun recordDnsFailure() {
@@ -230,6 +262,7 @@ object DnsttSocksBridge {
         // Reset circuit breakers, rate-limit counters, and capacity tracking
         consecutiveFailures.set(0)
         circuitOpenUntil = 0
+        poolDeadSince = 0
         connectFailures.set(0)
         connectCircuitOpenUntil = 0
         lastConnectSuccessMs.set(0)
@@ -278,6 +311,7 @@ object DnsttSocksBridge {
         if (!running.getAndSet(false) && serverSocket == null) {
             return
         }
+        poolDeadSince = 0
         logd("Stopping bridge...")
 
         try { serverSocket?.close() } catch (_: Exception) {}
@@ -528,6 +562,7 @@ object DnsttSocksBridge {
                 }
                 if (deadCount > 0) {
                     logd("DNS keepalive: $deadCount dead workers recreated")
+                    notifyPoolDeadIfNeeded()
                 }
 
                 try {
@@ -587,7 +622,7 @@ object DnsttSocksBridge {
         // Fail fast if DNSTT tunnel is dead
         if (!DnsttBridge.isRunning()) return null
         // Circuit breaker: skip if tunnel is overwhelmed
-        if (isCircuitOpen()) return null
+        if (isCircuitOpen()) { notifyPoolDeadIfNeeded(); return null }
 
         // Per-query mode: skip worker pool, go straight to one-shot connection
         if (dnsPoolSize <= 0) {
@@ -642,7 +677,7 @@ object DnsttSocksBridge {
         }
 
         // Circuit breaker: re-check after phase 1 failures
-        if (isCircuitOpen()) return null
+        if (isCircuitOpen()) { notifyPoolDeadIfNeeded(); return null }
 
         // Phase 2: All workers dead/busy — recreate one inline
         for (i in 0 until dnsPoolSize) {
@@ -669,7 +704,7 @@ object DnsttSocksBridge {
         }
 
         // Circuit breaker: re-check before expensive fallbacks
-        if (isCircuitOpen()) return null
+        if (isCircuitOpen()) { notifyPoolDeadIfNeeded(); return null }
 
         // Phase 3: Per-query fallback (old behavior — new connection per query)
         logd("FWD_UDP: all workers failed, falling back to per-query connection")
