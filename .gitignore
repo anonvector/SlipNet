@@ -3,6 +3,9 @@
 *.ap_
 *.aab
 
+# Go mobile libraries (built by CI)
+app/libs/golibs-*.aar
+
 # Files for the ART/Dalvik VM
 *.dex
 
