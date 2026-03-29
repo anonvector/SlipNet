@@ -252,19 +252,7 @@ class VpnRepositoryImpl @Inject constructor(
                     .ifBlank { "8.8.8.8:53" }
             }
             DnsTransport.DOH -> {
-                val urlStr = profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
-                try {
-                    val url = java.net.URL(urlStr)
-                    val resolved = resolveHost(url.host)
-                    if (resolved != url.host) {
-                        val portPart = if (url.port != -1) ":${url.port}" else ""
-                        "${url.protocol}://$resolved$portPart${url.file}"
-                    } else {
-                        urlStr
-                    }
-                } catch (_: Exception) {
-                    urlStr
-                }
+                profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
             }
             DnsTransport.TCP -> {
                 resolvers.joinToString(",") { "tcp://${resolveHost(it.host)}:${it.port}" }
