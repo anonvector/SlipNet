@@ -3,6 +3,7 @@ package app.slipnet.presentation.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.slipnet.data.local.datastore.DarkMode
+import app.slipnet.data.local.datastore.DnsWorkerMode
 import app.slipnet.data.local.datastore.DomainRoutingMode
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.data.local.datastore.SplitTunnelingMode
@@ -23,7 +24,7 @@ data class SettingsUiState(
     val isLoading: Boolean = true,
     // Proxy Settings
     val proxyListenAddress: String = "0.0.0.0",
-    val proxyListenPort: Int = 1080,
+    val proxyListenPort: Int = PreferencesDataStore.DEFAULT_PROXY_PORT,
     val proxyOnlyMode: Boolean = false,
     val killSwitch: Boolean = false,
     val autoReconnect: Boolean = false,
@@ -34,7 +35,11 @@ data class SettingsUiState(
     val appendHttpProxyToVpn: Boolean = false,
     // Network Settings
     val disableQuic: Boolean = true,
+    val blockIpv6: Boolean = true,
     val vpnMtu: Int = 1280,
+    // Bandwidth Limiting (0 = unlimited, KB/s)
+    val uploadLimitKbps: Int = 0,
+    val downloadLimitKbps: Int = 0,
     // Split Tunneling Settings
     val splitTunnelingEnabled: Boolean = false,
     val splitTunnelingMode: SplitTunnelingMode = SplitTunnelingMode.DISALLOW,
@@ -44,6 +49,7 @@ data class SettingsUiState(
     val sshCompression: Boolean = false,
     val sshMaxChannels: Int = 16,
     val sshMaxChannelsIsCustom: Boolean = false,
+    val preventDnsFallback: Boolean = true,
     // Domain Routing Settings
     val domainRoutingEnabled: Boolean = false,
     val domainRoutingMode: DomainRoutingMode = DomainRoutingMode.BYPASS,
@@ -54,6 +60,8 @@ data class SettingsUiState(
     // Global DNS Resolver Override
     val globalResolverEnabled: Boolean = false,
     val globalResolverList: String = "",
+    // DNS Worker Mode
+    val dnsWorkerMode: DnsWorkerMode = DnsWorkerMode.TWO,
     // Remote DNS Settings
     val remoteDnsMode: String = "default",
     val customRemoteDns: String = "",
@@ -96,14 +104,15 @@ class SettingsViewModel @Inject constructor(
                 arrayOf(values[0], values[1], values[2], values[3], values[4], values[5], values[6])
             }
 
-            data class SshSettings(val cipher: SshCipher, val compression: Boolean, val maxChannels: Int, val maxChannelsIsCustom: Boolean)
+            data class SshSettings(val cipher: SshCipher, val compression: Boolean, val maxChannels: Int, val maxChannelsIsCustom: Boolean, val preventDnsFallback: Boolean)
             val sshFlow = combine(
                 preferencesDataStore.sshCipher,
                 preferencesDataStore.sshCompression,
                 preferencesDataStore.sshMaxChannels,
-                preferencesDataStore.sshMaxChannelsIsCustom
-            ) { cipher, compression, maxChannels, isCustom ->
-                SshSettings(cipher, compression, maxChannels, isCustom)
+                preferencesDataStore.sshMaxChannelsIsCustom,
+                preferencesDataStore.preventDnsFallback
+            ) { cipher, compression, maxChannels, isCustom, preventDns ->
+                SshSettings(cipher, compression, maxChannels, isCustom, preventDns)
             }
 
             val splitFlow = combine(
@@ -178,7 +187,8 @@ class SettingsViewModel @Inject constructor(
                     sshCipher = ssh.cipher,
                     sshCompression = ssh.compression,
                     sshMaxChannels = ssh.maxChannels,
-                    sshMaxChannelsIsCustom = ssh.maxChannelsIsCustom
+                    sshMaxChannelsIsCustom = ssh.maxChannelsIsCustom,
+                    preventDnsFallback = ssh.preventDnsFallback
                 )
             }
 
@@ -202,13 +212,25 @@ class SettingsViewModel @Inject constructor(
                 preferencesDataStore.globalResolverList
             ) { enabled, list -> Pair(enabled, list) }
 
-            combine(withGeoFlow, remoteDnsFlow, globalResolverFlow) { state, remoteDns, globalResolver ->
+            val bandwidthFlow = combine(
+                preferencesDataStore.uploadLimitKbps,
+                preferencesDataStore.downloadLimitKbps
+            ) { up, down -> Pair(up, down) }
+
+            combine(withGeoFlow, remoteDnsFlow, globalResolverFlow, preferencesDataStore.dnsWorkerMode, preferencesDataStore.blockIpv6) { state, remoteDns, globalResolver, workerMode, blockIpv6 ->
                 state.copy(
+                    dnsWorkerMode = workerMode,
+                    blockIpv6 = blockIpv6,
                     remoteDnsMode = remoteDns.first,
                     customRemoteDns = remoteDns.second,
                     customRemoteDnsFallback = remoteDns.third,
                     globalResolverEnabled = globalResolver.first,
                     globalResolverList = globalResolver.second
+                )
+            }.combine(bandwidthFlow) { state, bandwidth ->
+                state.copy(
+                    uploadLimitKbps = bandwidth.first,
+                    downloadLimitKbps = bandwidth.second
                 )
             }.collect { newState ->
                 // Preserve update check state across DataStore re-emissions
@@ -263,6 +285,19 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setBlockIpv6(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setBlockIpv6(enabled)
+        }
+    }
+
+    // DNS Worker Mode
+    fun setDnsWorkerMode(mode: DnsWorkerMode) {
+        viewModelScope.launch {
+            preferencesDataStore.setDnsWorkerMode(mode)
+        }
+    }
+
     // Network Settings
     fun setDisableQuic(enabled: Boolean) {
         viewModelScope.launch {
@@ -273,6 +308,19 @@ class SettingsViewModel @Inject constructor(
     fun setVpnMtu(mtu: Int) {
         viewModelScope.launch {
             preferencesDataStore.setVpnMtu(mtu)
+        }
+    }
+
+    // Bandwidth Limiting
+    fun setUploadLimitKbps(kbps: Int) {
+        viewModelScope.launch {
+            preferencesDataStore.setUploadLimitKbps(kbps)
+        }
+    }
+
+    fun setDownloadLimitKbps(kbps: Int) {
+        viewModelScope.launch {
+            preferencesDataStore.setDownloadLimitKbps(kbps)
         }
     }
 
@@ -324,6 +372,12 @@ class SettingsViewModel @Inject constructor(
     fun resetSshMaxChannelsToAuto() {
         viewModelScope.launch {
             preferencesDataStore.resetSshMaxChannelsToAuto()
+        }
+    }
+
+    fun setPreventDnsFallback(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setPreventDnsFallback(enabled)
         }
     }
 

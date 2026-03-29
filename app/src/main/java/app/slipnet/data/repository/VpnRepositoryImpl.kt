@@ -6,6 +6,7 @@ import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
+import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.repository.VpnRepository
@@ -104,13 +105,15 @@ class VpnRepositoryImpl @Inject constructor(
     suspend fun startSlipstreamProxy(
         profile: ServerProfile,
         portOverride: Int? = null,
-        hostOverride: String? = null
+        hostOverride: String? = null,
+        resolverOverride: List<DnsResolver>? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
         val debugLogging = preferencesDataStore.debugLogging.first()
 
-        // Convert profile to resolver config
-        val resolvers = profile.resolvers.map { resolver ->
+        // Convert profile (or global override) to resolver config
+        val effectiveResolvers = resolverOverride ?: profile.resolvers
+        val resolvers = effectiveResolvers.map { resolver ->
             ResolverConfig(
                 host = resolver.host,
                 port = resolver.port,
@@ -146,13 +149,14 @@ class VpnRepositoryImpl @Inject constructor(
         hostOverride: String? = null,
         socksProxyAddr: String? = null,
         socksProxyUser: String? = null,
-        socksProxyPass: String? = null
+        socksProxyPass: String? = null,
+        resolverOverride: List<DnsResolver>? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
         // Format DNS server address based on transport type.
         // Resolve domain names to IPs — Go on Android cannot resolve hostnames.
-        val dnsServer = formatDnsServerAddress(profile)
+        val dnsServer = formatDnsServerAddress(profile, resolverOverride)
 
         val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
         val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
@@ -193,12 +197,13 @@ class VpnRepositoryImpl @Inject constructor(
         hostOverride: String? = null,
         socksProxyAddr: String? = null,
         socksProxyUser: String? = null,
-        socksProxyPass: String? = null
+        socksProxyPass: String? = null,
+        resolverOverride: List<DnsResolver>? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
         // Resolve domain names to IPs — Go on Android cannot resolve hostnames.
-        val dnsServer = formatDnsServerAddress(profile)
+        val dnsServer = formatDnsServerAddress(profile, resolverOverride)
 
         val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
         val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
@@ -238,21 +243,24 @@ class VpnRepositoryImpl @Inject constructor(
      * Format the DNS server address string for the Go bridge, resolving any
      * domain names to numeric IPs (Go on Android cannot resolve hostnames).
      */
-    private fun formatDnsServerAddress(profile: ServerProfile): String = when (profile.dnsTransport) {
-        DnsTransport.UDP -> {
-            profile.resolvers.joinToString(",") { "${resolveHost(it.host)}:${it.port}" }
-                .ifBlank { "8.8.8.8:53" }
-        }
-        DnsTransport.DOH -> {
-            profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
-        }
-        DnsTransport.TCP -> {
-            profile.resolvers.joinToString(",") { "tcp://${resolveHost(it.host)}:${it.port}" }
-                .ifBlank { "tcp://8.8.8.8:53" }
-        }
-        DnsTransport.DOT -> {
-            profile.resolvers.joinToString(",") { "tls://${resolveHost(it.host)}:${it.port}" }
-                .ifBlank { "tls://8.8.8.8:853" }
+    private fun formatDnsServerAddress(profile: ServerProfile, resolverOverride: List<DnsResolver>? = null): String {
+        val resolvers = resolverOverride ?: profile.resolvers
+        return when (profile.dnsTransport) {
+            DnsTransport.UDP -> {
+                resolvers.joinToString(",") { "${resolveHost(it.host)}:${it.port}" }
+                    .ifBlank { "8.8.8.8:53" }
+            }
+            DnsTransport.DOH -> {
+                profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
+            }
+            DnsTransport.TCP -> {
+                resolvers.joinToString(",") { "tcp://${resolveHost(it.host)}:${it.port}" }
+                    .ifBlank { "tcp://8.8.8.8:53" }
+            }
+            DnsTransport.DOT -> {
+                resolvers.joinToString(",") { "tls://${resolveHost(it.host)}:${it.port}" }
+                    .ifBlank { "tls://8.8.8.8:853" }
+            }
         }
     }
 

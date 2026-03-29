@@ -472,8 +472,16 @@ class KotlinTunnelManager(
         private val isClosed = AtomicBoolean(false)
 
         init {
-            vpnProtect?.invoke(socket)
-            if (verboseLogging) Log.d(TAG, "Direct UDP session created for $sessionKey, socket protected")
+            val protected = vpnProtect?.invoke(socket)
+            if (protected == false) {
+                Log.e(TAG, "Failed to protect UDP socket for $sessionKey - aborting session")
+                socket.close()
+                throw IllegalStateException("VPN socket protection failed")
+            } else if (protected == null) {
+                Log.w(TAG, "No VPN protect callback for $sessionKey - socket unprotected")
+            } else {
+                if (verboseLogging) Log.d(TAG, "Direct UDP session created for $sessionKey, socket protected")
+            }
         }
 
         fun sendPacket(dstAddr: InetAddress, dstPort: Int, data: ByteArray) {

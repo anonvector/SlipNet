@@ -22,6 +22,14 @@ object SshTunnelBridge {
         get() = defaultInstance.domainRouter
         set(value) { defaultInstance.domainRouter = value }
 
+    var uploadLimiter: RateLimiter?
+        get() = defaultInstance.uploadLimiter
+        set(value) { defaultInstance.uploadLimiter = value }
+
+    var downloadLimiter: RateLimiter?
+        get() = defaultInstance.downloadLimiter
+        set(value) { defaultInstance.downloadLimiter = value }
+
     fun configure(cipher: String?, compression: Boolean, maxChannels: Int) =
         defaultInstance.configure(cipher, compression, maxChannels)
 
@@ -78,6 +86,7 @@ object SshTunnelBridge {
         socksPassword: String?,
         listenPort: Int,
         listenHost: String = "127.0.0.1",
+        blockDirectDns: Boolean = true,
         sshAuthType: SshAuthType = SshAuthType.PASSWORD,
         sshPrivateKey: String = "",
         sshKeyPassphrase: String = "",
@@ -87,7 +96,7 @@ object SshTunnelBridge {
     ): Result<Unit> = defaultInstance.startOverSocks5Proxy(
         sshHost, sshPort, sshUsername, sshPassword,
         proxyHost, proxyPort, socksUsername, socksPassword,
-        listenPort, listenHost, sshAuthType, sshPrivateKey, sshKeyPassphrase,
+        listenPort, listenHost, blockDirectDns, sshAuthType, sshPrivateKey, sshKeyPassphrase,
         remoteDnsHost, remoteDnsFallback, naiveMode
     )
 
@@ -98,6 +107,7 @@ object SshTunnelBridge {
     fun probeSessionAlive(timeoutMs: Int = 10000): Boolean = defaultInstance.probeSessionAlive(timeoutMs)
     fun getTunnelTxBytes(): Long = defaultInstance.getTunnelTxBytes()
     fun getTunnelRxBytes(): Long = defaultInstance.getTunnelRxBytes()
+    fun resetTrafficStats() = defaultInstance.resetTrafficStats()
 
     // ── Instance Registry (for chains with multiple SSH layers) ─────────
 

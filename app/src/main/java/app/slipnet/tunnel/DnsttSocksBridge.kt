@@ -46,7 +46,7 @@ object DnsttSocksBridge {
     private const val BUFFER_SIZE = 65536  // 64KB for better throughput
     private const val TCP_CONNECT_TIMEOUT_MS = 10000
     private const val RELAY_IDLE_TIMEOUT_MS = 300_000  // 5 min idle timeout for relay sockets
-    private const val DNS_KEEPALIVE_INTERVAL_MS = 40_000L
+    private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
     @Volatile var authoritativeMode = false
     @Volatile var uploadLimiter: RateLimiter? = null
     @Volatile var downloadLimiter: RateLimiter? = null
@@ -75,8 +75,11 @@ object DnsttSocksBridge {
     private val remoteSockets = CopyOnWriteArrayList<Socket>()
 
     // Tunnel-level byte counters (only counts data actually relayed through the tunnel)
-    private val tunnelTxBytes = AtomicLong(0)  // client → tunnel (upload)
-    private val tunnelRxBytes = AtomicLong(0)  // tunnel → client (download)
+    // carriedTx/Rx accumulate totals across reconnects so stats don't reset to zero.
+    private val tunnelTxBytes = AtomicLong(0)  // client → tunnel (upload), current session
+    private val tunnelRxBytes = AtomicLong(0)  // tunnel → client (download), current session
+    private val carriedTxBytes = AtomicLong(0)  // accumulated from previous sessions
+    private val carriedRxBytes = AtomicLong(0)
 
     // --- DNS Worker Pool ---
     // Persistent SOCKS5 connections through DNSTT→Dante to DNS server.
@@ -165,6 +168,7 @@ object DnsttSocksBridge {
     fun isCapacityExhausted(): Boolean {
         val last = lastConnectSuccessMs.get()
         if (last == 0L) return false
+        if (connectSemaphore.availablePermits() == MAX_CONCURRENT_CONNECTS) return false
         return System.currentTimeMillis() - last > CAPACITY_EXHAUSTION_THRESHOLD_MS
     }
 
@@ -306,8 +310,8 @@ object DnsttSocksBridge {
         }
         connectionThreads.clear()
 
-        tunnelTxBytes.set(0)
-        tunnelRxBytes.set(0)
+        carriedTxBytes.addAndGet(tunnelTxBytes.getAndSet(0))
+        carriedRxBytes.addAndGet(tunnelRxBytes.getAndSet(0))
         proxyOnlyMode = false
         dnsWorkerPoolSize = 0
 
@@ -316,8 +320,16 @@ object DnsttSocksBridge {
 
     fun isRunning(): Boolean = running.get()
 
-    fun getTunnelTxBytes(): Long = tunnelTxBytes.get()
-    fun getTunnelRxBytes(): Long = tunnelRxBytes.get()
+    fun getTunnelTxBytes(): Long = carriedTxBytes.get() + tunnelTxBytes.get()
+    fun getTunnelRxBytes(): Long = carriedRxBytes.get() + tunnelRxBytes.get()
+
+    /** Full reset — call on user-initiated disconnect, not on reconnects. */
+    fun resetTrafficStats() {
+        tunnelTxBytes.set(0)
+        tunnelRxBytes.set(0)
+        carriedTxBytes.set(0)
+        carriedRxBytes.set(0)
+    }
 
     fun isClientHealthy(): Boolean {
         val ss = serverSocket ?: return false
@@ -725,6 +737,10 @@ object DnsttSocksBridge {
 
                     // SOCKS5 greeting
                     val version = input.read()
+                    if (version == -1) {
+                        // EOF — readiness probe or client closed immediately; not an error
+                        return@Thread
+                    }
                     if (version != 0x05) {
                         Log.w(TAG, "Invalid SOCKS5 version: $version")
                         return@Thread

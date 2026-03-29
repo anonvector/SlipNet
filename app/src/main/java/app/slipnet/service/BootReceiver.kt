@@ -61,10 +61,12 @@ class BootReceiver : BroadcastReceiver() {
                     return@launch
                 }
 
-                // Start VPN service
+                // Start VPN service (tagged as boot-triggered so the service can
+                // retry with backoff if network isn't available yet)
                 val serviceIntent = Intent(appContext, SlipNetVpnService::class.java).apply {
                     action = SlipNetVpnService.ACTION_CONNECT
                     putExtra(SlipNetVpnService.EXTRA_PROFILE_ID, profile.id)
+                    putExtra(SlipNetVpnService.EXTRA_BOOT_TRIGGERED, true)
                 }
                 ContextCompat.startForegroundService(appContext, serviceIntent)
             } catch (e: Exception) {

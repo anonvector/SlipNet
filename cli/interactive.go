@@ -122,6 +122,24 @@ func interactiveConnectWithURI(uri string) {
 	fmt.Printf("  Domain:   %s\n", profile.Domain)
 	fmt.Println()
 
+	// Check for unsupported tunnel types before prompting for overrides
+	switch profile.TunnelType {
+	case "ss", "slipstream_ssh", "doh", "snowflake", "naive":
+		fmt.Printf("  This config uses tunnel type %q which is not supported by the CLI.\n", profile.TunnelType)
+		fmt.Println("  SlipNet CLI supports DNSTT, NoizDNS, SSH, and SOCKS5 tunnel types.")
+		fmt.Println("  Use the SlipNet app for other tunnel types.")
+		waitExit()
+		return
+	case "socks5", "direct_socks":
+		if profile.SOCKSUser == "" && profile.SSHUser == "" {
+			fmt.Println("  This SOCKS5 config has no SSH or SOCKS5 credentials.")
+			fmt.Println("  The CLI needs SSH credentials to tunnel to the server's SOCKS5 proxy.")
+			fmt.Println("  Add credentials to your config and re-export, or use the SlipNet app.")
+			waitExit()
+			return
+		}
+	}
+
 	// Optional overrides
 	portStr := promptDefault("  Local port", strconv.Itoa(profile.Port))
 	if v, err := strconv.Atoi(portStr); err == nil && v > 0 {
@@ -185,7 +203,7 @@ func interactiveConnectWithURI(uri string) {
 		args = append(args, "--direct")
 	}
 	if querySize > 0 {
-		args = append(args, "--query-size", strconv.Itoa(querySize))
+		args = append(args, "--max-query-size", strconv.Itoa(querySize))
 	}
 	args = append(args, "--port", strconv.Itoa(profile.Port))
 	args = append(args, uri)
@@ -203,6 +221,15 @@ func interactiveConnectWithURI(uri string) {
 
 	// We need to call the connect logic inline. Reconstruct the flow.
 	runConnectFromArgs(args)
+}
+
+func safeScanCommand(args []string) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "\n  Fatal error: %v\n", r)
+		}
+	}()
+	runScanCommand(args)
 }
 
 func interactiveScan(withE2E bool) {
@@ -333,7 +360,7 @@ func interactiveScan(withE2E bool) {
 	}
 	qs := promptDefault("  Query size in bytes (blank = full capacity)", "")
 	if v, err := strconv.Atoi(qs); err == nil && v >= 50 {
-		args = append(args, "--query-size", qs)
+		args = append(args, "--max-query-size", qs)
 	}
 	if withE2E {
 		e2eTimeout := promptDefault("  E2E timeout (ms)", "15000")
@@ -347,7 +374,7 @@ func interactiveScan(withE2E bool) {
 	}
 
 	fmt.Println()
-	runScanCommand(args)
+	safeScanCommand(args)
 	waitExit()
 }
 
@@ -372,7 +399,7 @@ func interactiveQuickScan() {
 	args := []string{"--domain", domain, "--ip", ip}
 
 	fmt.Println()
-	runScanCommand(args)
+	safeScanCommand(args)
 	waitExit()
 }
 
@@ -515,8 +542,26 @@ func interactiveVerifyScan() {
 		args = append(args, "--timeout", timeout)
 	}
 
+	// E2E option
 	fmt.Println()
-	runScanCommand(args)
+	fmt.Println("  Run E2E tunnel test on verified resolvers?")
+	fmt.Println("  This starts a real tunnel through each verified resolver")
+	fmt.Println("  and makes an HTTP request to confirm end-to-end connectivity.")
+	e2eChoice := promptDefault("  Enable E2E (y/n)", "n")
+	if strings.ToLower(e2eChoice) == "y" {
+		args = append(args, "--e2e")
+		e2eConcurrency := promptDefault("  E2E concurrency", "10")
+		if v, _ := strconv.Atoi(e2eConcurrency); v > 0 {
+			args = append(args, "--e2e-concurrency", e2eConcurrency)
+		}
+		e2eTimeout := promptDefault("  E2E timeout (ms)", "15000")
+		if v, _ := strconv.Atoi(e2eTimeout); v > 0 {
+			args = append(args, "--e2e-timeout", e2eTimeout)
+		}
+	}
+
+	fmt.Println()
+	safeScanCommand(args)
 	waitExit()
 }
 
@@ -633,7 +678,7 @@ func interactiveE2EOnly() {
 	}
 	qs := promptDefault("  Query size in bytes (blank = full capacity)", "")
 	if v, err := strconv.Atoi(qs); err == nil && v >= 50 {
-		args = append(args, "--query-size", qs)
+		args = append(args, "--max-query-size", qs)
 	}
 	e2eURL := promptDefault("  E2E test URL (blank = default, 'none' = tunnel-only)", "")
 	if e2eURL != "" {
@@ -641,7 +686,7 @@ func interactiveE2EOnly() {
 	}
 
 	fmt.Println()
-	runScanCommand(args)
+	safeScanCommand(args)
 	waitExit()
 }
 
@@ -682,7 +727,7 @@ func runConnectFromArgs(args []string) {
 				utlsOverride = args[i+1]
 				i++
 			}
-		case "--query-size":
+		case "--max-query-size":
 			if i+1 < len(args) {
 				v, err := strconv.Atoi(args[i+1])
 				if err == nil && v >= 50 {

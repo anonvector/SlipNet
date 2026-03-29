@@ -173,6 +173,8 @@ object DohBridge {
     private const val TAG = "DohBridge"
     @Volatile var debugLogging = false
     @Volatile var domainRouter: DomainRouter = DomainRouter.DISABLED
+    @Volatile var uploadLimiter: RateLimiter? = null
+    @Volatile var downloadLimiter: RateLimiter? = null
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
@@ -358,6 +360,10 @@ object DohBridge {
 
                     // SOCKS5 greeting
                     val version = input.read()
+                    if (version == -1) {
+                        // EOF — readiness probe or client closed immediately; not an error
+                        return@Thread
+                    }
                     if (version != 0x05) {
                         Log.w(TAG, "Invalid SOCKS5 version: $version")
                         return@Thread
@@ -529,7 +535,18 @@ object DohBridge {
         val remoteSocket: Socket
         try {
             remoteSocket = Socket()
-            remoteSocket.connect(InetSocketAddress(destHost, destPort), TCP_CONNECT_TIMEOUT_MS)
+            // Resolve domain names via DoH so DNS doesn't leak to system/ISP resolver.
+            // SlipNet's process is excluded from VPN, so InetSocketAddress(hostname)
+            // would resolve via ISP DNS — defeating the purpose of DoH mode.
+            val connectHost = if (DomainRouter.isIpAddress(destHost)) {
+                destHost
+            } else {
+                resolveViaDoH(destHost).also { ip ->
+                    if (ip != null) logd("CONNECT: resolved $destHost → $ip via DoH")
+                    else Log.w(TAG, "CONNECT: DoH resolution failed for $destHost, falling back to system DNS")
+                } ?: destHost
+            }
+            remoteSocket.connect(InetSocketAddress(connectHost, destPort), TCP_CONNECT_TIMEOUT_MS)
         } catch (e: Exception) {
             logd("CONNECT: failed to connect to $destHost:$destPort: ${e.message}")
             if (sendReply) {
@@ -555,7 +572,7 @@ object DohBridge {
 
             val t1 = Thread({
                 try {
-                    copyStream(clientInput, remoteOutput)
+                    copyStream(clientInput, remoteOutput, uploadLimiter)
                 } catch (_: Exception) {
                 } finally {
                     try { remoteOutput.close() } catch (_: Exception) {}
@@ -565,7 +582,7 @@ object DohBridge {
             t1.start()
 
             try {
-                copyStream(remoteInput, clientOutput)
+                copyStream(remoteInput, clientOutput, downloadLimiter)
             } catch (_: Exception) {
             } finally {
                 try { remote.close() } catch (_: Exception) {}
@@ -788,12 +805,114 @@ object DohBridge {
         }
     }
 
-    private fun copyStream(input: InputStream, output: OutputStream) {
+    /**
+     * Resolve a hostname to an IPv4 address using DoH.
+     * Builds a DNS A query, sends it through [forwardDnsViaDoH], and parses the response.
+     * Returns the resolved IP string or null if resolution fails.
+     */
+    private fun resolveViaDoH(hostname: String): String? {
+        val query = buildDnsAQuery(hostname)
+        val response = forwardDnsViaDoH(query) ?: return null
+        return parseDnsAResponse(response)
+    }
+
+    /**
+     * Build a minimal DNS A query packet for [hostname].
+     */
+    private fun buildDnsAQuery(hostname: String): ByteArray {
+        val labels = hostname.split(".")
+        val qnameLen = labels.sumOf { it.length + 1 } + 1 // labels + null terminator
+        val packet = ByteArray(12 + qnameLen + 4) // header + QNAME + QTYPE + QCLASS
+
+        // Transaction ID
+        val txId = (System.nanoTime() and 0xFFFF).toInt()
+        packet[0] = (txId shr 8).toByte()
+        packet[1] = (txId and 0xFF).toByte()
+        // Flags: RD=1 (recursion desired)
+        packet[2] = 0x01
+        // QDCOUNT = 1
+        packet[5] = 0x01
+
+        // QNAME: length-prefixed labels
+        var offset = 12
+        for (label in labels) {
+            packet[offset++] = label.length.toByte()
+            for (ch in label) {
+                packet[offset++] = ch.code.toByte()
+            }
+        }
+        packet[offset++] = 0x00 // null terminator
+
+        // QTYPE = A (1), QCLASS = IN (1)
+        packet[offset + 1] = 0x01
+        packet[offset + 3] = 0x01
+
+        return packet
+    }
+
+    /**
+     * Parse the first A record IP from a DNS response packet.
+     */
+    private fun parseDnsAResponse(response: ByteArray): String? {
+        if (response.size < 12) return null
+
+        val ancount = ((response[6].toInt() and 0xFF) shl 8) or (response[7].toInt() and 0xFF)
+        if (ancount == 0) return null
+
+        // Skip header (12 bytes) then question section
+        var offset = 12
+        // Skip QNAME
+        while (offset < response.size) {
+            val len = response[offset].toInt() and 0xFF
+            if (len == 0) { offset++; break }
+            if ((len and 0xC0) == 0xC0) { offset += 2; break }
+            offset += len + 1
+        }
+        offset += 4 // skip QTYPE + QCLASS
+
+        // Parse answer records
+        for (i in 0 until ancount) {
+            if (offset >= response.size) break
+
+            // Skip NAME (may be a compression pointer)
+            val b = response[offset].toInt() and 0xFF
+            if ((b and 0xC0) == 0xC0) {
+                offset += 2
+            } else {
+                while (offset < response.size) {
+                    val len = response[offset].toInt() and 0xFF
+                    if (len == 0) { offset++; break }
+                    if ((len and 0xC0) == 0xC0) { offset += 2; break }
+                    offset += len + 1
+                }
+            }
+
+            if (offset + 10 > response.size) break
+
+            val rtype = ((response[offset].toInt() and 0xFF) shl 8) or (response[offset + 1].toInt() and 0xFF)
+            val rdlength = ((response[offset + 8].toInt() and 0xFF) shl 8) or (response[offset + 9].toInt() and 0xFF)
+            offset += 10
+
+            if (rtype == 1 && rdlength == 4 && offset + 4 <= response.size) {
+                return "${response[offset].toInt() and 0xFF}." +
+                        "${response[offset + 1].toInt() and 0xFF}." +
+                        "${response[offset + 2].toInt() and 0xFF}." +
+                        "${response[offset + 3].toInt() and 0xFF}"
+            }
+
+            offset += rdlength
+        }
+
+        return null
+    }
+
+    private fun copyStream(input: InputStream, output: OutputStream, limiter: RateLimiter? = null) {
         val buffered = BufferedOutputStream(output, BUFFER_SIZE)
         val buffer = ByteArray(BUFFER_SIZE)
         while (!Thread.currentThread().isInterrupted) {
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) break
+            limiter?.acquire(bytesRead)
             buffered.write(buffer, 0, bytesRead)
             if (bytesRead < BUFFER_SIZE || input.available() == 0) {
                 buffered.flush()

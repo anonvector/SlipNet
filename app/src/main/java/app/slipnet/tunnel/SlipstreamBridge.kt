@@ -153,13 +153,77 @@ object SlipstreamBridge {
                 -1 -> Result.failure(RuntimeException("Invalid domain"))
                 -2 -> Result.failure(RuntimeException("Invalid resolver configuration"))
                 -10 -> Result.failure(RuntimeException("Failed to spawn client thread"))
-                -11 -> Result.failure(RuntimeException("Failed to listen on port"))
+                -11 -> {
+                    // -11 means "client died before listener ready" — could be port
+                    // conflict OR another startup error (UDP bind, socket protection).
+                    // Only retry on a different port if this one is actually still held.
+                    if (isPortInUse(actualPort)) {
+                        Log.w(TAG, "Port $actualPort confirmed in use after native failure, trying alternatives...")
+                        retryOnAlternatePort(
+                            tcpListenPort, actualPort, domain, resolvers, congestionControl,
+                            keepAliveInterval, tcpListenHost, gsoEnabled, debugPoll, debugStreams,
+                            idlePollIntervalMs, idleTimeoutMs
+                        )
+                    } else {
+                        Result.failure(RuntimeException("Failed to start client (startup error, port $actualPort was free)"))
+                    }
+                }
                 else -> Result.failure(RuntimeException("Failed to start client: error $result"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "Exception starting slipstream client", e)
             Result.failure(e)
         }
+    }
+
+    /**
+     * Retry starting the native client on an alternative port after a confirmed port conflict.
+     * Only called when the original port is verified to still be in use after native failure.
+     */
+    private fun retryOnAlternatePort(
+        basePort: Int,
+        failedPort: Int,
+        domain: String,
+        resolvers: List<ResolverConfig>,
+        congestionControl: String,
+        keepAliveInterval: Int,
+        tcpListenHost: String,
+        gsoEnabled: Boolean,
+        debugPoll: Boolean,
+        debugStreams: Boolean,
+        idlePollIntervalMs: Int,
+        idleTimeoutMs: Int
+    ): Result<Unit> {
+        for (offset in 10..50 step 10) {
+            val alt = basePort + offset
+            if (alt == failedPort || isPortInUse(alt)) continue
+
+            Log.i(TAG, "Retrying on alternative port $alt")
+            currentPort = alt
+
+            val result = nativeStartSlipstreamClient(
+                domain = domain,
+                resolverHosts = resolvers.map { it.host }.toTypedArray(),
+                resolverPorts = resolvers.map { it.port }.toIntArray(),
+                resolverAuthoritative = resolvers.map { it.authoritative }.toBooleanArray(),
+                listenPort = alt,
+                listenHost = tcpListenHost,
+                congestionControl = congestionControl,
+                keepAliveInterval = keepAliveInterval,
+                gsoEnabled = gsoEnabled,
+                debugPoll = debugPoll,
+                debugStreams = debugStreams,
+                idlePollInterval = idlePollIntervalMs,
+                idleTimeoutMs = idleTimeoutMs
+            )
+
+            if (result == 0) {
+                Log.i(TAG, "Slipstream client started successfully on alternative port $alt")
+                return Result.success(Unit)
+            }
+            Log.w(TAG, "Alternative port $alt also failed (error $result)")
+        }
+        return Result.failure(RuntimeException("Failed to listen on port $failedPort (alternatives exhausted)"))
     }
 
     private fun waitForPortFree(port: Int, maxWaitMs: Int): Boolean {

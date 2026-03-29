@@ -96,8 +96,14 @@ class SshTunnelInstance(val instanceId: String = "default") {
     private var acceptorThread: Thread? = null
     private var executor: ExecutorService? = null
     private val running = AtomicBoolean(false)
-    private val tunnelTxBytes = AtomicLong(0)  // client → tunnel (upload)
-    private val tunnelRxBytes = AtomicLong(0)  // tunnel → client (download)
+    // Set by CONNECT/FWD_UDP handlers when they detect session.isConnected == false.
+    // Lets isClientHealthy() return false immediately instead of waiting for the
+    // next health check tick (up to 15s delay).
+    @Volatile private var sessionDead = false
+    private val tunnelTxBytes = AtomicLong(0)  // client → tunnel (upload), current session
+    private val tunnelRxBytes = AtomicLong(0)  // tunnel → client (download), current session
+    private val carriedTxBytes = AtomicLong(0)  // accumulated from previous sessions
+    private val carriedRxBytes = AtomicLong(0)
     // When true, DNS queries are sent directly via DatagramSocket (for DNSTT+SSH).
     // When false, DNS queries are forwarded through SSH direct-tcpip (for SSH-only).
     private var directDns = true
@@ -523,10 +529,11 @@ class SshTunnelInstance(val instanceId: String = "default") {
             Log.w(TAG, "Error disconnecting SSH: ${e.message}")
         }
         session = null
+        sessionDead = false
         preventDnsFallback = true
         dnsServerIndex.set(0)
-        tunnelTxBytes.set(0)
-        tunnelRxBytes.set(0)
+        carriedTxBytes.addAndGet(tunnelTxBytes.getAndSet(0))
+        carriedRxBytes.addAndGet(tunnelRxBytes.getAndSet(0))
         dnsConsecutiveFailures.set(0)
         dnsCircuitOpenUntil = 0
 
@@ -540,13 +547,21 @@ class SshTunnelInstance(val instanceId: String = "default") {
         return running.get()
     }
 
-    fun getTunnelTxBytes(): Long = tunnelTxBytes.get()
-    fun getTunnelRxBytes(): Long = tunnelRxBytes.get()
+    fun getTunnelTxBytes(): Long = carriedTxBytes.get() + tunnelTxBytes.get()
+    fun getTunnelRxBytes(): Long = carriedRxBytes.get() + tunnelRxBytes.get()
+
+    fun resetTrafficStats() {
+        tunnelTxBytes.set(0)
+        tunnelRxBytes.set(0)
+        carriedTxBytes.set(0)
+        carriedRxBytes.set(0)
+    }
 
     /**
      * Check if the SSH tunnel is healthy (passive — checks local flags only).
      */
     fun isClientHealthy(): Boolean {
+        if (sessionDead) return false
         val s = session ?: return false
         val ss = serverSocket ?: return false
         return running.get() && s.isConnected && !ss.isClosed
@@ -783,6 +798,10 @@ class SshTunnelInstance(val instanceId: String = "default") {
 
                     // SOCKS5 greeting
                     val version = input.read()
+                    if (version == -1) {
+                        // EOF — readiness probe or client closed immediately; not an error
+                        return@submit
+                    }
                     if (version != 0x05) {
                         Log.w(TAG, "Invalid SOCKS5 version: $version")
                         return@submit
@@ -961,6 +980,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
         val currentSession = session
         if (currentSession == null || !currentSession.isConnected) {
             Log.w(TAG, "CONNECT: SSH session not available for $destHost:$destPort")
+            sessionDead = true
             if (sendReply) {
                 clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                 clientOutput.flush()
@@ -1283,6 +1303,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
         val currentSession = session
         if (currentSession == null || !currentSession.isConnected) {
             Log.w(TAG, "FWD_UDP: SSH session not available for DNS")
+            sessionDead = true
             return null
         }
 

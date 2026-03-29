@@ -36,6 +36,8 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
     private val TAG = "Socks5Proxy[$instanceId]"
     var debugLogging = false
     var domainRouter: DomainRouter = DomainRouter.DISABLED
+    var uploadLimiter: RateLimiter? = null
+    var downloadLimiter: RateLimiter? = null
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
 
     companion object {
@@ -57,8 +59,10 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
     private val running = AtomicBoolean(false)
     private val connectionThreads = CopyOnWriteArrayList<Thread>()
     private var dnsExecutor = Executors.newFixedThreadPool(8)
-    private val tunnelTxBytes = AtomicLong(0)  // client -> tunnel (upload)
-    private val tunnelRxBytes = AtomicLong(0)  // tunnel -> client (download)
+    private val tunnelTxBytes = AtomicLong(0)  // client -> tunnel (upload), current session
+    private val tunnelRxBytes = AtomicLong(0)  // tunnel -> client (download), current session
+    private val carriedTxBytes = AtomicLong(0)  // accumulated from previous sessions
+    private val carriedRxBytes = AtomicLong(0)
 
     // DNS cache: query key (hex of query minus transaction ID) -> (response, expiry)
     private data class DnsCacheEntry(val response: ByteArray, val expiresAt: Long)
@@ -139,8 +143,8 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
 
         dnsCache.clear()
 
-        tunnelTxBytes.set(0)
-        tunnelRxBytes.set(0)
+        carriedTxBytes.addAndGet(tunnelTxBytes.getAndSet(0))
+        carriedRxBytes.addAndGet(tunnelRxBytes.getAndSet(0))
 
         logd("Bridge stopped")
     }
@@ -152,8 +156,15 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
         return running.get() && !ss.isClosed
     }
 
-    fun getTunnelTxBytes(): Long = tunnelTxBytes.get()
-    fun getTunnelRxBytes(): Long = tunnelRxBytes.get()
+    fun getTunnelTxBytes(): Long = carriedTxBytes.get() + tunnelTxBytes.get()
+    fun getTunnelRxBytes(): Long = carriedRxBytes.get() + tunnelRxBytes.get()
+
+    fun resetTrafficStats() {
+        tunnelTxBytes.set(0)
+        tunnelRxBytes.set(0)
+        carriedTxBytes.set(0)
+        carriedRxBytes.set(0)
+    }
 
     private fun bindServerSocket(host: String, port: Int): ServerSocket {
         val ss = ServerSocket()
@@ -187,6 +198,10 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
 
                     // SOCKS5 greeting
                     val version = input.read()
+                    if (version == -1) {
+                        // EOF — readiness probe or client closed immediately; not an error
+                        return@Thread
+                    }
                     if (version != 0x05) {
                         Log.w(TAG, "Invalid SOCKS5 version: $version")
                         return@Thread
@@ -541,7 +556,7 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
             remoteSocket.use { remote ->
                 val t1 = Thread({
                     try {
-                        copyStream(clientInput, remoteOutput, tunnelTxBytes)
+                        copyStream(clientInput, remoteOutput, tunnelTxBytes, uploadLimiter)
                     } catch (_: Exception) {
                     } finally {
                         try { remoteOutput.close() } catch (_: Exception) {}
@@ -551,7 +566,7 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
                 t1.start()
 
                 try {
-                    copyStream(remoteInput, clientOutput, tunnelRxBytes)
+                    copyStream(remoteInput, clientOutput, tunnelRxBytes, downloadLimiter)
                 } catch (_: Exception) {
                 } finally {
                     try { remote.close() } catch (_: Exception) {}
@@ -832,7 +847,7 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
 
             val t1 = Thread({
                 try {
-                    copyStream(clientInput, remoteOutput)
+                    copyStream(clientInput, remoteOutput, limiter = uploadLimiter)
                 } catch (_: Exception) {
                 } finally {
                     try { remoteOutput.close() } catch (_: Exception) {}
@@ -842,7 +857,7 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
             t1.start()
 
             try {
-                copyStream(remoteInput, clientOutput)
+                copyStream(remoteInput, clientOutput, limiter = downloadLimiter)
             } catch (_: Exception) {
             } finally {
                 try { remote.close() } catch (_: Exception) {}
@@ -851,12 +866,13 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
         }
     }
 
-    private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null) {
+    private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null, limiter: RateLimiter? = null) {
         val buffered = BufferedOutputStream(output, BUFFER_SIZE)
         val buffer = ByteArray(BUFFER_SIZE)
         while (!Thread.currentThread().isInterrupted) {
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) break
+            limiter?.acquire(bytesRead)
             buffered.write(buffer, 0, bytesRead)
             counter?.addAndGet(bytesRead.toLong())
             if (bytesRead < BUFFER_SIZE || input.available() == 0) {

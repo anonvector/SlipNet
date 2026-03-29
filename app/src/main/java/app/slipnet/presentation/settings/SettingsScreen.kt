@@ -469,11 +469,48 @@ fun SettingsScreen(
                     icon = Icons.Default.Hub,
                     title = "DNS workers",
                     description = buildString {
-                        append("${uiState.dnsWorkerMode.displayName} (SOCKS tunnels only, SSH always uses 5)")
+                        append("${uiState.dnsWorkerMode.displayName} (DNSTT/Slipstream, SSH always uses 5)")
                         if (uiState.dnsWorkerMode.poolSize >= 3) append(" — may increase data usage")
                     },
                     onClick = { showDnsWorkerDialog = true }
                 )
+            }
+
+            // Split Tunneling Settings
+            SettingsSection(
+                title = "Split Tunneling",
+                subtitle = "Changes apply on next connection"
+            ) {
+                SwitchSettingItem(
+                    icon = Icons.Default.CallSplit,
+                    title = "Enable split tunneling",
+                    description = "Choose which apps use the VPN",
+                    checked = uiState.splitTunnelingEnabled,
+                    onCheckedChange = { viewModel.setSplitTunnelingEnabled(it) }
+                )
+
+                if (uiState.splitTunnelingEnabled) {
+                    SettingsDivider()
+
+                    ClickableSettingItem(
+                        icon = Icons.Default.FilterList,
+                        title = "Mode",
+                        description = when (uiState.splitTunnelingMode) {
+                            SplitTunnelingMode.DISALLOW -> "Selected apps bypass VPN"
+                            SplitTunnelingMode.ALLOW -> "Only selected apps use VPN"
+                        },
+                        onClick = { showSplitModeDialog = true }
+                    )
+
+                    SettingsDivider()
+
+                    ClickableSettingItem(
+                        icon = Icons.Default.Apps,
+                        title = "Select apps",
+                        description = "${uiState.splitTunnelingApps.size} apps selected",
+                        onClick = onNavigateToAppSelector
+                    )
+                }
             }
 
             // Domain Routing Settings
@@ -534,43 +571,6 @@ fun SettingsScreen(
                         title = "Country",
                         description = uiState.geoBypassCountry.displayName,
                         onClick = { showGeoBypassCountryDialog = true }
-                    )
-                }
-            }
-
-            // Split Tunneling Settings
-            SettingsSection(
-                title = "Split Tunneling",
-                subtitle = "Changes apply on next connection"
-            ) {
-                SwitchSettingItem(
-                    icon = Icons.Default.CallSplit,
-                    title = "Enable split tunneling",
-                    description = "Choose which apps use the VPN",
-                    checked = uiState.splitTunnelingEnabled,
-                    onCheckedChange = { viewModel.setSplitTunnelingEnabled(it) }
-                )
-
-                if (uiState.splitTunnelingEnabled) {
-                    SettingsDivider()
-
-                    ClickableSettingItem(
-                        icon = Icons.Default.FilterList,
-                        title = "Mode",
-                        description = when (uiState.splitTunnelingMode) {
-                            SplitTunnelingMode.DISALLOW -> "Selected apps bypass VPN"
-                            SplitTunnelingMode.ALLOW -> "Only selected apps use VPN"
-                        },
-                        onClick = { showSplitModeDialog = true }
-                    )
-
-                    SettingsDivider()
-
-                    ClickableSettingItem(
-                        icon = Icons.Default.Apps,
-                        title = "Select apps",
-                        description = "${uiState.splitTunnelingApps.size} apps selected",
-                        onClick = onNavigateToAppSelector
                     )
                 }
             }

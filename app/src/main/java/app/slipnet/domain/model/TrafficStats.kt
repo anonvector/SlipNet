@@ -28,5 +28,9 @@ data class TrafficStats(
                 else -> String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
             }
         }
+
+        fun formatSpeed(bytesPerSecond: Long): String {
+            return "${formatBytes(bytesPerSecond)}/s"
+        }
     }
 }

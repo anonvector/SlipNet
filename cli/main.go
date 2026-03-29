@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	slipnet [--dns RESOLVER] [--port PORT] [--host HOST] [--query-size BYTES] slipnet://BASE64ENCODED...
+//	slipnet [--dns RESOLVER] [--port PORT] [--host HOST] [--max-query-size BYTES] slipnet://BASE64ENCODED...
 //
 // It decodes the slipnet:// URI, extracts connection parameters,
 // and starts a local SOCKS5 proxy tunneled through DNS.
@@ -109,7 +109,7 @@ func parseURI(uri string) (*Profile, error) {
 		Domain:     fields[3],
 		Resolvers:  fields[4],
 		Host:       "127.0.0.1",
-		Port:       1080,
+		Port:       10880,
 	}
 
 	if fields[5] == "1" {
@@ -283,16 +283,16 @@ func main() {
 			} else {
 				log.Fatal("--utls requires a value (e.g., --utls Chrome_120, --utls none)")
 			}
-		case "--query-size":
+		case "--max-query-size", "-mqs", "--query-size":
 			if i+1 < len(os.Args) {
 				v, err := strconv.Atoi(os.Args[i+1])
 				if err != nil || v < 50 {
-					log.Fatal("--query-size requires a value >= 50 (bytes)")
+					log.Fatal("--max-query-size requires a value >= 50 (bytes)")
 				}
 				querySize = v
 				i++
 			} else {
-				log.Fatal("--query-size requires a value (e.g., --query-size 100)")
+				log.Fatal("--max-query-size requires a value (e.g., --max-query-size 100)")
 			}
 		case "--direct", "-direct":
 			forceDirectMode = true
@@ -322,7 +322,8 @@ func main() {
 func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool, querySize int) {
 	profile, err := parseURI(uri)
 	if err != nil {
-		log.Fatalf("Failed to parse URI: %v", err)
+		fmt.Fprintf(os.Stderr, "  Error: Failed to parse URI: %v\n", err)
+		return
 	}
 
 	if hostOverride != "" {
@@ -346,23 +347,27 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		connectSOCKS5(profile)
 		return
 	case "ss", "slipstream_ssh", "doh", "snowflake", "naive":
-		log.Fatalf("This config uses tunnel type %q which is not supported by the CLI.\n"+
-			"SlipNet CLI supports DNSTT, NoizDNS, SSH, and SOCKS5 tunnel types.\n"+
-			"Use the SlipNet app for other tunnel types.", profile.TunnelType)
+		fmt.Fprintf(os.Stderr, "  Error: This config uses tunnel type %q which is not supported by the CLI.\n"+
+			"  SlipNet CLI supports DNSTT, NoizDNS, SSH, and SOCKS5 tunnel types.\n"+
+			"  Use the SlipNet app for other tunnel types.\n", profile.TunnelType)
+		return
 	default:
 		if profile.TunnelType != "" {
-			log.Fatalf("Unknown tunnel type %q in config", profile.TunnelType)
+			fmt.Fprintf(os.Stderr, "  Error: Unknown tunnel type %q in config\n", profile.TunnelType)
+			return
 		}
 	}
 
 	if profile.PublicKey == "" {
-		log.Fatal("Config is missing the server's public key.\n" +
-			"The slipnet:// URI must include the server's Noise public key.\n" +
-			"Ask your server admin for a config that includes the public key,\n" +
-			"or re-export the config from the SlipNet app.")
+		fmt.Fprintln(os.Stderr, "  Error: Config is missing the server's public key.\n"+
+			"  The slipnet:// URI must include the server's Noise public key.\n"+
+			"  Ask your server admin for a config that includes the public key,\n"+
+			"  or re-export the config from the SlipNet app.")
+		return
 	}
 	if profile.Domain == "" {
-		log.Fatal("Profile is missing tunnel domain")
+		fmt.Fprintln(os.Stderr, "  Error: Profile is missing tunnel domain")
+		return
 	}
 
 	if portOverride > 0 {
@@ -452,7 +457,8 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 
 	client, err := mobile.NewClient(dnsAddr, profile.Domain, profile.PublicKey, listenAddr)
 	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
+		fmt.Fprintf(os.Stderr, "  Error: Failed to create client: %v\n", err)
+		return
 	}
 
 	client.SetAuthoritativeMode(authMode)
@@ -479,7 +485,8 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	}
 
 	if err := client.Start(); err != nil {
-		log.Fatalf("Failed to start tunnel: %v", err)
+		fmt.Fprintf(os.Stderr, "  Error: Failed to start tunnel: %v\n", err)
+		return
 	}
 
 	fmt.Println()
@@ -694,7 +701,7 @@ func runScanCommand(args []string) {
 				configURI = args[i+1]
 				i++
 			}
-		case "--query-size", "-query-size":
+		case "--max-query-size", "-mqs", "--query-size", "-query-size":
 			if i+1 < len(args) {
 				v, err := strconv.Atoi(args[i+1])
 				if err == nil && v >= 50 {
@@ -719,7 +726,8 @@ func runScanCommand(args []string) {
 	if configURI != "" {
 		profile, err := parseURI(configURI)
 		if err != nil {
-			log.Fatalf("Failed to parse config URI: %v", err)
+			fmt.Fprintf(os.Stderr, "  Error: Failed to parse config URI: %v\n", err)
+			return
 		}
 		if domain == "" {
 			domain = profile.Domain
@@ -742,7 +750,8 @@ func runScanCommand(args []string) {
 	}
 
 	if domain == "" {
-		log.Fatal("scan requires --domain (e.g., --domain t.example.com)")
+		fmt.Fprintln(os.Stderr, "  Error: scan requires --domain (e.g., --domain t.example.com)")
+		return
 	}
 	var resolvers []string
 	if singleIP != "" {
@@ -750,11 +759,13 @@ func runScanCommand(args []string) {
 	} else if ipsFile != "" {
 		data, err := os.ReadFile(ipsFile)
 		if err != nil {
-			log.Fatalf("Failed to read IP list file: %v", err)
+			fmt.Fprintf(os.Stderr, "  Error: Failed to read IP list file: %v\n", err)
+			return
 		}
 		resolvers = LoadIPList(string(data))
 		if len(resolvers) == 0 {
-			log.Fatal("No valid IP addresses found in file")
+			fmt.Fprintln(os.Stderr, "  Error: No valid IP addresses found in file")
+			return
 		}
 	} else {
 		resolvers = LoadIPList(string(defaultResolverList))
@@ -763,23 +774,42 @@ func runScanCommand(args []string) {
 
 	if verifyMode {
 		if pubkey == "" {
-			log.Fatal("verify mode requires --pubkey or --config with a slipnet:// URI")
+			fmt.Fprintln(os.Stderr, "  Error: verify mode requires --pubkey or --config with a slipnet:// URI")
+			return
 		}
 		pubkeyBytes, err := hex.DecodeString(pubkey)
 		if err != nil {
-			log.Fatalf("invalid pubkey hex: %v", err)
+			fmt.Fprintf(os.Stderr, "  Error: invalid pubkey hex: %v\n", err)
+			return
 		}
 		prismTimeoutMs := prismTimeout
 		if prismTimeoutMs <= 0 {
 			prismTimeoutMs = timeoutMs
 		}
-		RunVerifyScanner(resolvers, domain, port, prismTimeoutMs, concurrency, verifyRounds, passThreshold, pubkeyBytes, responseSize, prismPrefilter, outputFile)
+		// If E2E flags are provided, run E2E on verified resolvers after prism.
+		var prismE2E *E2EConfig
+		if e2eEnabled {
+			prismE2E = &E2EConfig{
+				TunnelDomain: domain,
+				PublicKey:     pubkey,
+				NoizMode:      noizdns,
+				SSHMode:       sshMode,
+				TimeoutMs:     e2eTimeout,
+				Concurrency:   e2eConcurrency,
+				QuerySize:     querySize,
+				SOCKSUser:     socksUser,
+				SOCKSPass:     socksPass,
+				TestURL:       e2eURL,
+			}
+		}
+		RunVerifyScanner(resolvers, domain, port, prismTimeoutMs, concurrency, verifyRounds, passThreshold, pubkeyBytes, responseSize, prismPrefilter, prismE2E, outputFile)
 		return
 	}
 
 	if e2eOnly {
 		if pubkey == "" {
-			log.Fatal("E2E-only mode requires --pubkey or --config with a slipnet:// URI")
+			fmt.Fprintln(os.Stderr, "  Error: E2E-only mode requires --pubkey or --config with a slipnet:// URI")
+			return
 		}
 		e2eOnlyConfig := E2EConfig{
 			TunnelDomain: domain,
@@ -800,7 +830,8 @@ func runScanCommand(args []string) {
 	var e2eConfig *E2EConfig
 	if e2eEnabled {
 		if pubkey == "" {
-			log.Fatal("E2E testing requires --pubkey or --config with a slipnet:// URI")
+			fmt.Fprintln(os.Stderr, "  Error: E2E testing requires --pubkey or --config with a slipnet:// URI")
+			return
 		}
 		e2eConfig = &E2EConfig{
 			TunnelDomain:   domain,
@@ -838,7 +869,8 @@ Options (connect):
   --utls FINGERPRINT  Fix TLS fingerprint (default: random from distribution)
                       Examples: Chrome_120, Firefox_120, iOS_14, random, none
                       Weighted: "3*Chrome_120,1*Firefox_120"
-  --query-size BYTES  Max DNS query payload size in bytes (default: full capacity)
+  --max-query-size BYTES, -mqs BYTES
+                      Max DNS query payload size in bytes (default: full capacity)
                       Lower values produce smaller queries for restrictive networks
                       Minimum: 50. Presets: 100 (large), 80 (medium), 60 (small), 50 (minimum)
   --version           Show version
@@ -862,14 +894,16 @@ Options (scan):
   --config URI        Extract domain/pubkey/mode from slipnet:// URI (auto-enables E2E)
   --verify            Prism mode: server-verified scan to authenticate the tunnel server
                       Requires --pubkey or --config to provide the server's public key
+                      Combine with --e2e to run E2E tunnel tests on verified resolvers
   --prism-timeout MS  Timeout per resolver for Prism mode (default: --timeout value)
   --probes N          Probes per resolver (default: 5, used with --verify)
   --threshold N       Required passing probes (default: 2, used with --verify)
   --response-size N   Request server to pad response to N bytes (used with --verify)
                       0 = server default, 200-4096 = custom size
   --prefilter         DNS pre-filter to skip dead IPs before Prism probes (off by default)
-  --query-size BYTES  Cap DNS probe and E2E tunnel query size (default: full capacity)
-                      Matches connect --query-size so scan results reflect real usage
+  --max-query-size BYTES, -mqs BYTES
+                      Cap DNS probe and E2E tunnel query size (default: full capacity)
+                      Matches connect --max-query-size so scan results reflect real usage
   --output FILE       Save results to FILE (skips interactive prompt)
 
 If no --dns is specified, the client auto-detects the server IP
@@ -880,7 +914,7 @@ Examples:
   %[2]s --utls Chrome_120 slipnet://BASE64...
   %[2]s --dns 1.1.1.1 slipnet://BASE64...
   %[2]s --dns <server-ip> --direct --port 9050 slipnet://BASE64...
-  %[2]s --query-size 80 slipnet://BASE64...
+  %[2]s --max-query-size 80 slipnet://BASE64...
   %[2]s --host 0.0.0.0 slipnet://BASE64...
   %[2]s scan --domain t.example.com --ips resolvers.txt
   %[2]s scan --domain t.example.com --ip 8.8.8.8

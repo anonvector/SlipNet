@@ -41,6 +41,7 @@ class PreferencesDataStore @Inject constructor(
         val PROXY_LISTEN_PORT = intPreferencesKey("proxy_listen_port")
         // Network Settings Keys
         val DISABLE_QUIC = booleanPreferencesKey("disable_quic")
+        val BLOCK_IPV6 = booleanPreferencesKey("block_ipv6")
         val VPN_MTU = intPreferencesKey("vpn_mtu")
         // Network Optimization Keys
         val DNS_TIMEOUT = intPreferencesKey("dns_timeout")
@@ -82,10 +83,17 @@ class PreferencesDataStore @Inject constructor(
         // Global DNS Resolver Override
         val GLOBAL_RESOLVER_ENABLED = booleanPreferencesKey("global_resolver_enabled")
         val GLOBAL_RESOLVER_LIST = stringPreferencesKey("global_resolver_list")
+        // DNS Leak Prevention
+        val PREVENT_DNS_FALLBACK = booleanPreferencesKey("prevent_dns_fallback")
+        // DNS Worker Mode
+        val DNS_WORKER_MODE = stringPreferencesKey("dns_worker_mode")
         // Remote DNS Keys
         val REMOTE_DNS_MODE = stringPreferencesKey("remote_dns_mode")
         val CUSTOM_REMOTE_DNS = stringPreferencesKey("custom_remote_dns")
         val CUSTOM_REMOTE_DNS_FALLBACK = stringPreferencesKey("custom_remote_dns_fallback")
+        // Bandwidth Limiting Keys
+        val UPLOAD_LIMIT_KBPS = intPreferencesKey("upload_limit_kbps")
+        val DOWNLOAD_LIMIT_KBPS = intPreferencesKey("download_limit_kbps")
         // DNS Scanner Settings Keys
         val SCANNER_TIMEOUT_MS = stringPreferencesKey("scanner_timeout_ms")
         val SCANNER_CONCURRENCY = stringPreferencesKey("scanner_concurrency")
@@ -212,12 +220,24 @@ class PreferencesDataStore @Inject constructor(
     }
 
     val proxyListenPort: Flow<Int> = dataStore.data.map { prefs ->
-        prefs[Keys.PROXY_LISTEN_PORT] ?: 1080
+        prefs[Keys.PROXY_LISTEN_PORT] ?: DEFAULT_PROXY_PORT
     }
 
     suspend fun setProxyListenPort(port: Int) {
         dataStore.edit { prefs ->
             prefs[Keys.PROXY_LISTEN_PORT] = port.coerceIn(1, 65535)
+        }
+    }
+
+    /**
+     * Sets the default proxy listen port on first launch.
+     * No-op if a port has already been persisted.
+     */
+    suspend fun ensureProxyPortInitialized() {
+        dataStore.edit { prefs ->
+            if (prefs[Keys.PROXY_LISTEN_PORT] == null) {
+                prefs[Keys.PROXY_LISTEN_PORT] = DEFAULT_PROXY_PORT
+            }
         }
     }
 
@@ -232,6 +252,16 @@ class PreferencesDataStore @Inject constructor(
         }
     }
 
+    val blockIpv6: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.BLOCK_IPV6] ?: true
+    }
+
+    suspend fun setBlockIpv6(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.BLOCK_IPV6] = enabled
+        }
+    }
+
     // VPN MTU
     val vpnMtu: Flow<Int> = dataStore.data.map { prefs ->
         prefs[Keys.VPN_MTU] ?: DEFAULT_MTU
@@ -240,6 +270,27 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setVpnMtu(mtu: Int) {
         dataStore.edit { prefs ->
             prefs[Keys.VPN_MTU] = mtu.coerceIn(512, 1500)
+        }
+    }
+
+    // Bandwidth Limiting (0 = unlimited, value in KB/s)
+    val uploadLimitKbps: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.UPLOAD_LIMIT_KBPS] ?: 0
+    }
+
+    val downloadLimitKbps: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[Keys.DOWNLOAD_LIMIT_KBPS] ?: 0
+    }
+
+    suspend fun setUploadLimitKbps(kbps: Int) {
+        dataStore.edit { prefs ->
+            prefs[Keys.UPLOAD_LIMIT_KBPS] = kbps.coerceAtLeast(0)
+        }
+    }
+
+    suspend fun setDownloadLimitKbps(kbps: Int) {
+        dataStore.edit { prefs ->
+            prefs[Keys.DOWNLOAD_LIMIT_KBPS] = kbps.coerceAtLeast(0)
         }
     }
 
@@ -281,6 +332,17 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setConnectionPoolSize(size: Int) {
         dataStore.edit { prefs ->
             prefs[Keys.CONNECTION_POOL_SIZE] = size.coerceIn(1, 20)
+        }
+    }
+
+    // DNS Worker Mode
+    val dnsWorkerMode: Flow<DnsWorkerMode> = dataStore.data.map { prefs ->
+        DnsWorkerMode.fromValue(prefs[Keys.DNS_WORKER_MODE] ?: DnsWorkerMode.PER_QUERY.value)
+    }
+
+    suspend fun setDnsWorkerMode(mode: DnsWorkerMode) {
+        dataStore.edit { prefs ->
+            prefs[Keys.DNS_WORKER_MODE] = mode.value
         }
     }
 
@@ -327,6 +389,17 @@ class PreferencesDataStore @Inject constructor(
         }
     }
 
+    // DNS Leak Prevention
+    val preventDnsFallback: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.PREVENT_DNS_FALLBACK] ?: true  // Default: on (safe)
+    }
+
+    suspend fun setPreventDnsFallback(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.PREVENT_DNS_FALLBACK] = enabled
+        }
+    }
+
     // Split Tunneling Settings
     val splitTunnelingEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
         prefs[Keys.SPLIT_TUNNELING_ENABLED] ?: false
@@ -351,9 +424,13 @@ class PreferencesDataStore @Inject constructor(
     val splitTunnelingApps: Flow<Set<String>> = dataStore.data.map { prefs ->
         val json = prefs[Keys.SPLIT_TUNNELING_APPS] ?: "[]"
         try {
-            org.json.JSONArray(json).let { arr ->
+            val saved = org.json.JSONArray(json).let { arr ->
                 (0 until arr.length()).map { arr.getString(it) }.toSet()
             }
+            if (saved.isEmpty()) return@map saved
+            val installed = context.packageManager.getInstalledApplications(0)
+                .map { it.packageName }.toSet()
+            saved.intersect(installed)
         } catch (_: Exception) {
             emptySet()
         }
@@ -447,7 +524,7 @@ class PreferencesDataStore @Inject constructor(
 
     // Auto-Reconnect
     val autoReconnect: Flow<Boolean> = dataStore.data.map { prefs ->
-        prefs[Keys.AUTO_RECONNECT] ?: false
+        prefs[Keys.AUTO_RECONNECT] ?: true
     }
 
     suspend fun setAutoReconnect(enabled: Boolean) {
@@ -572,6 +649,8 @@ class PreferencesDataStore @Inject constructor(
         const val DEFAULT_REMOTE_DNS = "8.8.8.8"
         const val DEFAULT_REMOTE_DNS_FALLBACK = "1.1.1.1"
         const val DEFAULT_MTU = 1280
+        /** Fallback only — [ensureProxyPortInitialized] assigns a random port on first launch. */
+        const val DEFAULT_PROXY_PORT = 10880
     }
 
     // --- Global DNS Resolver Override ---
@@ -849,6 +928,19 @@ enum class DomainRoutingMode(val value: String) {
     companion object {
         fun fromValue(value: String): DomainRoutingMode {
             return entries.find { it.value == value } ?: BYPASS
+        }
+    }
+}
+
+enum class DnsWorkerMode(val value: String, val displayName: String, val poolSize: Int) {
+    PER_QUERY("per_query", "Per-query (default)", 0),
+    TWO("two", "2 workers", 2),
+    THREE("three", "3 workers", 3),
+    FIVE("five", "5 workers (fastest)", 5);
+
+    companion object {
+        fun fromValue(value: String): DnsWorkerMode {
+            return entries.find { it.value == value } ?: PER_QUERY
         }
     }
 }
