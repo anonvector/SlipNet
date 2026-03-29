@@ -261,15 +261,15 @@ class EditProfileViewModel @Inject constructor(
                         val defaults = profile.defaultResolvers.ifEmpty {
                             if (profile.resolversHidden) profile.resolvers else emptyList()
                         }
-                        val defaultKeys = defaults.map { "${it.host}:${it.port}" }.toSet()
-                        val currentKeys = profile.resolvers.map { "${it.host}:${it.port}" }.toSet()
+                        val defaultKeys = defaults.map { formatResolver(it) }.toSet()
+                        val currentKeys = profile.resolvers.map { formatResolver(it) }.toSet()
                         val hasCustom = profile.resolversHidden && defaults.isNotEmpty() && currentKeys != defaultKeys
                         if (hasCustom) {
-                            profile.resolvers.joinToString(",") { "${it.host}:${it.port}" }
+                            profile.resolvers.joinToString(",") { formatResolver(it) }
                         } else if (profile.resolversHidden) {
                             ""
                         } else {
-                            profile.resolvers.joinToString(",") { "${it.host}:${it.port}" }
+                            profile.resolvers.joinToString(",") { formatResolver(it) }
                         }
                     },
                     defaultResolversList = profile.defaultResolvers.ifEmpty {
@@ -279,8 +279,8 @@ class EditProfileViewModel @Inject constructor(
                         val defaults = profile.defaultResolvers.ifEmpty {
                             if (profile.resolversHidden) profile.resolvers else emptyList()
                         }
-                        val defaultKeys = defaults.map { "${it.host}:${it.port}" }.toSet()
-                        val currentKeys = profile.resolvers.map { "${it.host}:${it.port}" }.toSet()
+                        val defaultKeys = defaults.map { formatResolver(it) }.toSet()
+                        val currentKeys = profile.resolvers.map { formatResolver(it) }.toSet()
                         profile.resolversHidden && defaults.isNotEmpty() && currentKeys != defaultKeys
                     },
                     authoritativeMode = profile.authoritativeMode,
@@ -1245,13 +1245,42 @@ class EditProfileViewModel @Inject constructor(
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .map { resolver ->
-                val parts = resolver.split(":")
+                val (host, port) = parseHostPort(resolver)
                 DnsResolver(
-                    host = parts[0].trim(),
-                    port = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 53,
+                    host = host,
+                    port = port,
                     authoritative = authoritativeMode
                 )
             }
+    }
+
+    /** Format a DnsResolver as host:port, using bracket notation for IPv6. */
+    private fun formatResolver(r: DnsResolver): String {
+        return if (r.host.contains(':')) "[${r.host}]:${r.port}" else "${r.host}:${r.port}"
+    }
+
+    /** Parse host:port supporting IPv6 bracket notation like [fe80::]:53 */
+    private fun parseHostPort(input: String): Pair<String, Int> {
+        val trimmed = input.trim()
+        if (trimmed.startsWith("[")) {
+            val closeBracket = trimmed.indexOf(']')
+            if (closeBracket != -1) {
+                val host = trimmed.substring(1, closeBracket)
+                val port = if (closeBracket + 2 < trimmed.length) {
+                    trimmed.substring(closeBracket + 2).toIntOrNull() ?: 53
+                } else 53
+                return host to port
+            }
+        }
+        val lastColon = trimmed.lastIndexOf(':')
+        // Only treat as host:port if there's exactly one colon (IPv4 or hostname)
+        if (lastColon != -1 && trimmed.indexOf(':') == lastColon) {
+            val host = trimmed.substring(0, lastColon).trim()
+            val port = trimmed.substring(lastColon + 1).trim().toIntOrNull() ?: 53
+            return host to port
+        }
+        // Bare host (no port) — could be IPv6 without brackets
+        return trimmed to 53
     }
 
     /**
@@ -1393,41 +1422,15 @@ class EditProfileViewModel @Inject constructor(
             return "Resolver cannot be empty"
         }
 
-        // Handle IPv6 with port: [2001:db8::1]:53
-        if (trimmed.startsWith("[")) {
-            val closeBracket = trimmed.indexOf("]")
-            if (closeBracket == -1) {
-                return "Invalid IPv6 format: missing closing bracket in '$trimmed'"
-            }
-
-            val ipv6 = trimmed.substring(1, closeBracket)
-            if (!isValidIPv6(ipv6)) {
-                return "Invalid IPv6 address: '$ipv6'"
-            }
-
-            // Check for port after ]
-            if (closeBracket < trimmed.length - 1) {
-                if (trimmed[closeBracket + 1] != ':') {
-                    return "Invalid format: expected ':' after ']' in '$trimmed'"
-                }
-                val portStr = trimmed.substring(closeBracket + 2)
-                val portError = validatePort(portStr, trimmed)
-                if (portError != null) return portError
-            }
-
-            return null
+        // Block IPv6 — not supported by the tunnel stack
+        if (trimmed.startsWith("[") || trimmed.count { it == ':' } > 1) {
+            return "IPv6 resolvers are not supported"
         }
 
-        // Count colons to distinguish IPv4:port from IPv6
+        // Count colons to distinguish IPv4:port from host:port
         val colonCount = trimmed.count { it == ':' }
 
         when {
-            // IPv6 without port (multiple colons)
-            colonCount > 1 -> {
-                if (!isValidIPv6(trimmed)) {
-                    return "Invalid IPv6 address: '$trimmed'"
-                }
-            }
             // IPv4:port or host:port (single colon)
             colonCount == 1 -> {
                 val parts = trimmed.split(":")
