@@ -1020,8 +1020,10 @@ object SlipstreamSocksBridge {
             }
         } catch (e: Exception) {
             if (!semaphoreReleased) connectSemaphore.release()
-            recordConnectFailure()
-            logd("CONNECT: chain error for $destHost:$destPort: ${e.message}")
+            if (running.get()) {
+                recordConnectFailure()
+                logd("CONNECT: chain error for $destHost:$destPort: ${e.message}")
+            }
             if (sendReply) {
                 try {
                     clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))

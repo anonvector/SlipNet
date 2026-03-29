@@ -412,7 +412,7 @@ class PreferencesDataStore @Inject constructor(
     }
 
     val splitTunnelingMode: Flow<SplitTunnelingMode> = dataStore.data.map { prefs ->
-        SplitTunnelingMode.fromValue(prefs[Keys.SPLIT_TUNNELING_MODE] ?: SplitTunnelingMode.DISALLOW.value)
+        SplitTunnelingMode.fromValue(prefs[Keys.SPLIT_TUNNELING_MODE] ?: SplitTunnelingMode.ALLOW.value)
     }
 
     suspend fun setSplitTunnelingMode(mode: SplitTunnelingMode) {
@@ -911,12 +911,12 @@ enum class SshCipher(val value: String, val displayName: String, val jschConfig:
 }
 
 enum class SplitTunnelingMode(val value: String) {
-    DISALLOW("disallow"),
-    ALLOW("allow");
+    ALLOW("allow"),
+    DISALLOW("disallow");
 
     companion object {
         fun fromValue(value: String): SplitTunnelingMode {
-            return entries.find { it.value == value } ?: DISALLOW
+            return entries.find { it.value == value } ?: ALLOW
         }
     }
 }

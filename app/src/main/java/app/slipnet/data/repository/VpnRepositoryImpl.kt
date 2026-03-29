@@ -111,7 +111,8 @@ class VpnRepositoryImpl @Inject constructor(
         connectedProfile = profile
         val debugLogging = preferencesDataStore.debugLogging.first()
 
-        // Convert profile (or global override) to resolver config
+        // Convert profile (or global override) to resolver config.
+        // Deduplicate by host:port to avoid "Duplicate resolver address" from native code.
         val effectiveResolvers = resolverOverride ?: profile.resolvers
         val resolvers = effectiveResolvers.map { resolver ->
             ResolverConfig(
@@ -119,7 +120,7 @@ class VpnRepositoryImpl @Inject constructor(
                 port = resolver.port,
                 authoritative = resolver.authoritative
             )
-        }
+        }.distinctBy { "${it.host}:${it.port}" }
 
         val listenPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
         val listenHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()

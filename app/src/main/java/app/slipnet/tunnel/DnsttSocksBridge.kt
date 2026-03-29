@@ -114,10 +114,10 @@ object DnsttSocksBridge {
 
     // Event-driven pool death notification — fires when all workers have been dead
     // for POOL_DEAD_NOTIFY_DELAY_MS, allowing the VPN service to trigger a reconnect
-    // without waiting for the next health check poll (45s → ~5s detection).
+    // without waiting for the next health check poll (45s → ~8s detection).
     @Volatile var onDnsPoolDead: (() -> Unit)? = null
     @Volatile private var poolDeadSince: Long = 0
-    private const val POOL_DEAD_NOTIFY_DELAY_MS = 5000L
+    private const val POOL_DEAD_NOTIFY_DELAY_MS = 8000L
 
     private fun isCircuitOpen(): Boolean {
         if (System.currentTimeMillis() < circuitOpenUntil) return true
@@ -1005,8 +1005,10 @@ object DnsttSocksBridge {
             }
         } catch (e: Exception) {
             if (!semaphoreReleased) connectSemaphore.release()
-            recordConnectFailure()
-            logd("CONNECT: chain error for $destHost:$destPort: ${e.message}")
+            if (running.get()) {
+                recordConnectFailure()
+                logd("CONNECT: chain error for $destHost:$destPort: ${e.message}")
+            }
             try {
                 clientOutput.write(byteArrayOf(0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                 clientOutput.flush()
