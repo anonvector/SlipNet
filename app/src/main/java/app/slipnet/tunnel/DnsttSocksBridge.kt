@@ -45,6 +45,7 @@ object DnsttSocksBridge {
     private const val BIND_RETRY_DELAY_MS = 200L
     private const val BUFFER_SIZE = 65536  // 64KB for better throughput
     private const val TCP_CONNECT_TIMEOUT_MS = 10000
+    private const val SOCKS_HANDSHAKE_TIMEOUT_MS = 30_000  // 30s — DNSTT tunnels are slow
     private const val RELAY_IDLE_TIMEOUT_MS = 300_000  // 5 min idle timeout for relay sockets
     private const val DNS_KEEPALIVE_INTERVAL_MS = 20_000L
     @Volatile var authoritativeMode = false
@@ -919,7 +920,8 @@ object DnsttSocksBridge {
             remoteSocket.tcpNoDelay = true
             // Set read timeout for the SOCKS5 handshake phase so that hung
             // reads don't permanently hold a semaphore slot.
-            remoteSocket.soTimeout = effectiveConnectTimeout
+            // Use a generous timeout — data travels through a DNS tunnel which is slow.
+            remoteSocket.soTimeout = SOCKS_HANDSHAKE_TIMEOUT_MS
             remoteSockets.add(remoteSocket)
         } catch (e: Exception) {
             connectSemaphore.release()
