@@ -46,6 +46,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
         private const val BIND_RETRY_DELAY_MS = 200L
         private const val BUFFER_SIZE = 65536  // 64KB for better throughput
         private const val CONNECT_TIMEOUT_MS = 30000
+        private const val TUNNEL_CONNECT_TIMEOUT_MS = 60000  // 60s — SSH over DNSTT/NoizDNS needs more time
         private const val CHANNEL_CONNECT_TIMEOUT_MS = 15000  // shorter for channels
         private const val KEEPALIVE_INTERVAL_MS = 15000
         private const val DNS_SSH_MAX_FAILURES = 3
@@ -347,7 +348,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
                 newSession.setPassword(sshPassword)
             }
             applySessionConfig(newSession)
-            newSession.connect(CONNECT_TIMEOUT_MS)
+            newSession.connect(TUNNEL_CONNECT_TIMEOUT_MS)
 
             if (!newSession.isConnected) {
                 return Result.failure(RuntimeException("SSH session failed to connect through DNSTT"))

@@ -996,7 +996,10 @@ class EditProfileViewModel @Inject constructor(
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = connectivityManager.activeNetwork ?: return null
         val linkProperties = connectivityManager.getLinkProperties(network) ?: return null
-        return linkProperties.dnsServers.firstOrNull()?.hostAddress
+        // Pick the first IPv4 DNS server — IPv6 resolvers are not supported
+        return linkProperties.dnsServers
+            .firstOrNull { it is java.net.Inet4Address }
+            ?.hostAddress
     }
 
 
