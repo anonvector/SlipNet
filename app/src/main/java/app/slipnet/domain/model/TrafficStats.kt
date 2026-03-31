@@ -5,7 +5,9 @@ data class TrafficStats(
     val bytesReceived: Long = 0,
     val packetsSent: Long = 0,
     val packetsReceived: Long = 0,
-    val rttMs: Long = 0
+    val rttMs: Long = 0,
+    val uploadSpeed: Long = 0,
+    val downloadSpeed: Long = 0
 ) {
     val totalBytes: Long
         get() = bytesSent + bytesReceived

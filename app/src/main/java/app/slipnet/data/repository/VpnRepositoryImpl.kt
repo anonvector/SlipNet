@@ -73,6 +73,10 @@ class VpnRepositoryImpl @Inject constructor(
     private val _trafficStats = MutableStateFlow(TrafficStats.EMPTY)
     override val trafficStats: StateFlow<TrafficStats> = _trafficStats.asStateFlow()
 
+    private var prevBytesSent = 0L
+    private var prevBytesReceived = 0L
+    private var prevTimestamp = 0L
+
     private var connectedProfile: ServerProfile? = null
     private var currentTunFd: ParcelFileDescriptor? = null
     private var tunnelStartException: Exception? = null
@@ -747,49 +751,70 @@ class VpnRepositoryImpl @Inject constructor(
         _trafficStats.value = stats
     }
 
+    fun resetSpeedTracking() {
+        prevBytesSent = 0L
+        prevBytesReceived = 0L
+        prevTimestamp = 0L
+    }
+
     fun refreshTrafficStats() {
         // For SOCKS-bridged tunnel types, use tunnel-level byte counters
         // instead of TUN-level stats (which include local retries/health checks)
+        var sent = 0L
+        var received = 0L
+        var pktSent = 0L
+        var pktReceived = 0L
+
         when (currentTunnelType) {
             TunnelType.SLIPSTREAM -> {
-                _trafficStats.value = TrafficStats(
-                    bytesSent = SlipstreamSocksBridge.getTunnelTxBytes(),
-                    bytesReceived = SlipstreamSocksBridge.getTunnelRxBytes()
-                )
-                return
+                sent = SlipstreamSocksBridge.getTunnelTxBytes()
+                received = SlipstreamSocksBridge.getTunnelRxBytes()
             }
             TunnelType.DNSTT, TunnelType.NOIZDNS -> {
-                _trafficStats.value = TrafficStats(
-                    bytesSent = DnsttSocksBridge.getTunnelTxBytes(),
-                    bytesReceived = DnsttSocksBridge.getTunnelRxBytes()
-                )
-                return
+                sent = DnsttSocksBridge.getTunnelTxBytes()
+                received = DnsttSocksBridge.getTunnelRxBytes()
             }
             TunnelType.SSH, TunnelType.DNSTT_SSH, TunnelType.NOIZDNS_SSH,
             TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH -> {
-                _trafficStats.value = TrafficStats(
-                    bytesSent = SshTunnelBridge.getTunnelTxBytes(),
-                    bytesReceived = SshTunnelBridge.getTunnelRxBytes()
-                )
-                return
+                sent = SshTunnelBridge.getTunnelTxBytes()
+                received = SshTunnelBridge.getTunnelRxBytes()
             }
             TunnelType.SOCKS5 -> {
-                _trafficStats.value = TrafficStats(
-                    bytesSent = Socks5ProxyBridge.getTunnelTxBytes(),
-                    bytesReceived = Socks5ProxyBridge.getTunnelRxBytes()
-                )
-                return
+                sent = Socks5ProxyBridge.getTunnelTxBytes()
+                received = Socks5ProxyBridge.getTunnelRxBytes()
             }
-            else -> {}
+            else -> {
+                val stats = HevSocks5Tunnel.getStats() ?: return
+                sent = stats.txBytes
+                received = stats.rxBytes
+                pktSent = stats.txPackets
+                pktReceived = stats.rxPackets
+            }
         }
-        val stats = HevSocks5Tunnel.getStats()
-        if (stats != null) {
-            _trafficStats.value = TrafficStats(
-                bytesSent = stats.txBytes,
-                bytesReceived = stats.rxBytes,
-                packetsSent = stats.txPackets,
-                packetsReceived = stats.rxPackets
-            )
+
+        // Compute speed normalized by actual elapsed time
+        val now = System.currentTimeMillis()
+        val elapsedMs = now - prevTimestamp
+        val upSpeed: Long
+        val downSpeed: Long
+        if (prevTimestamp == 0L || elapsedMs <= 0) {
+            upSpeed = 0L
+            downSpeed = 0L
+        } else {
+            upSpeed = ((sent - prevBytesSent).coerceAtLeast(0) * 1000 / elapsedMs)
+            downSpeed = ((received - prevBytesReceived).coerceAtLeast(0) * 1000 / elapsedMs)
         }
+        prevBytesSent = sent
+        prevBytesReceived = received
+        prevTimestamp = now
+
+        _trafficStats.value = TrafficStats(
+            bytesSent = sent,
+            bytesReceived = received,
+            packetsSent = pktSent,
+            packetsReceived = pktReceived,
+            uploadSpeed = upSpeed,
+            downloadSpeed = downSpeed
+        )
     }
 }

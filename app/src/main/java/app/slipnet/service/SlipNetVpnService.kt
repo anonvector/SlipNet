@@ -173,7 +173,6 @@ class SlipNetVpnService : VpnService() {
 
     // Notification traffic stats polling
     private var trafficNotificationJob: Job? = null
-    private var prevNotifStats = app.slipnet.domain.model.TrafficStats.EMPTY
     private var lastNotifTotalBytes = -1L  // -1 forces first update
     private var lastNotifHadSpeed = false
 
@@ -2167,11 +2166,6 @@ class SlipNetVpnService : VpnService() {
         vpnRepository.setCurrentTunnelType(sshTunnelType)
         currentTunnelType = sshTunnelType
 
-        // Skip transport probe for SSH — the probe opens a raw TCP connection through
-        // DNSTT, reads the SSH banner byte, then closes it. This forces JSch to establish
-        // a second DNSTT session (another full DNS handshake), doubling connect time.
-        // SSH's own 30 s connect timeout surfaces the same failure without the overhead.
-
         // Step 5: Start SSH tunnel through DNSTT
         // DNSTT is a raw TCP tunnel — JSch connects directly to its local port
         configureSshBridge()
@@ -3083,7 +3077,9 @@ class SlipNetVpnService : VpnService() {
                 )
                 val stallCheckInterval = if (isDnsTunneledStall) TUNNEL_STALL_CHECK_INTERVAL else TUNNEL_STALL_CHECK_INTERVAL_SOCKS
                 val stallThreshold = if (isDnsTunneledStall) TUNNEL_STALL_THRESHOLD else TUNNEL_STALL_THRESHOLD_SOCKS
-                if (!isProxyOnly && healthCheckCount % stallCheckInterval == 0) {
+                // DoH: only DNS is routed (/32), so TX-without-RX is normal during
+                // idle periods — skip stall detection to avoid false positives on TV/idle devices.
+                if (!isProxyOnly && currentTunnelType != TunnelType.DOH && healthCheckCount % stallCheckInterval == 0) {
                     val stats = HevSocks5Tunnel.getStats()
                     if (stats != null) {
                         val txIncreased = stats.txBytes > lastTxBytes
@@ -4271,8 +4267,9 @@ class SlipNetVpnService : VpnService() {
 
     private fun startTrafficNotificationPolling() {
         trafficNotificationJob?.cancel()
-        prevNotifStats = app.slipnet.domain.model.TrafficStats.EMPTY
+        vpnRepository.resetSpeedTracking()
         trafficNotificationJob = serviceScope.launch {
+            val showTrafficInNotification = preferencesDataStore.showNotificationTraffic.first()
             var idleCount = 0
             var zeroThroughputSeconds = 0L
             var tunnelHealthWarningShown = false
@@ -4289,9 +4286,8 @@ class SlipNetVpnService : VpnService() {
 
                 vpnRepository.refreshTrafficStats()
                 val current = vpnRepository.trafficStats.value
-                val upSpeed = (current.bytesSent - prevNotifStats.bytesSent).coerceAtLeast(0)
-                val downSpeed = (current.bytesReceived - prevNotifStats.bytesReceived).coerceAtLeast(0)
-                prevNotifStats = current
+                val upSpeed = current.uploadSpeed
+                val downSpeed = current.downloadSpeed
 
                 // Track idle: no bytes transferred in this tick.
                 if (upSpeed == 0L && downSpeed == 0L) {
@@ -4307,13 +4303,16 @@ class SlipNetVpnService : VpnService() {
                     zeroThroughputSeconds = 0L
                     tunnelHealthWarningShown = false
                     connectionManager.setDnsWarning(null)
+                    vpnRepository.resetSpeedTracking()
                 }
 
                 // Tunnel health: warn if zero cumulative throughput for too long.
                 // This detects broken tunnels that show "Connected" but relay no data
                 // (e.g. overloaded servers, wrong auth) while DNS overhead drains SIM data.
                 // Skip in proxy-only mode: no TUN = no DNS overhead, and apps may be idle.
-                if (!isProxyOnly && current.totalBytes == 0L) {
+                // Skip for DoH: only DNS is routed through VPN (/32 route), so idle
+                // periods with zero tun2socks traffic are normal (especially on TV).
+                if (!isProxyOnly && currentTunnelType != TunnelType.DOH && current.totalBytes == 0L) {
                     zeroThroughputSeconds += interval / 1000
                     if (!tunnelHealthWarningShown && zeroThroughputSeconds >= ZERO_THROUGHPUT_WARNING_SECONDS) {
                         tunnelHealthWarningShown = true
@@ -4348,9 +4347,9 @@ class SlipNetVpnService : VpnService() {
                             val notification = notificationHelper.createVpnNotification(
                                 state = state,
                                 isProxyOnly = isProxyOnly,
-                                trafficStats = current,
-                                uploadSpeed = upSpeed,
-                                downloadSpeed = downSpeed
+                                trafficStats = if (showTrafficInNotification) current else null,
+                                uploadSpeed = if (showTrafficInNotification) upSpeed else 0,
+                                downloadSpeed = if (showTrafficInNotification) downSpeed else 0
                             )
                             val notificationManager = getSystemService(NotificationManager::class.java)
                             notificationManager.notify(NotificationHelper.VPN_NOTIFICATION_ID, notification)
@@ -4367,7 +4366,7 @@ class SlipNetVpnService : VpnService() {
     private fun stopTrafficNotificationPolling() {
         trafficNotificationJob?.cancel()
         trafficNotificationJob = null
-        prevNotifStats = app.slipnet.domain.model.TrafficStats.EMPTY
+        vpnRepository.resetSpeedTracking()
         lastNotifTotalBytes = -1L
         lastNotifHadSpeed = false
     }
