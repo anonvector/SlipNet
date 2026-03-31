@@ -186,24 +186,18 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(snowflakeBootstrapProgress = -1)
     }
 
-    private var previousStats: TrafficStats = TrafficStats.EMPTY
-
     private fun startTrafficPolling() {
         trafficPollingJob?.cancel()
-        previousStats = TrafficStats.EMPTY
         // Clear previous session totals when a new connection starts
         _uiState.value = _uiState.value.copy(sessionTotalUpload = 0, sessionTotalDownload = 0)
         trafficPollingJob = viewModelScope.launch {
             // Observe the stats that the VPN service's notification poller already
             // refreshes — no need to call refreshTrafficStats() a second time.
             connectionManager.trafficStats.collect { current ->
-                val upSpeed = (current.bytesSent - previousStats.bytesSent).coerceAtLeast(0)
-                val downSpeed = (current.bytesReceived - previousStats.bytesReceived).coerceAtLeast(0)
-                previousStats = current
                 _uiState.value = _uiState.value.copy(
                     trafficStats = current,
-                    uploadSpeed = upSpeed,
-                    downloadSpeed = downSpeed
+                    uploadSpeed = current.uploadSpeed,
+                    downloadSpeed = current.downloadSpeed
                 )
             }
         }
@@ -217,7 +211,6 @@ class MainViewModel @Inject constructor(
         // the second call must not overwrite saved totals with zeros.
         val lastStats = _uiState.value.trafficStats
         val hasStats = lastStats.bytesSent > 0 || lastStats.bytesReceived > 0
-        previousStats = TrafficStats.EMPTY
         _uiState.value = _uiState.value.copy(
             trafficStats = TrafficStats.EMPTY,
             uploadSpeed = 0,
