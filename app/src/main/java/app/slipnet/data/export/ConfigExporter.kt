@@ -25,7 +25,7 @@ class ConfigExporter @Inject constructor() {
     companion object {
         const val SCHEME = "slipnet://"
         const val ENCRYPTED_SCHEME = "slipnet-enc://"
-        const val VERSION = "18"
+        const val VERSION = "19"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -159,7 +159,8 @@ class ConfigExporter @Inject constructor() {
             hiddenResolvers,
             if (profile.noizdnsStealth) "1" else "0",
             profile.dnsPayloadSize.toString(),
-            profile.socks5ServerPort.toString()
+            profile.socks5ServerPort.toString(),
+            profile.resolverBalancingMode.value
         ).joinToString(FIELD_DELIMITER)
     }
 

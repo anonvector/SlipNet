@@ -110,10 +110,8 @@ class NotificationHelper @Inject constructor(
                 val hasTraffic = trafficStats != null && trafficStats.totalBytes > 0
 
                 val bodyText = if (hasTraffic) {
-                    val upLine = "\u2191 ${trafficStats!!.formatBytesSent()}" +
-                        if (uploadSpeed > 0) "  ${TrafficStats.formatSpeed(uploadSpeed)}" else ""
-                    val downLine = "\u2193 ${trafficStats.formatBytesReceived()}" +
-                        if (downloadSpeed > 0) "  ${TrafficStats.formatSpeed(downloadSpeed)}" else ""
+                    val upLine = "\u2191 ${trafficStats!!.formatBytesSent()}  ${TrafficStats.formatSpeed(uploadSpeed)}"
+                    val downLine = "\u2193 ${trafficStats.formatBytesReceived()}  ${TrafficStats.formatSpeed(downloadSpeed)}"
                     "$upLine\n$downLine"
                 } else {
                     if (isProxyOnly) "Proxy is active" else "VPN is active"

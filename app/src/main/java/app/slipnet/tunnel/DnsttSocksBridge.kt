@@ -66,6 +66,9 @@ object DnsttSocksBridge {
 
     private var dnsttHost: String = "127.0.0.1"
     private var dnsttPort: Int = 0
+    // Extra upstream ports for parallel tunnels (round-robin with primary)
+    private var extraPorts: List<Int> = emptyList()
+    private val rrPortIndex = AtomicInteger(0)
     private var socksUsername: String? = null
     private var socksPassword: String? = null
     private var serverSocket: ServerSocket? = null
@@ -102,6 +105,7 @@ object DnsttSocksBridge {
     private var dnsFallbackHost: String = FALLBACK_DNS_HOST
     private var workerCreationLocks = Array(DNS_POOL_SIZE_MAX) { ReentrantLock() }
     private var dnsKeepaliveThread: Thread? = null
+    private var prewarmThread: Thread? = null
 
     // Circuit breaker: stop DNS worker recreation when tunnel is overwhelmed.
     // Prevents thundering herd where dozens of FWD_UDP sessions all try to
@@ -168,7 +172,7 @@ object DnsttSocksBridge {
     // CONNECT concurrency limit and circuit breaker.
     // Browsers open 20-40+ connections per page load; without a cap each becomes
     // a smux stream that floods the bandwidth-constrained DNS tunnel.
-    private const val MAX_CONCURRENT_CONNECTS = 8
+    private const val MAX_CONCURRENT_CONNECTS = 24
     private const val CONNECT_CIRCUIT_THRESHOLD = 3
     private const val CONNECT_CIRCUIT_COOLDOWN_MS = 5000L
     private val connectSemaphore = Semaphore(MAX_CONCURRENT_CONNECTS)
@@ -256,6 +260,8 @@ object DnsttSocksBridge {
         stop()
         this.dnsttHost = dnsttHost
         this.dnsttPort = dnsttPort
+        this.extraPorts = emptyList()
+        this.rrPortIndex.set(0)
         this.socksUsername = socksUsername
         this.socksPassword = socksPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
@@ -308,6 +314,23 @@ object DnsttSocksBridge {
         }
     }
 
+    /** Set extra upstream ports for parallel tunnels. */
+    fun setExtraPorts(ports: List<Int>) {
+        extraPorts = ports
+        if (ports.isNotEmpty()) {
+            Log.i(TAG, "Parallel tunnels: primary port $dnsttPort + extras $ports")
+        }
+    }
+
+    /** Pick the next upstream port round-robin (primary + extras). */
+    private fun pickUpstreamPort(): Int {
+        val extras = extraPorts
+        if (extras.isEmpty()) return dnsttPort
+        val allPorts = listOf(dnsttPort) + extras
+        val idx = (rrPortIndex.getAndIncrement() and 0x7FFFFFFF) % allPorts.size
+        return allPorts[idx]
+    }
+
     fun stop() {
         if (!running.getAndSet(false) && serverSocket == null) {
             return
@@ -317,13 +340,6 @@ object DnsttSocksBridge {
 
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
-
-        acceptorThread?.interrupt()
-        acceptorThread = null
-
-        // Stop DNS keepalive
-        dnsKeepaliveThread?.interrupt()
-        dnsKeepaliveThread = null
 
         // Close all DNS workers (connections to DNSTT port)
         for (i in 0 until dnsPoolSize) {
@@ -340,9 +356,28 @@ object DnsttSocksBridge {
         }
         remoteSockets.clear()
 
-        for (thread in connectionThreads) {
+        // Collect all threads, interrupt them, then join with a shared deadline
+        val threadsToJoin = mutableListOf<Thread>()
+        acceptorThread?.let { threadsToJoin.add(it) }
+        dnsKeepaliveThread?.let { threadsToJoin.add(it) }
+        prewarmThread?.let { threadsToJoin.add(it) }
+        threadsToJoin.addAll(connectionThreads)
+
+        for (thread in threadsToJoin) {
             thread.interrupt()
         }
+
+        val deadline = System.currentTimeMillis() + 2000
+        for (thread in threadsToJoin) {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining > 0) {
+                try { thread.join(remaining) } catch (_: InterruptedException) {}
+            }
+        }
+
+        acceptorThread = null
+        dnsKeepaliveThread = null
+        prewarmThread = null
         connectionThreads.clear()
 
         carriedTxBytes.addAndGet(tunnelTxBytes.getAndSet(0))
@@ -434,6 +469,7 @@ object DnsttSocksBridge {
             val count = dnsWorkers.count { it != null }
             Log.i(TAG, "DNS worker pool: $count/$dnsPoolSize ready → $dnsTargetHost:53")
         }, "dnstt-dns-prewarm")
+        prewarmThread = thread
         thread.isDaemon = true
         thread.start()
         startDnsKeepalive()
@@ -446,7 +482,7 @@ object DnsttSocksBridge {
     private fun createDnsWorker(): DnsWorker? {
         val sock = Socket()
         try {
-            sock.connect(InetSocketAddress(dnsttHost, dnsttPort), effectiveConnectTimeout)
+            sock.connect(InetSocketAddress(dnsttHost, pickUpstreamPort()), effectiveConnectTimeout)
             sock.soTimeout = effectiveDnsWorkerTimeout
             sock.tcpNoDelay = true
 
@@ -620,7 +656,8 @@ object DnsttSocksBridge {
      * Phase 4: DoH fallback if all TCP methods fail.
      */
     private fun forwardDnsPooled(payload: ByteArray): ByteArray? {
-        // Fail fast if DNSTT tunnel is dead
+        // Fail fast if bridge is stopping or DNSTT tunnel is dead
+        if (!running.get()) return null
         if (!DnsttBridge.isRunning()) return null
         // Circuit breaker: skip if tunnel is overwhelmed
         if (isCircuitOpen()) { notifyPoolDeadIfNeeded(); return null }
@@ -680,7 +717,8 @@ object DnsttSocksBridge {
             }
         }
 
-        // Circuit breaker: re-check after phase 1 failures
+        // Re-check after phase 1 failures
+        if (!running.get()) return null
         if (isCircuitOpen()) { notifyPoolDeadIfNeeded(); return null }
 
         // Phase 2: All workers dead/busy — recreate one inline
@@ -707,7 +745,8 @@ object DnsttSocksBridge {
             break
         }
 
-        // Circuit breaker: re-check before expensive fallbacks
+        // Re-check before expensive fallbacks
+        if (!running.get()) return null
         if (isCircuitOpen()) { notifyPoolDeadIfNeeded(); return null }
 
         // Phase 3: Per-query fallback (old behavior — new connection per query)
@@ -916,7 +955,7 @@ object DnsttSocksBridge {
         val remoteSocket: Socket
         try {
             remoteSocket = Socket()
-            remoteSocket.connect(InetSocketAddress(dnsttHost, dnsttPort), effectiveConnectTimeout)
+            remoteSocket.connect(InetSocketAddress(dnsttHost, pickUpstreamPort()), effectiveConnectTimeout)
             remoteSocket.tcpNoDelay = true
             // Set read timeout for the SOCKS5 handshake phase so that hung
             // reads don't permanently hold a semaphore slot.
@@ -1102,10 +1141,11 @@ object DnsttSocksBridge {
      * Used when all persistent workers are dead and recreation failed.
      */
     private fun forwardDnsTcpOneShot(payload: ByteArray, targetHost: String = dnsTargetHost): ByteArray? {
+        if (!running.get()) return null
         var sock: Socket? = null
         try {
             sock = Socket()
-            sock.connect(InetSocketAddress(dnsttHost, dnsttPort), effectiveConnectTimeout)
+            sock.connect(InetSocketAddress(dnsttHost, pickUpstreamPort()), effectiveConnectTimeout)
             sock.soTimeout = effectiveDnsWorkerTimeout
             sock.tcpNoDelay = true
 
@@ -1164,7 +1204,7 @@ object DnsttSocksBridge {
         try {
             // Step 1: Connect to DNSTT (loopback)
             rawSocket = Socket()
-            rawSocket.connect(InetSocketAddress(dnsttHost, dnsttPort), effectiveConnectTimeout)
+            rawSocket.connect(InetSocketAddress(dnsttHost, pickUpstreamPort()), effectiveConnectTimeout)
             rawSocket.soTimeout = effectiveDnsWorkerTimeout
             rawSocket.tcpNoDelay = true
 

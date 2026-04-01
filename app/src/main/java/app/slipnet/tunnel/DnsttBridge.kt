@@ -17,6 +17,9 @@ object DnsttBridge {
 
     private var client: DnsttClient? = null
     private var currentPort: Int = 0
+    // Parallel tunnel clients (each has its own UDP socket + KCP session)
+    private val extraClients = mutableListOf<DnsttClient>()
+    private val extraPorts = mutableListOf<Int>()
     // Port that may still be held by a dying Go process even after client is nulled.
     // stopClient() clears client immediately, but the Go listener may linger.
     @Volatile private var pendingReleasePort: Int = 0
@@ -35,6 +38,13 @@ object DnsttBridge {
      * May differ from the requested port if a fallback was used.
      */
     fun getClientPort(): Int = currentPort
+
+    /** All active tunnel ports (primary + extras). */
+    fun getAllPorts(): List<Int> {
+        val ports = mutableListOf(currentPort)
+        ports.addAll(extraPorts)
+        return ports
+    }
 
     /**
      * Start the DNSTT client.
@@ -80,30 +90,29 @@ object DnsttBridge {
             return Result.failure(IllegalArgumentException("Public key is required"))
         }
 
-        // Stop any existing client and wait for full cleanup
+        // Stop any existing client (non-blocking — old Go instance drains on its own)
         stopClient()
 
-        // Wait for the port to become free.  We give the Go runtime up to 10s to
-        // fully drain goroutines.
+        // Try the preferred port first; if still held by a draining Go instance,
+        // immediately fall back to an alternative instead of waiting 10s.
         var actualPort = listenPort
-        if (!waitForPortAvailable(listenPort, 10_000)) {
-            // Primary port stuck — the old Go listener is leaking.  Try nearby
-            // alternative ports so the connection isn't completely broken.
-            // The old instance will wind down on its own (c.stop() was called);
-            // it won't accept new connections, just drain existing goroutines.
-            Log.w(TAG, "Port $listenPort stuck after 10s, scanning for alternative port")
+        if (isPortInUse(listenPort)) {
+            Log.w(TAG, "Port $listenPort still in use, scanning for alternative port")
             var found = false
             for (alt in (listenPort + 1)..(listenPort + 10)) {
                 if (!isPortInUse(alt)) {
-                    Log.i(TAG, "Using alternative port $alt (preferred $listenPort was stuck)")
+                    Log.i(TAG, "Using alternative port $alt (preferred $listenPort was still draining)")
                     actualPort = alt
                     found = true
                     break
                 }
             }
             if (!found) {
-                Log.e(TAG, "No available ports in range ${listenPort}..${listenPort + 10}")
-                return Result.failure(RuntimeException("Port $listenPort is still in use by a previous DNSTT instance"))
+                // All alternatives busy — wait briefly for the primary port as last resort
+                Log.w(TAG, "All alternative ports busy, waiting up to 3s for port $listenPort")
+                if (!waitForPortAvailable(listenPort, 3_000)) {
+                    return Result.failure(RuntimeException("Port $listenPort is still in use by a previous DNSTT instance"))
+                }
             }
         }
 
@@ -172,6 +181,59 @@ object DnsttBridge {
     }
 
     /**
+     * Start additional parallel tunnel clients for higher throughput.
+     * Each extra client has its own Go process, UDP socket, and KCP session.
+     * Call AFTER startClient() succeeds. Ports are auto-assigned starting from basePort+2.
+     */
+    fun startExtraClients(
+        count: Int,
+        basePort: Int,
+        dnsServer: String,
+        tunnelDomain: String,
+        publicKey: String,
+        listenHost: String = "127.0.0.1",
+        authoritativeMode: Boolean = false,
+        noizMode: Boolean = false,
+        stealthMode: Boolean = false,
+        maxPayload: Int = 0
+    ) {
+        for (i in 1..count) {
+            val port = basePort + (i * 2)
+            try {
+                val dnsAddr = dnsServer.split(",").map { addr ->
+                    val trimmed = addr.trim()
+                    when {
+                        trimmed.startsWith("https://") -> trimmed
+                        trimmed.startsWith("tls://") -> trimmed
+                        trimmed.startsWith("tcp://") -> trimmed
+                        trimmed.contains(":") -> trimmed
+                        else -> "$trimmed:53"
+                    }
+                }.joinToString(",")
+                val listenAddr = "$listenHost:$port"
+                val ec = Mobile.newClient(dnsAddr, tunnelDomain, publicKey, listenAddr)
+                ec.setAuthoritativeMode(authoritativeMode)
+                if (maxPayload > 0) ec.setMaxPayload(maxPayload.toLong())
+                if (noizMode) {
+                    ec.setNoizMode(true)
+                    ec.setDeviceManufacturer(android.os.Build.MANUFACTURER)
+                    if (stealthMode) ec.setStealthMode(true)
+                }
+                ec.start()
+                extraClients.add(ec)
+                extraPorts.add(port)
+                Log.i(TAG, "Extra tunnel $i started on port $port")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start extra tunnel $i on port $port: ${e.message}")
+                break
+            }
+        }
+        if (extraPorts.isNotEmpty()) {
+            Log.i(TAG, "Parallel tunnels: 1 primary + ${extraPorts.size} extra = ${1 + extraPorts.size} total")
+        }
+    }
+
+    /**
      * Stop the DNSTT client and wait for port to be released.
      *
      * NOTE: This blocks the calling thread for up to ~5s while waiting for the Go
@@ -179,6 +241,13 @@ object DnsttBridge {
      * [stopClientBlocking] from a coroutine on [Dispatchers.IO].
      */
     fun stopClient() {
+        // Stop extra parallel clients first
+        for (ec in extraClients) {
+            try { ec.stop() } catch (_: Exception) {}
+        }
+        extraClients.clear()
+        extraPorts.clear()
+
         val c = client
         val port = if (c != null) currentPort else pendingReleasePort
 
@@ -198,10 +267,9 @@ object DnsttBridge {
                         }
                     } catch (_: Exception) {}
                 }
-                // Give Go runtime time to close listener AND drain active goroutines.
-                // The listener.Close() is synchronous, but tunnel-session goroutines may
-                // still be sending DNS queries for a short while after the listener is gone.
-                Thread.sleep(500)
+                // Brief pause for Go listener to close. Active goroutines may still
+                // be draining but startClient() handles that via port fallback.
+                Thread.sleep(100)
             } catch (e: Exception) {
                 Log.e(TAG, "Error stopping DNSTT client", e)
             }
@@ -212,8 +280,8 @@ object DnsttBridge {
         // stopClient() may have cleared the reference while Go is still dying.
         if (port > 0) {
             val portFree = if (isPortInUse(port)) {
-                Log.w(TAG, "Port $port still in use after DNSTT stop, waiting...")
-                waitForPortAvailable(port, 5000)
+                Log.w(TAG, "Port $port still in use after DNSTT stop, waiting briefly...")
+                waitForPortAvailable(port, 1000)
             } else {
                 true
             }

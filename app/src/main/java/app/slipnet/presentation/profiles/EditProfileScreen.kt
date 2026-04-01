@@ -91,6 +91,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsTransport
+import app.slipnet.domain.model.ResolverBalancingMode
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.tunnel.DohServer
@@ -638,7 +639,7 @@ fun EditProfileScreen(
                                         onCheckedChange = { viewModel.updateNoizdnsStealth(it) }
                                     )
                                 }
-                                if (uiState.noizdnsStealth) {
+                                if (uiState.noizdnsStealth && !uiState.dnsttAuthoritative) {
                                     Text(
                                         text = "Internet speed will be reduced.",
                                         style = MaterialTheme.typography.bodySmall,
@@ -1003,6 +1004,39 @@ fun EditProfileScreen(
                     }
                 }
 
+                // Parallel Tunnels (NoizDNS only)
+                if (uiState.isNoizdnsBased) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Parallel Tunnels",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = if (uiState.resolverBalancingMode == ResolverBalancingMode.PARALLEL)
+                                    "Multiple tunnel sessions for faster browsing"
+                                else "Single tunnel session (default)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = uiState.resolverBalancingMode == ResolverBalancingMode.PARALLEL,
+                            onCheckedChange = { enabled ->
+                                viewModel.updateResolverBalancingMode(
+                                    if (enabled) ResolverBalancingMode.PARALLEL else ResolverBalancingMode.FANOUT
+                                )
+                            }
+                        )
+                    }
+                }
+
                 // DNS MTU selector (DNSTT/NoizDNS)
                 if (uiState.isDnsttOrNoizBased) {
                     var showMtuDialog by remember { mutableStateOf(false) }
@@ -1163,7 +1197,7 @@ fun EditProfileScreen(
                             onCheckedChange = { viewModel.updateNoizdnsStealth(it) }
                         )
                     }
-                    if (uiState.noizdnsStealth) {
+                    if (uiState.noizdnsStealth && !uiState.dnsttAuthoritative) {
                         Text(
                             text = "Internet speed will be reduced. Use split tunneling to limit which apps use the tunnel for better performance.",
                             style = MaterialTheme.typography.bodySmall,

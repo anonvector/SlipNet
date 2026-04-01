@@ -1169,7 +1169,7 @@ class DnsScannerViewModel @Inject constructor(
                         e2eScannerState = E2eScannerState(),
                         simpleModeE2eState = SimpleModeE2eState(),
                         isLoadingList = false,
-                        timeoutMs = "1500"
+                        timeoutMs = _uiState.value.timeoutMs
                     )
                     saveListSelection()
                 }
@@ -1245,7 +1245,7 @@ class DnsScannerViewModel @Inject constructor(
                         e2eScannerState = E2eScannerState(),
                         simpleModeE2eState = SimpleModeE2eState(),
                         isLoadingList = false,
-                        timeoutMs = "1500"
+                        timeoutMs = _uiState.value.timeoutMs
                     )
                     saveListSelection()
                 }
@@ -1328,7 +1328,7 @@ class DnsScannerViewModel @Inject constructor(
                         e2eScannerState = E2eScannerState(),
                         simpleModeE2eState = SimpleModeE2eState(),
                         isLoadingList = false,
-                        timeoutMs = "1500"
+                        timeoutMs = _uiState.value.timeoutMs
                     )
                     saveListSelection()
                 }
@@ -1419,7 +1419,7 @@ class DnsScannerViewModel @Inject constructor(
                     e2eScannerState = E2eScannerState(),
                     simpleModeE2eState = SimpleModeE2eState(),
                     isLoadingList = false,
-                    timeoutMs = "1500"
+                    timeoutMs = _uiState.value.timeoutMs
                 )
                 saveListSelection()
             } catch (e: Exception) {
@@ -2777,9 +2777,12 @@ class DnsScannerViewModel @Inject constructor(
                             )
                         )
                     }
+                    // Sync results to ScanStateHolder so the observer doesn't
+                    // overwrite E2E data with stale results during the next collect.
                     ScanStateHolder.update { it.copy(
                         e2eTestedCount = tested,
-                        e2ePassedCount = passed
+                        e2ePassedCount = passed,
+                        results = _uiState.value.scannerState.results
                     ) }
                 },
                 onComplete = {
