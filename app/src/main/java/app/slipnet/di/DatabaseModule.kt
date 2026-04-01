@@ -47,7 +47,8 @@ object DatabaseModule {
                 SlipNetDatabase.MIGRATION_22_23,
                 SlipNetDatabase.MIGRATION_23_24,
                 SlipNetDatabase.MIGRATION_24_25,
-                SlipNetDatabase.MIGRATION_25_26
+                SlipNetDatabase.MIGRATION_25_26,
+                SlipNetDatabase.MIGRATION_26_27
             )
             .fallbackToDestructiveMigrationFrom(1, 2, 3, 4)
             .fallbackToDestructiveMigrationOnDowngrade()

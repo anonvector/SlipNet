@@ -4,6 +4,7 @@ import android.util.Base64
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
+import app.slipnet.domain.model.ResolverBalancingMode
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
@@ -84,6 +85,9 @@ sealed class ImportResult {
  * Decoded profile format v18 (extends v17 with stealth mode, DNS payload size, SOCKS5 port):
  * v18|..same as v17..|noizdnsStealth|dnsPayloadSize|socks5ServerPort
  *
+ * Decoded profile format v19 (extends v18 with resolver balancing mode):
+ * v19|..same as v18..|resolverBalancingMode
+ *
  */
 @Singleton
 class ConfigImporter @Inject constructor() {
@@ -124,7 +128,7 @@ class ConfigImporter @Inject constructor() {
         private const val V16_FIELD_COUNT = 36
         private const val V17_FIELD_COUNT = 38
         private const val V18_FIELD_COUNT = 41
-        private const val CURRENT_MAX_VERSION = 18
+        private const val CURRENT_MAX_VERSION = 19
     }
 
     fun parseAndImport(input: String, localDeviceId: String = ""): ImportResult {
@@ -252,12 +256,13 @@ class ConfigImporter @Inject constructor() {
             "16" -> parseProfileV16(fields, lineNum)
             "17" -> parseProfileV17(fields, lineNum)
             "18" -> parseProfileV18(fields, lineNum)
+            "19" -> parseProfileV19(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 18) {
-                    parseProfileV18(fields, lineNum)
+                if (versionNum != null && versionNum > 19) {
+                    parseProfileV19(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -1949,6 +1954,21 @@ class ConfigImporter @Inject constructor() {
         )
 
         return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV19(fields: List<String>, lineNum: Int): ProfileParseResult {
+        val baseResult = parseProfileV18(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        val resolverBalancingMode = if (fields.size > 41) {
+            ResolverBalancingMode.fromValue(fields[41])
+        } else {
+            ResolverBalancingMode.FANOUT
+        }
+
+        return ProfileParseResult.Success(
+            baseResult.profile.copy(resolverBalancingMode = resolverBalancingMode)
+        )
     }
 
     private fun parseResolvers(resolversStr: String): List<DnsResolver> {

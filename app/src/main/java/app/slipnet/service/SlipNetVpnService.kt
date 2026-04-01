@@ -106,6 +106,10 @@ class SlipNetVpnService : VpnService() {
         private const val BOOT_RETRY_INITIAL_DELAY_MS = 1000L
         private const val BOOT_RETRY_MAX_DELAY_MS = 30_000L
         private const val BOOT_RETRY_MAX_ATTEMPTS = 10
+
+        // SSH over tunnel (DNSTT/NoizDNS/Slipstream) retry count.
+        // DNS tunnels can drop the first connection due to DPI or packet loss.
+        private const val SSH_OVER_TUNNEL_RETRIES = 3
     }
 
     @Inject
@@ -1375,29 +1379,37 @@ class SlipNetVpnService : VpnService() {
         vpnRepository.setCurrentTunnelType(TunnelType.SLIPSTREAM_SSH)
         currentTunnelType = TunnelType.SLIPSTREAM_SSH
 
-        // Step 4: Start SSH tunnel directly through Slipstream
+        // Step 4: Start SSH tunnel directly through Slipstream (with retry)
         // Slipstream in SSH mode is a raw TCP tunnel (like DNSTT) — the server's
         // --target-address forwards all traffic to SSH. JSch connects directly to
         // Slipstream's local port, no SOCKS5 proxy wrapper needed.
         configureSshBridge()
-        val sshResult = withContext(Dispatchers.IO) {
-            Log.i(TAG, "Starting SSH tunnel through Slipstream (${profile.sshHost}:${profile.sshPort} via 127.0.0.1:$actualSlipstreamPort)")
-            SshTunnelBridge.startOverProxy(
-                sshHost = profile.sshHost,
-                sshPort = profile.sshPort,
-                sshUsername = profile.sshUsername,
-                sshPassword = profile.sshPassword,
-                proxyHost = "127.0.0.1",
-                proxyPort = actualSlipstreamPort,
-                listenPort = proxyPort,
-                listenHost = proxyHost,
-                blockDirectDns = true,  // No addDisallowedApplication — direct UDP would loop through VPN
-                sshAuthType = profile.sshAuthType,
-                sshPrivateKey = profile.sshPrivateKey,
-                sshKeyPassphrase = profile.sshKeyPassphrase,
-                remoteDnsHost = remoteDns,
-                remoteDnsFallback = remoteDnsFallback
-            )
+        var sshResult: Result<Unit> = Result.failure(RuntimeException("SSH not attempted"))
+        for (attempt in 1..SSH_OVER_TUNNEL_RETRIES) {
+            sshResult = withContext(Dispatchers.IO) {
+                Log.i(TAG, "Starting SSH tunnel through Slipstream (${profile.sshHost}:${profile.sshPort} via 127.0.0.1:$actualSlipstreamPort) attempt $attempt/$SSH_OVER_TUNNEL_RETRIES")
+                SshTunnelBridge.startOverProxy(
+                    sshHost = profile.sshHost,
+                    sshPort = profile.sshPort,
+                    sshUsername = profile.sshUsername,
+                    sshPassword = profile.sshPassword,
+                    proxyHost = "127.0.0.1",
+                    proxyPort = actualSlipstreamPort,
+                    listenPort = proxyPort,
+                    listenHost = proxyHost,
+                    blockDirectDns = true,
+                    sshAuthType = profile.sshAuthType,
+                    sshPrivateKey = profile.sshPrivateKey,
+                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                    remoteDnsHost = remoteDns,
+                    remoteDnsFallback = remoteDnsFallback
+                )
+            }
+            if (sshResult.isSuccess) break
+            if (attempt < SSH_OVER_TUNNEL_RETRIES) {
+                Log.w(TAG, "SSH over Slipstream attempt $attempt failed: ${sshResult.exceptionOrNull()?.message}, retrying...")
+                delay(1000L * attempt)
+            }
         }
         if (sshResult.isFailure) {
             connectionManager.onVpnError(sshResult.exceptionOrNull()?.message ?: "Failed to start SSH tunnel over Slipstream")
@@ -1547,6 +1559,12 @@ class SlipNetVpnService : VpnService() {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
+        }
+
+        // Set extra tunnel ports for parallel mode (round-robin in DnsttSocksBridge)
+        val allPorts = DnsttBridge.getAllPorts()
+        if (allPorts.size > 1) {
+            DnsttSocksBridge.setExtraPorts(allPorts.drop(1))
         }
 
         // Step 4.5: Verify bridge is listening
@@ -2166,30 +2184,41 @@ class SlipNetVpnService : VpnService() {
         vpnRepository.setCurrentTunnelType(sshTunnelType)
         currentTunnelType = sshTunnelType
 
-        // Step 5: Start SSH tunnel through DNSTT
-        // DNSTT is a raw TCP tunnel — JSch connects directly to its local port
+        // Step 5: Start SSH tunnel through DNSTT (with retry)
+        // DNSTT is a raw TCP tunnel — JSch connects directly to its local port.
+        // DNS tunnels can drop the first connection (DPI, packet loss), so retry
+        // up to 3 times before giving up.
         configureSshBridge()
-        val sshResult = withContext(Dispatchers.IO) {
-            Log.i(TAG, "Starting SSH tunnel through DNSTT (${profile.sshHost}:${profile.sshPort} via 127.0.0.1:$actualDnsttPort)")
-            SshTunnelBridge.startOverProxy(
-                sshHost = profile.sshHost,
-                sshPort = profile.sshPort,
-                sshUsername = profile.sshUsername,
-                sshPassword = profile.sshPassword,
-                proxyHost = "127.0.0.1",
-                proxyPort = actualDnsttPort,
-                listenPort = proxyPort,
-                listenHost = proxyHost,
-                blockDirectDns = true,
-                sshAuthType = profile.sshAuthType,
-                sshPrivateKey = profile.sshPrivateKey,
-                sshKeyPassphrase = profile.sshKeyPassphrase,
-                remoteDnsHost = remoteDns,
-                remoteDnsFallback = remoteDnsFallback
-            )
+        val tunnelLabel = if (isNoizdns) "NoizDNS" else "DNSTT"
+        var sshResult: Result<Unit> = Result.failure(RuntimeException("SSH not attempted"))
+        for (attempt in 1..SSH_OVER_TUNNEL_RETRIES) {
+            sshResult = withContext(Dispatchers.IO) {
+                Log.i(TAG, "Starting SSH tunnel through $tunnelLabel (${profile.sshHost}:${profile.sshPort} via 127.0.0.1:$actualDnsttPort) attempt $attempt/$SSH_OVER_TUNNEL_RETRIES")
+                SshTunnelBridge.startOverProxy(
+                    sshHost = profile.sshHost,
+                    sshPort = profile.sshPort,
+                    sshUsername = profile.sshUsername,
+                    sshPassword = profile.sshPassword,
+                    proxyHost = "127.0.0.1",
+                    proxyPort = actualDnsttPort,
+                    listenPort = proxyPort,
+                    listenHost = proxyHost,
+                    blockDirectDns = true,
+                    sshAuthType = profile.sshAuthType,
+                    sshPrivateKey = profile.sshPrivateKey,
+                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                    remoteDnsHost = remoteDns,
+                    remoteDnsFallback = remoteDnsFallback
+                )
+            }
+            if (sshResult.isSuccess) break
+            if (attempt < SSH_OVER_TUNNEL_RETRIES) {
+                Log.w(TAG, "SSH over $tunnelLabel attempt $attempt failed: ${sshResult.exceptionOrNull()?.message}, retrying...")
+                delay(1000L * attempt)
+            }
         }
         if (sshResult.isFailure) {
-            connectionManager.onVpnError(sshResult.exceptionOrNull()?.message ?: "Failed to start SSH tunnel over DNSTT")
+            connectionManager.onVpnError(sshResult.exceptionOrNull()?.message ?: "Failed to start SSH tunnel over $tunnelLabel")
             DnsttBridge.stopClient()
             vpnInterface?.close()
             vpnInterface = null
@@ -4764,7 +4793,8 @@ class SlipNetVpnService : VpnService() {
             Log.w(TAG, "Cleanup timed out after 8s — bridge may be stuck, proceeding with disconnect")
         }
 
-        // Clear VPN service reference
+        // Clear VPN service reference AFTER native code has stopped (or timed out).
+        // Must come after stopCurrentProxy() to avoid crashing native protectSocket() calls.
         clearVpnServiceRef()
 
         // Close VPN interface
