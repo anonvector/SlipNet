@@ -28,6 +28,7 @@ data class SettingsUiState(
     val proxyOnlyMode: Boolean = false,
     val killSwitch: Boolean = false,
     val autoReconnect: Boolean = false,
+    val showNotificationTraffic: Boolean = true,
     val sleepTimerMinutes: Int = 0,
     // HTTP Proxy Settings
     val httpProxyEnabled: Boolean = false,
@@ -123,14 +124,15 @@ class SettingsViewModel @Inject constructor(
                 Triple(enabled, mode, apps)
             }
 
-            data class ProxyOnlySettings(val proxyOnly: Boolean, val killSwitch: Boolean, val sleepTimer: Int, val autoReconnect: Boolean)
+            data class ProxyOnlySettings(val proxyOnly: Boolean, val killSwitch: Boolean, val sleepTimer: Int, val autoReconnect: Boolean, val showNotificationTraffic: Boolean)
             val proxyOnlyFlow = combine(
                 preferencesDataStore.proxyOnlyMode,
                 preferencesDataStore.killSwitch,
                 preferencesDataStore.sleepTimerMinutes,
-                preferencesDataStore.autoReconnect
-            ) { proxyOnly, killSwitch, sleepTimer, autoReconnect ->
-                ProxyOnlySettings(proxyOnly, killSwitch, sleepTimer, autoReconnect)
+                preferencesDataStore.autoReconnect,
+                preferencesDataStore.showNotificationTraffic
+            ) { proxyOnly, killSwitch, sleepTimer, autoReconnect, showNotifTraffic ->
+                ProxyOnlySettings(proxyOnly, killSwitch, sleepTimer, autoReconnect, showNotifTraffic)
             }
 
             val httpProxyFlow = combine(
@@ -175,6 +177,7 @@ class SettingsViewModel @Inject constructor(
                     proxyOnlyMode = proxyOnlySettings.proxyOnly,
                     killSwitch = proxyOnlySettings.killSwitch,
                     autoReconnect = proxyOnlySettings.autoReconnect,
+                    showNotificationTraffic = proxyOnlySettings.showNotificationTraffic,
                     sleepTimerMinutes = proxyOnlySettings.sleepTimer,
                     httpProxyEnabled = httpProxy.first,
                     httpProxyPort = httpProxy.second,
@@ -275,6 +278,13 @@ class SettingsViewModel @Inject constructor(
     fun setAutoReconnect(enabled: Boolean) {
         viewModelScope.launch {
             preferencesDataStore.setAutoReconnect(enabled)
+        }
+    }
+
+    // Notification Traffic Counter
+    fun setShowNotificationTraffic(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setShowNotificationTraffic(enabled)
         }
     }
 

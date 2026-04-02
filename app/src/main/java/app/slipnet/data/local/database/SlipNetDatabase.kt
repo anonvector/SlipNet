@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class, ChainEntity::class],
-    version = 27,
+    version = 26,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -332,12 +332,6 @@ abstract class SlipNetDatabase : RoomDatabase() {
         val MIGRATION_25_26 = object : Migration(25, 26) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE server_profiles ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0")
-            }
-        }
-
-        val MIGRATION_26_27 = object : Migration(26, 27) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE server_profiles ADD COLUMN resolver_balancing_mode TEXT NOT NULL DEFAULT 'fanout'")
             }
         }
 

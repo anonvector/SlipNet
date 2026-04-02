@@ -70,9 +70,7 @@ data class ServerProfile(
     // SOCKS5 proxy server port (for SOCKS5 tunnel type)
     val socks5ServerPort: Int = 1080,
     // Pinned to top of profile list
-    val isPinned: Boolean = false,
-    // Resolver balancing mode: fanout (default) sends to all, parallel distributes across resolvers
-    val resolverBalancingMode: ResolverBalancingMode = ResolverBalancingMode.FANOUT
+    val isPinned: Boolean = false
 ) {
     val isExpired: Boolean get() = expirationDate > 0 && System.currentTimeMillis() > expirationDate
 }
@@ -128,17 +126,6 @@ enum class SshAuthType(val value: String) {
     companion object {
         fun fromValue(value: String): SshAuthType {
             return entries.find { it.value == value } ?: PASSWORD
-        }
-    }
-}
-
-enum class ResolverBalancingMode(val value: String, val displayName: String) {
-    FANOUT("fanout", "Fan-out"),
-    PARALLEL("parallel", "Parallel");
-
-    companion object {
-        fun fromValue(value: String): ResolverBalancingMode {
-            return entries.find { it.value == value } ?: FANOUT
         }
     }
 }

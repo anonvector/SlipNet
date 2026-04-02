@@ -17,9 +17,6 @@ object DnsttBridge {
 
     private var client: DnsttClient? = null
     private var currentPort: Int = 0
-    // Parallel tunnel clients (each has its own UDP socket + KCP session)
-    private val extraClients = mutableListOf<DnsttClient>()
-    private val extraPorts = mutableListOf<Int>()
     // Port that may still be held by a dying Go process even after client is nulled.
     // stopClient() clears client immediately, but the Go listener may linger.
     @Volatile private var pendingReleasePort: Int = 0
@@ -38,13 +35,6 @@ object DnsttBridge {
      * May differ from the requested port if a fallback was used.
      */
     fun getClientPort(): Int = currentPort
-
-    /** All active tunnel ports (primary + extras). */
-    fun getAllPorts(): List<Int> {
-        val ports = mutableListOf(currentPort)
-        ports.addAll(extraPorts)
-        return ports
-    }
 
     /**
      * Start the DNSTT client.
@@ -181,59 +171,6 @@ object DnsttBridge {
     }
 
     /**
-     * Start additional parallel tunnel clients for higher throughput.
-     * Each extra client has its own Go process, UDP socket, and KCP session.
-     * Call AFTER startClient() succeeds. Ports are auto-assigned starting from basePort+2.
-     */
-    fun startExtraClients(
-        count: Int,
-        basePort: Int,
-        dnsServer: String,
-        tunnelDomain: String,
-        publicKey: String,
-        listenHost: String = "127.0.0.1",
-        authoritativeMode: Boolean = false,
-        noizMode: Boolean = false,
-        stealthMode: Boolean = false,
-        maxPayload: Int = 0
-    ) {
-        for (i in 1..count) {
-            val port = basePort + (i * 2)
-            try {
-                val dnsAddr = dnsServer.split(",").map { addr ->
-                    val trimmed = addr.trim()
-                    when {
-                        trimmed.startsWith("https://") -> trimmed
-                        trimmed.startsWith("tls://") -> trimmed
-                        trimmed.startsWith("tcp://") -> trimmed
-                        trimmed.contains(":") -> trimmed
-                        else -> "$trimmed:53"
-                    }
-                }.joinToString(",")
-                val listenAddr = "$listenHost:$port"
-                val ec = Mobile.newClient(dnsAddr, tunnelDomain, publicKey, listenAddr)
-                ec.setAuthoritativeMode(authoritativeMode)
-                if (maxPayload > 0) ec.setMaxPayload(maxPayload.toLong())
-                if (noizMode) {
-                    ec.setNoizMode(true)
-                    ec.setDeviceManufacturer(android.os.Build.MANUFACTURER)
-                    if (stealthMode) ec.setStealthMode(true)
-                }
-                ec.start()
-                extraClients.add(ec)
-                extraPorts.add(port)
-                Log.i(TAG, "Extra tunnel $i started on port $port")
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to start extra tunnel $i on port $port: ${e.message}")
-                break
-            }
-        }
-        if (extraPorts.isNotEmpty()) {
-            Log.i(TAG, "Parallel tunnels: 1 primary + ${extraPorts.size} extra = ${1 + extraPorts.size} total")
-        }
-    }
-
-    /**
      * Stop the DNSTT client and wait for port to be released.
      *
      * NOTE: This blocks the calling thread for up to ~5s while waiting for the Go
@@ -241,13 +178,6 @@ object DnsttBridge {
      * [stopClientBlocking] from a coroutine on [Dispatchers.IO].
      */
     fun stopClient() {
-        // Stop extra parallel clients first
-        for (ec in extraClients) {
-            try { ec.stop() } catch (_: Exception) {}
-        }
-        extraClients.clear()
-        extraPorts.clear()
-
         val c = client
         val port = if (c != null) currentPort else pendingReleasePort
 

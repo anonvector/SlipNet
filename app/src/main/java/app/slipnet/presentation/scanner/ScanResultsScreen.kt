@@ -168,7 +168,7 @@ fun ScanResultsScreen(
     val scope = rememberCoroutineScope()
 
     BackHandler {
-        viewModel.stopScan()
+        viewModel.stopAll()
         onNavigateBack()
     }
 
@@ -313,7 +313,7 @@ fun ScanResultsScreen(
                 navigationIcon = {
                     IconButton(
                         onClick = {
-                            viewModel.stopScan()
+                            viewModel.stopAll()
                             onNavigateBack()
                         }
                     ) {
@@ -405,7 +405,7 @@ fun ScanResultsScreen(
                     )
                 }
             } else {
-                if (uiState.scannerState.isScanning || uiState.scannerState.scannedCount > 0) {
+                if (uiState.scannerState.isScanning || uiState.scannerState.results.isNotEmpty() || uiState.scannerState.scannedCount > 0 || uiState.e2eScannerState.isRunning) {
                     val workingCount = remember(uiState.scannerState.results, isPrismMode) {
                         if (isPrismMode) {
                             uiState.scannerState.results.count { it.prismVerified == true }
@@ -732,8 +732,13 @@ fun ScanResultsScreen(
                                 isSelected = isSelected,
                                 isLimitReached = uiState.isSelectionLimitReached,
                                 showSelection = canApply,
-                                isE2eTesting = uiState.e2eScannerState.isRunning && (result.host in uiState.e2eScannerState.activeResolvers || uiState.e2eScannerState.currentResolver == result.host),
-                                e2ePhase = uiState.e2eScannerState.activeResolvers[result.host] ?: if (uiState.e2eScannerState.currentResolver == result.host) uiState.e2eScannerState.currentPhase else null,
+                                isE2eTesting = (uiState.e2eScannerState.isRunning && (result.host in uiState.e2eScannerState.activeResolvers || uiState.e2eScannerState.currentResolver == result.host)) ||
+                                    (uiState.simpleModeE2eState.isRunning && (result.host in uiState.simpleModeE2eState.activeResolvers || uiState.simpleModeE2eState.currentResolver == result.host)),
+                                e2ePhase = uiState.e2eScannerState.activeResolvers[result.host]
+                                    ?: uiState.simpleModeE2eState.activeResolvers[result.host]
+                                    ?: if (uiState.e2eScannerState.currentResolver == result.host) uiState.e2eScannerState.currentPhase
+                                    else if (uiState.simpleModeE2eState.currentResolver == result.host) uiState.simpleModeE2eState.currentPhase
+                                    else null,
                                 onToggleSelection = if (canApply) {
                                     { viewModel.toggleResolverSelection(result.host) }
                                 } else null
@@ -743,8 +748,8 @@ fun ScanResultsScreen(
                 }
             }
 
-            // Compact sort/filter bar — always visible once scan has started
-            if (uiState.scannerState.scannedCount > 0) {
+            // Compact sort/filter bar — visible when there are results to display
+            if (uiState.scannerState.results.isNotEmpty()) {
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
                     modifier = Modifier.fillMaxWidth()

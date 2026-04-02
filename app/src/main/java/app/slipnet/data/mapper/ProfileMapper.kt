@@ -6,7 +6,6 @@ import app.slipnet.data.local.database.ProfileEntity
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
-import app.slipnet.domain.model.ResolverBalancingMode
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
@@ -74,8 +73,7 @@ class ProfileMapper @Inject constructor(
             resolversHidden = entity.resolversHidden,
             defaultResolvers = defaultResolvers,
             socks5ServerPort = entity.socks5ServerPort,
-            isPinned = entity.isPinned,
-            resolverBalancingMode = ResolverBalancingMode.fromValue(entity.resolverBalancingMode)
+            isPinned = entity.isPinned
         )
     }
 
@@ -129,8 +127,7 @@ class ProfileMapper @Inject constructor(
             resolversHidden = profile.resolversHidden,
             defaultResolversJson = defaultResolversJson,
             socks5ServerPort = profile.socks5ServerPort,
-            isPinned = profile.isPinned,
-            resolverBalancingMode = profile.resolverBalancingMode.value
+            isPinned = profile.isPinned
         )
     }
 
