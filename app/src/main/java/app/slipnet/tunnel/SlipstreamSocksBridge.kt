@@ -99,7 +99,6 @@ object SlipstreamSocksBridge {
     private var dnsFallbackHost: String = FALLBACK_DNS_HOST
     private var workerCreationLocks = Array(DNS_POOL_SIZE_MAX) { ReentrantLock() }
     private var dnsKeepaliveThread: Thread? = null
-    private var prewarmThread: Thread? = null
 
     // Circuit breaker for DNS worker recreation
     private val consecutiveFailures = AtomicInteger(0)
@@ -129,7 +128,7 @@ object SlipstreamSocksBridge {
     private val activeConnections = AtomicInteger(0)
 
     // CONNECT concurrency limit and circuit breaker
-    private const val MAX_CONCURRENT_CONNECTS = 24
+    private const val MAX_CONCURRENT_CONNECTS = 8
     private const val CONNECT_CIRCUIT_THRESHOLD = 3
     private const val CONNECT_CIRCUIT_COOLDOWN_MS = 5000L
     private val connectSemaphore = Semaphore(MAX_CONCURRENT_CONNECTS)
@@ -250,6 +249,13 @@ object SlipstreamSocksBridge {
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
 
+        acceptorThread?.interrupt()
+        acceptorThread = null
+
+        // Stop DNS keepalive
+        dnsKeepaliveThread?.interrupt()
+        dnsKeepaliveThread = null
+
         // Close all DNS workers (connections to Slipstream port)
         for (i in 0 until dnsPoolSize) {
             val worker = dnsWorkers[i]
@@ -265,28 +271,9 @@ object SlipstreamSocksBridge {
         }
         remoteSockets.clear()
 
-        // Collect all threads, interrupt them, then join with a shared deadline
-        val threadsToJoin = mutableListOf<Thread>()
-        acceptorThread?.let { threadsToJoin.add(it) }
-        dnsKeepaliveThread?.let { threadsToJoin.add(it) }
-        prewarmThread?.let { threadsToJoin.add(it) }
-        threadsToJoin.addAll(connectionThreads)
-
-        for (thread in threadsToJoin) {
+        for (thread in connectionThreads) {
             thread.interrupt()
         }
-
-        val deadline = System.currentTimeMillis() + 2000
-        for (thread in threadsToJoin) {
-            val remaining = deadline - System.currentTimeMillis()
-            if (remaining > 0) {
-                try { thread.join(remaining) } catch (_: InterruptedException) {}
-            }
-        }
-
-        acceptorThread = null
-        dnsKeepaliveThread = null
-        prewarmThread = null
         connectionThreads.clear()
 
         activeConnections.set(0)
@@ -365,7 +352,6 @@ object SlipstreamSocksBridge {
             val count = dnsWorkers.count { it != null }
             Log.i(TAG, "DNS worker pool: $count/$dnsPoolSize ready → $dnsTargetHost:53")
         }, "slip-dns-prewarm")
-        prewarmThread = thread
         thread.isDaemon = true
         thread.start()
         startDnsKeepalive()
@@ -551,8 +537,7 @@ object SlipstreamSocksBridge {
      * Phase 4: DoH fallback if all TCP methods fail.
      */
     private fun forwardDnsPooled(payload: ByteArray): ByteArray? {
-        // Fail fast if bridge is stopping or Slipstream tunnel is dead
-        if (!running.get()) return null
+        // Fail fast if Slipstream tunnel is dead
         if (!SlipstreamBridge.isNativeRunning()) return null
         if (isCircuitOpen()) return null
 
@@ -599,7 +584,6 @@ object SlipstreamSocksBridge {
             }
         }
 
-        if (!running.get()) return null
         if (isCircuitOpen()) return null
 
         // Phase 2: All workers dead/busy — recreate one inline
@@ -621,7 +605,6 @@ object SlipstreamSocksBridge {
             break
         }
 
-        if (!running.get()) return null
         if (isCircuitOpen()) return null
 
         // Phase 3: Per-query fallback (old behavior — new connection per query)
@@ -1175,7 +1158,6 @@ object SlipstreamSocksBridge {
      * Used when all persistent workers are dead and recreation failed.
      */
     private fun forwardDnsTcpOneShot(payload: ByteArray): ByteArray? {
-        if (!running.get()) return null
         var sock: Socket? = null
         try {
             sock = Socket()

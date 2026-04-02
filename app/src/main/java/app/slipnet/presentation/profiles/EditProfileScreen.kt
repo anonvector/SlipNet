@@ -91,7 +91,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsTransport
-import app.slipnet.domain.model.ResolverBalancingMode
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.tunnel.DohServer
@@ -1000,39 +999,6 @@ fun EditProfileScreen(
                             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                    }
-                }
-
-                // Parallel Tunnels (NoizDNS only)
-                if (uiState.isNoizdnsBased) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Parallel Tunnels",
-                                style = MaterialTheme.typography.bodyLarge
-                            )
-                            Text(
-                                text = if (uiState.resolverBalancingMode == ResolverBalancingMode.PARALLEL)
-                                    "Multiple tunnel sessions for faster browsing"
-                                else "Single tunnel session (default)",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = uiState.resolverBalancingMode == ResolverBalancingMode.PARALLEL,
-                            onCheckedChange = { enabled ->
-                                viewModel.updateResolverBalancingMode(
-                                    if (enabled) ResolverBalancingMode.PARALLEL else ResolverBalancingMode.FANOUT
-                                )
-                            }
                         )
                     }
                 }

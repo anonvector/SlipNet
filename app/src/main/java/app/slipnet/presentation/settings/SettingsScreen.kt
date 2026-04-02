@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
@@ -247,6 +248,16 @@ fun SettingsScreen(
                     description = "Automatically reconnect if VPN drops unexpectedly",
                     checked = uiState.autoReconnect,
                     onCheckedChange = { viewModel.setAutoReconnect(it) }
+                )
+
+                SettingsDivider()
+
+                SwitchSettingItem(
+                    icon = Icons.Default.Notifications,
+                    title = "Notification traffic counter",
+                    description = "Show upload/download speed and data usage in notification",
+                    checked = uiState.showNotificationTraffic,
+                    onCheckedChange = { viewModel.setShowNotificationTraffic(it) }
                 )
 
                 SettingsDivider()

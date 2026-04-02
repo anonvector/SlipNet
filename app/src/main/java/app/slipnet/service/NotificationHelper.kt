@@ -389,7 +389,11 @@ class NotificationHelper @Inject constructor(
         scannedCount: Int,
         totalCount: Int,
         workingCount: Int,
-        isE2eRunning: Boolean = false
+        isE2eRunning: Boolean = false,
+        isScanning: Boolean = true,
+        e2eTestedCount: Int = 0,
+        e2eTotalCount: Int = 0,
+        e2ePassedCount: Int = 0
     ): Notification {
         val mainIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -410,14 +414,16 @@ class NotificationHelper @Inject constructor(
         )
 
         val title = when {
-            isE2eRunning && scannedCount >= totalCount && totalCount > 0 -> "Testing tunnel connections"
+            isE2eRunning && !isScanning -> "Testing tunnel connections"
             isE2eRunning -> "Scanning & testing resolvers"
             else -> "Scanning DNS resolvers"
         }
-        val text = if (totalCount > 0) {
-            "$scannedCount / $totalCount checked  \u2022  $workingCount working"
-        } else {
-            "Starting scan\u2026"
+        val text = when {
+            isE2eRunning && !isScanning && e2eTotalCount > 0 ->
+                "$e2eTestedCount / $e2eTotalCount tested  \u2022  $e2ePassedCount passed"
+            totalCount > 0 ->
+                "$scannedCount / $totalCount checked  \u2022  $workingCount working"
+            else -> "Starting scan\u2026"
         }
 
         return NotificationCompat.Builder(context, SlipNetApp.CHANNEL_SCAN_STATUS)

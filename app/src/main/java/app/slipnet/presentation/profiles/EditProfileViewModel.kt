@@ -8,7 +8,6 @@ import androidx.lifecycle.viewModelScope
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
-import app.slipnet.domain.model.ResolverBalancingMode
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.ConnectionState
@@ -157,8 +156,6 @@ data class EditProfileUiState(
     // SOCKS5 proxy fields
     val socks5ServerPort: String = "1080",
     val socks5ServerPortError: String? = null,
-    // Resolver balancing mode
-    val resolverBalancingMode: ResolverBalancingMode = ResolverBalancingMode.FANOUT,
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NOIZDNS_SSH
@@ -307,7 +304,6 @@ class EditProfileViewModel @Inject constructor(
                     dnsttAuthoritative = profile.dnsttAuthoritative,
                     noizdnsStealth = profile.noizdnsStealth,
                     dnsPayloadSize = profile.dnsPayloadSize,
-                    resolverBalancingMode = profile.resolverBalancingMode,
                     naivePort = profile.naivePort.toString(),
                     naiveUsername = profile.naiveUsername,
                     naivePassword = profile.naivePassword,
@@ -374,10 +370,6 @@ class EditProfileViewModel @Inject constructor(
 
     fun updateDnsPayloadSize(size: Int) {
         _uiState.value = _uiState.value.copy(dnsPayloadSize = size)
-    }
-
-    fun updateResolverBalancingMode(mode: ResolverBalancingMode) {
-        _uiState.value = _uiState.value.copy(resolverBalancingMode = mode)
     }
 
     fun updateKeepAliveInterval(interval: String) {
@@ -1206,7 +1198,6 @@ class EditProfileViewModel @Inject constructor(
                     dnsttAuthoritative = if (state.isDnsttOrNoizBased) state.dnsttAuthoritative else false,
                     noizdnsStealth = if (state.isNoizdnsBased) state.noizdnsStealth else false,
                     dnsPayloadSize = if (state.isDnsttOrNoizBased) state.dnsPayloadSize else 0,
-                    resolverBalancingMode = if (state.isNoizdnsBased) state.resolverBalancingMode else ResolverBalancingMode.FANOUT,
                     naivePort = if (state.isNaiveBased) (state.naivePort.toIntOrNull() ?: 443) else 443,
                     naiveUsername = if (state.isNaiveBased) state.naiveUsername.trim() else "",
                     naivePassword = if (state.isNaiveBased) state.naivePassword else "",

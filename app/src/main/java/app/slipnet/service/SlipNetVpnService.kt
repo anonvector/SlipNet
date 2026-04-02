@@ -1561,12 +1561,6 @@ class SlipNetVpnService : VpnService() {
             return
         }
 
-        // Set extra tunnel ports for parallel mode (round-robin in DnsttSocksBridge)
-        val allPorts = DnsttBridge.getAllPorts()
-        if (allPorts.size > 1) {
-            DnsttSocksBridge.setExtraPorts(allPorts.drop(1))
-        }
-
         // Step 4.5: Verify bridge is listening
         if (!waitForProxyReady(proxyPort, maxAttempts = 20, delayMs = 100)) {
             Log.e(TAG, "DnsttSocksBridge failed to become ready on port $proxyPort")
@@ -4037,13 +4031,15 @@ class SlipNetVpnService : VpnService() {
                 SshTunnelBridge.stop()
             }
             TunnelType.DNSTT_SSH -> {
-                Log.d(TAG, "Stopping DNSTT+SSH: SSH first, then DNSTT")
+                Log.d(TAG, "Stopping DNSTT+SSH: SSH first, then bridge, then DNSTT")
                 SshTunnelBridge.stop()
+                DnsttSocksBridge.stop()
                 DnsttBridge.stopClient()
             }
             TunnelType.NOIZDNS_SSH -> {
-                Log.d(TAG, "Stopping NoizDNS+SSH: SSH first, then NoizDNS")
+                Log.d(TAG, "Stopping NoizDNS+SSH: SSH first, then bridge, then NoizDNS")
                 SshTunnelBridge.stop()
+                DnsttSocksBridge.stop()
                 DnsttBridge.stopClient()
             }
             TunnelType.DOH -> {

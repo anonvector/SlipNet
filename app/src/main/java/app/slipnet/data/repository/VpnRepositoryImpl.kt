@@ -8,7 +8,6 @@ import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
-import app.slipnet.domain.model.ResolverBalancingMode
 import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.repository.VpnRepository
 import app.slipnet.tunnel.DnsDoHProxy
@@ -160,6 +159,8 @@ class VpnRepositoryImpl @Inject constructor(
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
+        // Format DNS server address based on transport type.
+        // Resolve domain names to IPs — Go on Android cannot resolve hostnames.
         val dnsServer = formatDnsServerAddress(profile, resolverOverride)
 
         val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
@@ -206,6 +207,7 @@ class VpnRepositoryImpl @Inject constructor(
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
+        // Resolve domain names to IPs — Go on Android cannot resolve hostnames.
         val dnsServer = formatDnsServerAddress(profile, resolverOverride)
 
         val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
@@ -229,24 +231,6 @@ class VpnRepositoryImpl @Inject constructor(
         if (result.isSuccess) {
             Log.i(TAG, "NoizDNS SOCKS5 proxy started successfully")
             currentTunnelType = TunnelType.NOIZDNS
-
-            // Start parallel tunnel clients if enabled
-            if (profile.resolverBalancingMode == ResolverBalancingMode.PARALLEL) {
-                val actualPort = DnsttBridge.getClientPort()
-                DnsttBridge.startExtraClients(
-                    count = 3,
-                    basePort = actualPort,
-                    dnsServer = dnsServer,
-                    tunnelDomain = profile.domain,
-                    publicKey = profile.dnsttPublicKey,
-                    listenHost = proxyHost,
-                    authoritativeMode = profile.dnsttAuthoritative,
-                    noizMode = true,
-                    stealthMode = profile.noizdnsStealth,
-                    maxPayload = profile.dnsPayloadSize
-                )
-            }
-
             Result.success(Unit)
         } else {
             val error = result.exceptionOrNull()?.message ?: "Failed to start NoizDNS proxy"
@@ -260,7 +244,6 @@ class VpnRepositoryImpl @Inject constructor(
      * Start the DoH SOCKS5 proxy. Call this AFTER establishing the VPN interface.
      * DNS queries are encrypted via HTTPS; all other traffic flows directly.
      */
-
     /**
      * Format the DNS server address string for the Go bridge, resolving any
      * domain names to numeric IPs (Go on Android cannot resolve hostnames).

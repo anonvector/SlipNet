@@ -74,7 +74,11 @@ class ScanService : Service() {
                 notificationManager.notify(
                     NotificationHelper.SCAN_NOTIFICATION_ID,
                     notificationHelper.createScanNotification(
-                        s.scannedCount, s.totalCount, s.workingCount, s.isE2eRunning
+                        scannedCount = s.scannedCount, totalCount = s.totalCount,
+                        workingCount = s.workingCount, isE2eRunning = s.isE2eRunning,
+                        isScanning = s.isScanning,
+                        e2eTestedCount = s.e2eTestedCount, e2eTotalCount = s.e2eTotalCount,
+                        e2ePassedCount = s.e2ePassedCount
                     )
                 )
             }

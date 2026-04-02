@@ -85,6 +85,8 @@ class PreferencesDataStore @Inject constructor(
         val GLOBAL_RESOLVER_LIST = stringPreferencesKey("global_resolver_list")
         // DNS Leak Prevention
         val PREVENT_DNS_FALLBACK = booleanPreferencesKey("prevent_dns_fallback")
+        // Notification Traffic Counter
+        val SHOW_NOTIFICATION_TRAFFIC = booleanPreferencesKey("show_notification_traffic")
         // DNS Worker Mode
         val DNS_WORKER_MODE = stringPreferencesKey("dns_worker_mode")
         // Remote DNS Keys
@@ -530,6 +532,17 @@ class PreferencesDataStore @Inject constructor(
     suspend fun setAutoReconnect(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[Keys.AUTO_RECONNECT] = enabled
+        }
+    }
+
+    // Notification Traffic Counter
+    val showNotificationTraffic: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.SHOW_NOTIFICATION_TRAFFIC] ?: true
+    }
+
+    suspend fun setShowNotificationTraffic(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SHOW_NOTIFICATION_TRAFFIC] = enabled
         }
     }
 

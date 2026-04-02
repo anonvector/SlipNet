@@ -145,8 +145,5 @@ data class ProfileEntity(
     val socks5ServerPort: Int = 1080,
 
     @ColumnInfo(name = "is_pinned", defaultValue = "0")
-    val isPinned: Boolean = false,
-
-    @ColumnInfo(name = "resolver_balancing_mode", defaultValue = "fanout")
-    val resolverBalancingMode: String = "fanout"
+    val isPinned: Boolean = false
 )
