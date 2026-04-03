@@ -19,3 +19,6 @@
 [submodule "vaydns"]
 	path = vaydns
 	url = https://github.com/net2share/vaydns.git
+[submodule "vaydns-mobile"]
+	path = vaydns-mobile
+	url = https://github.com/anonvector/vaydns-mobile.git
