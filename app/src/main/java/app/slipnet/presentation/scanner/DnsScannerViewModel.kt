@@ -25,6 +25,7 @@ import app.slipnet.domain.repository.ProfileRepository
 import app.slipnet.domain.repository.ResolverScannerRepository
 import app.slipnet.domain.repository.VpnRepository
 import app.slipnet.tunnel.DnsttBridge
+import app.slipnet.tunnel.VaydnsBridge
 import app.slipnet.tunnel.DomainRouter
 import app.slipnet.tunnel.GeoBypassCountry
 import app.slipnet.tunnel.SlipstreamBridge
@@ -112,7 +113,8 @@ data class DnsScannerUiState(
         private val E2E_SUPPORTED_TUNNEL_TYPES = setOf(
             TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH,
             TunnelType.DNSTT, TunnelType.DNSTT_SSH,
-            TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH
+            TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
+            TunnelType.VAYDNS, TunnelType.VAYDNS_SSH
         )
         // Reserved for tunnel types where DNS tunnel compatibility scores are irrelevant.
         // Currently empty — all supported tunnel types use DNS encoding.
@@ -2812,6 +2814,7 @@ class DnsScannerViewModel @Inject constructor(
                     }
                     ScanStateHolder.update { it.copy(isE2eRunning = false) }
                     cleanupBridge()
+                    saveScanSessionToStore()
                     releaseWakeLock()
                 }
             )
@@ -2849,6 +2852,9 @@ class DnsScannerViewModel @Inject constructor(
                     TunnelType.DNSTT, TunnelType.DNSTT_SSH,
                     TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH -> {
                         DnsttBridge.stopClient()
+                    }
+                    TunnelType.VAYDNS, TunnelType.VAYDNS_SSH -> {
+                        VaydnsBridge.stopClient()
                     }
                     else -> {}
                 }
@@ -2897,12 +2903,13 @@ class DnsScannerViewModel @Inject constructor(
         val ss = state.scannerState
         val isSimple = state.scanMode == ScanMode.SIMPLE
 
-        // In simple mode, save whenever there's any scanned progress
-        // In advanced mode, save only if DNS scan is partial
-        val shouldSave = if (isSimple) {
+        // Save whenever there's scanned progress. In advanced mode, also save
+        // completed scans if they have E2E results (prism + E2E flow).
+        val hasE2eData = ss.results.any { it.e2eTestResult != null }
+        val shouldSave = if (isSimple || state.scanMode == ScanMode.PRISM) {
             ss.scannedCount > 0
         } else {
-            ss.scannedCount > 0 && ss.scannedCount < ss.totalCount + ss.focusRangeCount
+            ss.scannedCount > 0 && (hasE2eData || ss.scannedCount < ss.totalCount + ss.focusRangeCount)
         }
 
         if (shouldSave) {

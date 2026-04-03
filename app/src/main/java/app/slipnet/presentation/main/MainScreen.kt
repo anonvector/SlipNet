@@ -51,6 +51,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Link
@@ -803,6 +804,15 @@ fun MainScreen(
                         }
                     )
                     AddMenuOption(
+                        icon = Icons.Default.Air,
+                        title = "VayDNS",
+                        description = "Lean DNS tunnel (KCP + Noise)",
+                        onClick = {
+                            showAddMenu = false
+                            onNavigateToAddProfile(TunnelType.VAYDNS.value)
+                        }
+                    )
+                    AddMenuOption(
                         icon = Icons.Default.Waves,
                         title = "Slipstream",
                         description = "DNS tunnel (QUIC)",
@@ -904,6 +914,7 @@ fun MainScreen(
                     Text("• Slipstream / Slipstream + SSH")
                     Text("• DNSTT / DNSTT + SSH")
                     Text("• NoizDNS / NoizDNS + SSH")
+                    Text("• VayDNS / VayDNS + SSH")
                     Text("• SSH")
                     Text("• DOH (DNS over HTTPS)")
                     Text("Not included (full version only):", fontWeight = FontWeight.Bold)
@@ -1178,7 +1189,7 @@ fun MainScreen(
                             profile.tunnelType in listOf(
                                 TunnelType.SSH, TunnelType.DNSTT_SSH,
                                 TunnelType.SLIPSTREAM_SSH, TunnelType.NOIZDNS_SSH,
-                                TunnelType.NAIVE_SSH
+                                TunnelType.VAYDNS_SSH, TunnelType.NAIVE_SSH
                             )
                         ) {
                             Card(

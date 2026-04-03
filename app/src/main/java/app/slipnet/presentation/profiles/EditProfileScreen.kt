@@ -45,6 +45,8 @@ import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.filled.Warning
@@ -68,9 +70,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -167,7 +171,7 @@ fun EditProfileScreen(
                 },
                 actions = {
                     val lockedCanEditDns = uiState.isLocked &&
-                            (uiState.isDnsttOrNoizBased || uiState.isSlipstreamBased)
+                            (uiState.isDnsttOrNoizOrVaydnsBased || uiState.isSlipstreamBased)
                     if (!uiState.isLocked || lockedCanEditDns) {
                         if (uiState.isSaving) {
                             CircularProgressIndicator(
@@ -278,7 +282,7 @@ fun EditProfileScreen(
                 }
 
                 // DNS settings card
-                if (uiState.isDnsttOrNoizBased || uiState.isSlipstreamBased) {
+                if (uiState.isDnsttOrNoizOrVaydnsBased || uiState.isSlipstreamBased) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
@@ -314,7 +318,7 @@ fun EditProfileScreen(
                             )
 
                             // DNS Transport selector (DNSTT-based profiles only)
-                            if (uiState.isDnsttOrNoizBased) {
+                            if (uiState.isDnsttOrNoizOrVaydnsBased) {
                                 Text(
                                     text = "Transport",
                                     style = MaterialTheme.typography.labelLarge,
@@ -350,7 +354,7 @@ fun EditProfileScreen(
                             }
 
                             // DoH URL for DNSTT with DoH transport
-                            if (uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH) {
+                            if (uiState.isDnsttOrNoizOrVaydnsBased && uiState.dnsTransport == DnsTransport.DOH) {
                                 DohServerSelector(
                                     dohUrl = uiState.dohUrl,
                                     dohUrlError = uiState.dohUrlError,
@@ -363,7 +367,7 @@ fun EditProfileScreen(
                             }
 
                             // Resolver field (not shown when DNSTT with DoH transport)
-                            if (!(uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH)) {
+                            if (!(uiState.isDnsttOrNoizOrVaydnsBased && uiState.dnsTransport == DnsTransport.DOH)) {
                                 if (globalResolverEnabled) {
                                     Card(
                                         colors = CardDefaults.cardColors(
@@ -401,7 +405,7 @@ fun EditProfileScreen(
                                         )
                                     }
                                     if (uiState.useCustomResolver) {
-                                        val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
+                                        val isDoT = uiState.isDnsttOrNoizOrVaydnsBased && uiState.dnsTransport == DnsTransport.DOT
                                         OutlinedTextField(
                                             value = uiState.resolvers,
                                             onValueChange = { viewModel.updateResolvers(it) },
@@ -428,7 +432,7 @@ fun EditProfileScreen(
                                         }
                                     }
                                 } else {
-                                    val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
+                                    val isDoT = uiState.isDnsttOrNoizOrVaydnsBased && uiState.dnsTransport == DnsTransport.DOT
                                     OutlinedTextField(
                                         value = uiState.resolvers,
                                         onValueChange = { viewModel.updateResolvers(it) },
@@ -477,7 +481,7 @@ fun EditProfileScreen(
                             }
 
                             // DNS Query Size (locked profiles)
-                            if (uiState.isDnsttOrNoizBased) {
+                            if (uiState.isDnsttOrNoizOrVaydnsBased) {
                                 var showMtuDialogLocked by remember { mutableStateOf(false) }
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                 Row(
@@ -502,7 +506,7 @@ fun EditProfileScreen(
                                         )
                                     }
                                     Icon(
-                                        Icons.Default.KeyboardArrowRight,
+                                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -758,7 +762,7 @@ fun EditProfileScreen(
                         placeholder = {
                             Text(
                                 when {
-                                    uiState.isDnsttOrNoizBased -> "t.example.com"
+                                    uiState.isDnsttOrNoizOrVaydnsBased -> "t.example.com"
                                     uiState.isSshOnly -> "ssh.example.com"
                                     uiState.isNaiveBased -> "proxy.example.com"
                                     else -> "vpn.example.com"
@@ -770,6 +774,7 @@ fun EditProfileScreen(
                             Text(
                                 uiState.domainError ?: when {
                                     uiState.isNoizdnsBased -> "NoizDNS tunnel domain"
+                                    uiState.isVaydnsBased -> "VayDNS tunnel domain"
                                     uiState.isDnsttBased -> "DNSTT tunnel domain"
                                     uiState.isSlipstreamBased -> "Slipstream tunnel domain"
                                     uiState.isNaiveBased -> "Caddy server hostname"
@@ -921,7 +926,7 @@ fun EditProfileScreen(
                 }
 
                 // DNSTT Public Key
-                if (uiState.isDnsttOrNoizBased) {
+                if (uiState.isDnsttOrNoizOrVaydnsBased) {
                     OutlinedTextField(
                         value = uiState.dnsttPublicKey,
                         onValueChange = { viewModel.updateDnsttPublicKey(it) },
@@ -937,7 +942,7 @@ fun EditProfileScreen(
                 }
 
                 // DNS Transport selector (DNSTT-based profiles only)
-                if (uiState.isDnsttOrNoizBased) {
+                if (uiState.isDnsttOrNoizOrVaydnsBased) {
                     Text(
                         text = "DNS Transport",
                         style = MaterialTheme.typography.titleMedium,
@@ -968,7 +973,7 @@ fun EditProfileScreen(
                     }
                 }
 
-                // Authoritative Mode toggle (DNSTT-based profiles only)
+                // Authoritative Mode toggle (DNSTT/NoizDNS only — VayDNS has no authoritative mode)
                 if (uiState.isDnsttOrNoizBased) {
                     Row(
                         modifier = Modifier
@@ -1003,7 +1008,161 @@ fun EditProfileScreen(
                     }
                 }
 
-                // DNS MTU selector (DNSTT/NoizDNS)
+                // VayDNS-specific settings
+                if (uiState.isVaydnsBased) {
+                    // Response Record Type selector
+                    Text(
+                        text = "Response Record Type",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    Text(
+                        text = "Must match the server configuration. Try CNAME or A if TXT is blocked.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("txt", "cname", "a", "aaaa", "mx", "ns", "srv").forEach { type ->
+                            if (uiState.vaydnsRecordType == type) {
+                                Button(onClick = { }) {
+                                    Text(type.uppercase())
+                                }
+                            } else {
+                                OutlinedButton(onClick = { viewModel.updateVaydnsRecordType(type) }) {
+                                    Text(type.uppercase())
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // VayDNS: QNAME length slider (controls query size on the wire)
+                if (uiState.isVaydnsBased) {
+                    var showQnameDialog by remember { mutableStateOf(false) }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showQnameDialog = true }
+                            .padding(vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Query Length",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "${uiState.vaydnsMaxQnameLen} bytes" + when {
+                                    uiState.vaydnsMaxQnameLen <= 80 -> " — stealthy"
+                                    uiState.vaydnsMaxQnameLen <= 120 -> " — balanced"
+                                    uiState.vaydnsMaxQnameLen <= 180 -> " — fast"
+                                    else -> " — maximum"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Icon(
+                            Icons.Default.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    if (showQnameDialog) {
+                        val minQname = 60
+                        val maxQname = 253
+                        var sliderValue by remember {
+                            mutableStateOf(uiState.vaydnsMaxQnameLen.toFloat().coerceIn(minQname.toFloat(), maxQname.toFloat()))
+                        }
+                        AlertDialog(
+                            onDismissRequest = { showQnameDialog = false },
+                            title = { Text("Query Length") },
+                            text = {
+                                Column {
+                                    Text(
+                                        text = "Controls the size of each DNS query on the wire. Shorter queries blend in with normal traffic but carry less data.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(bottom = 12.dp)
+                                    )
+                                    Text(
+                                        text = "${sliderValue.toInt()} bytes",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 4.dp),
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Slider(
+                                        value = sliderValue,
+                                        onValueChange = { sliderValue = it },
+                                        valueRange = minQname.toFloat()..maxQname.toFloat(),
+                                        steps = (maxQname - minQname) / 10 - 1,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("60\nStealthy", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                                        Text("101\nDefault", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                                        Text("253\nFastest", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        viewModel.updateVaydnsMaxQnameLen(sliderValue.toInt())
+                                        showQnameDialog = false
+                                    }
+                                ) {
+                                    Text("Apply")
+                                }
+                            },
+                            dismissButton = {
+                                Row {
+                                    if (sliderValue.toInt() != 101) {
+                                        TextButton(onClick = {
+                                            sliderValue = 101f
+                                            viewModel.updateVaydnsMaxQnameLen(101)
+                                            showQnameDialog = false
+                                        }) {
+                                            Text("Reset")
+                                        }
+                                    }
+                                    TextButton(onClick = { showQnameDialog = false }) {
+                                        Text("Cancel")
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+
+                // VayDNS: Query rate limit
+                if (uiState.isVaydnsBased) {
+                    OutlinedTextField(
+                        value = uiState.vaydnsRps,
+                        onValueChange = { viewModel.updateVaydnsRps(it.filter { c -> c.isDigit() || c == '.' }.take(6)) },
+                        label = { Text("Query Rate Limit (q/s)") },
+                        supportingText = { Text("Max DNS queries per second. 0 = unlimited.") },
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true
+                    )
+                }
+
+                // DNS MTU selector (DNSTT/NoizDNS only)
                 if (uiState.isDnsttOrNoizBased) {
                     var showMtuDialog by remember { mutableStateOf(false) }
                     Row(
@@ -1035,106 +1194,107 @@ fun EditProfileScreen(
                     }
 
                     if (showMtuDialog) {
-                        val mtuPresets = listOf(
-                            0 to "Full capacity — fastest, largest queries",
-                            100 to "Large — good balance",
-                            80 to "Medium — less conspicuous",
-                            60 to "Small — stealthier, slower",
-                            50 to "Minimum — most stealthy, slowest"
-                        )
-                        val isCustom = mtuPresets.none { it.first == uiState.dnsPayloadSize }
-                        var customMtuText by remember { mutableStateOf(if (isCustom) uiState.dnsPayloadSize.toString() else "") }
-                        var useCustom by remember { mutableStateOf(isCustom) }
-                        AlertDialog(
-                            onDismissRequest = { showMtuDialog = false },
-                            title = { Text("DNS Query Size") },
-                            text = {
-                                Column {
-                                    Text(
-                                        text = "Bytes of data per DNS query. Smaller values produce shorter, less suspicious queries at the cost of speed.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(bottom = 12.dp)
-                                    )
-                                    mtuPresets.forEach { (size, desc) ->
+                            // DNSTT/NoizDNS: preset list
+                            val mtuPresets = listOf(
+                                0 to "Full capacity — fastest, largest queries",
+                                100 to "Large — good balance",
+                                80 to "Medium — less conspicuous",
+                                60 to "Small — stealthier, slower",
+                                50 to "Minimum — most stealthy, slowest"
+                            )
+                            val isCustom = mtuPresets.none { it.first == uiState.dnsPayloadSize }
+                            var customMtuText by remember { mutableStateOf(if (isCustom) uiState.dnsPayloadSize.toString() else "") }
+                            var useCustom by remember { mutableStateOf(isCustom) }
+                            AlertDialog(
+                                onDismissRequest = { showMtuDialog = false },
+                                title = { Text("DNS Query Size") },
+                                text = {
+                                    Column {
+                                        Text(
+                                            text = "Bytes of data per DNS query. Smaller values produce shorter, less suspicious queries at the cost of speed.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(bottom = 12.dp)
+                                        )
+                                        mtuPresets.forEach { (size, desc) ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        useCustom = false
+                                                        viewModel.updateDnsPayloadSize(size)
+                                                        showMtuDialog = false
+                                                    }
+                                                    .padding(vertical = 10.dp, horizontal = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                RadioButton(
+                                                    selected = !useCustom && uiState.dnsPayloadSize == size,
+                                                    onClick = {
+                                                        useCustom = false
+                                                        viewModel.updateDnsPayloadSize(size)
+                                                        showMtuDialog = false
+                                                    }
+                                                )
+                                                Column(modifier = Modifier.padding(start = 8.dp)) {
+                                                    Text(text = if (size == 0) "Full" else "$size")
+                                                    Text(
+                                                        text = desc,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                        }
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .clip(RoundedCornerShape(8.dp))
-                                                .clickable {
-                                                    useCustom = false
-                                                    viewModel.updateDnsPayloadSize(size)
-                                                    showMtuDialog = false
-                                                }
+                                                .clickable { useCustom = true }
                                                 .padding(vertical = 10.dp, horizontal = 8.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             RadioButton(
-                                                selected = !useCustom && uiState.dnsPayloadSize == size,
-                                                onClick = {
-                                                    useCustom = false
-                                                    viewModel.updateDnsPayloadSize(size)
+                                                selected = useCustom,
+                                                onClick = { useCustom = true }
+                                            )
+                                            OutlinedTextField(
+                                                value = customMtuText,
+                                                onValueChange = { customMtuText = it.filter { c -> c.isDigit() }.take(3) },
+                                                enabled = useCustom,
+                                                label = { Text("Custom") },
+                                                placeholder = { Text("50–120") },
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                singleLine = true,
+                                                modifier = Modifier
+                                                    .padding(start = 8.dp)
+                                                    .fillMaxWidth()
+                                            )
+                                        }
+                                    }
+                                },
+                                confirmButton = {
+                                    if (useCustom) {
+                                        TextButton(
+                                            onClick = {
+                                                val value = customMtuText.toIntOrNull()
+                                                if (value != null && value in 50..120) {
+                                                    viewModel.updateDnsPayloadSize(value)
                                                     showMtuDialog = false
                                                 }
-                                            )
-                                            Column(modifier = Modifier.padding(start = 8.dp)) {
-                                                Text(text = if (size == 0) "Full" else "$size")
-                                                Text(
-                                                    text = desc,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
                                             }
+                                        ) {
+                                            Text("Apply")
                                         }
                                     }
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .clickable { useCustom = true }
-                                            .padding(vertical = 10.dp, horizontal = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        RadioButton(
-                                            selected = useCustom,
-                                            onClick = { useCustom = true }
-                                        )
-                                        OutlinedTextField(
-                                            value = customMtuText,
-                                            onValueChange = { customMtuText = it.filter { c -> c.isDigit() }.take(3) },
-                                            enabled = useCustom,
-                                            label = { Text("Custom") },
-                                            placeholder = { Text("50–120") },
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                            singleLine = true,
-                                            modifier = Modifier
-                                                .padding(start = 8.dp)
-                                                .fillMaxWidth()
-                                        )
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showMtuDialog = false }) {
+                                        Text("Cancel")
                                     }
                                 }
-                            },
-                            confirmButton = {
-                                if (useCustom) {
-                                    TextButton(
-                                        onClick = {
-                                            val value = customMtuText.toIntOrNull()
-                                            if (value != null && value in 50..120) {
-                                                viewModel.updateDnsPayloadSize(value)
-                                                showMtuDialog = false
-                                            }
-                                        }
-                                    ) {
-                                        Text("Apply")
-                                    }
-                                }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showMtuDialog = false }) {
-                                    Text("Cancel")
-                                }
-                            }
-                        )
+                            )
                     }
                 }
 
@@ -1175,7 +1335,7 @@ fun EditProfileScreen(
                 }
 
                 // DoH URL for DNSTT with DoH transport
-                if (uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH) {
+                if (uiState.isDnsttOrNoizOrVaydnsBased && uiState.dnsTransport == DnsTransport.DOH) {
                     DohServerSelector(
                         dohUrl = uiState.dohUrl,
                         dohUrlError = uiState.dohUrlError,
@@ -1189,7 +1349,7 @@ fun EditProfileScreen(
 
                 // Resolvers (not shown for SSH-only, DOH, SOCKS5, or DNSTT with DoH transport)
                 val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake && !uiState.isNaiveBased &&
-                        !uiState.isSocks5 && !(uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOH)
+                        !uiState.isSocks5 && !(uiState.isDnsttOrNoizOrVaydnsBased && uiState.dnsTransport == DnsTransport.DOH)
                 if (showResolvers) {
                     if (globalResolverEnabled) {
                         Card(
@@ -1228,7 +1388,7 @@ fun EditProfileScreen(
                             )
                         }
                         if (uiState.useCustomResolver) {
-                            val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
+                            val isDoT = uiState.isDnsttOrNoizOrVaydnsBased && uiState.dnsTransport == DnsTransport.DOT
                             OutlinedTextField(
                                 value = uiState.resolvers,
                                 onValueChange = { viewModel.updateResolvers(it) },
@@ -1254,7 +1414,7 @@ fun EditProfileScreen(
                             }
                         }
                     } else {
-                        val isDoT = uiState.isDnsttOrNoizBased && uiState.dnsTransport == DnsTransport.DOT
+                        val isDoT = uiState.isDnsttOrNoizOrVaydnsBased && uiState.dnsTransport == DnsTransport.DOT
                         OutlinedTextField(
                             value = uiState.resolvers,
                             onValueChange = { viewModel.updateResolvers(it) },
