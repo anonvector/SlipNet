@@ -16,3 +16,6 @@
 [submodule "noizdns"]
 	path = noizdns
 	url = https://github.com/anonvector/noizdns.git
+[submodule "vaydns"]
+	path = vaydns
+	url = https://github.com/net2share/vaydns.git

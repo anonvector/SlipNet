@@ -181,7 +181,40 @@ class VpnConnectionManager @Inject constructor(
 
     fun onVpnError(error: String) {
         scope.launch {
-            _connectionState.value = ConnectionState.Error(error)
+            _connectionState.value = ConnectionState.Error(friendlyError(error))
+        }
+    }
+
+    private fun friendlyError(raw: String): String {
+        // Map raw Java/Go exception messages to user-friendly text
+        val lower = raw.lowercase()
+        return when {
+            // Timeouts (Java + Go)
+            lower.contains("i/o timeout") || lower.contains("dial tcp") && lower.contains("timeout") ->
+                "DNS tunnel timed out — server may be unreachable or blocked"
+            lower.contains("context deadline exceeded") ->
+                "Connection timed out — server took too long to respond"
+            lower.contains("sockettimeoutexception") || lower.contains("read timed out") || lower.contains("connect timed out") ->
+                "Connection timed out — server may be unreachable or blocked"
+            // Connection errors
+            lower.contains("connectionexception") || lower.contains("connection refused") ->
+                "Connection refused — server may be down"
+            lower.contains("unknownhostexception") || lower.contains("unable to resolve host") || lower.contains("no such host") ->
+                "DNS lookup failed — check your internet connection"
+            lower.contains("network is unreachable") || lower.contains("networkunreachable") || lower.contains("no route to host") ->
+                "Network unreachable — check your internet connection"
+            // TLS/SSL
+            lower.contains("sslexception") || lower.contains("ssl handshake") || lower.contains("tls handshake") ->
+                "Secure connection failed — TLS handshake error"
+            // Resets & broken pipes
+            lower.contains("econnreset") || lower.contains("connection reset") ->
+                "Connection was reset — the server closed the connection"
+            lower.contains("broken pipe") || lower.contains("eof") && lower.contains("unexpected") ->
+                "Connection lost — the tunnel was interrupted"
+            // Permission
+            lower.contains("permission denied") ->
+                "Permission denied — check VPN permissions"
+            else -> raw
         }
     }
 
