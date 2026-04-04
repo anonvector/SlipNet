@@ -656,6 +656,7 @@ class MainViewModel @Inject constructor(
         private val E2E_TUNNEL_TYPES = setOf(
             TunnelType.DNSTT, TunnelType.DNSTT_SSH,
             TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
+            TunnelType.VAYDNS, TunnelType.VAYDNS_SSH,
             TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
         )
         private const val E2E_TEST_URL = "http://www.gstatic.com/generate_204"

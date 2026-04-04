@@ -73,6 +73,15 @@ class ProfileMapper @Inject constructor(
             resolversHidden = entity.resolversHidden,
             defaultResolvers = defaultResolvers,
             socks5ServerPort = entity.socks5ServerPort,
+            vaydnsDnsttCompat = entity.vaydnsDnsttCompat,
+            vaydnsRecordType = entity.vaydnsRecordType,
+            vaydnsMaxQnameLen = entity.vaydnsMaxQnameLen,
+            vaydnsRps = entity.vaydnsRps,
+            vaydnsIdleTimeout = entity.vaydnsIdleTimeout,
+            vaydnsKeepalive = entity.vaydnsKeepalive,
+            vaydnsUdpTimeout = entity.vaydnsUdpTimeout,
+            vaydnsMaxNumLabels = entity.vaydnsMaxNumLabels,
+            vaydnsClientIdSize = entity.vaydnsClientIdSize,
             isPinned = entity.isPinned
         )
     }
@@ -127,6 +136,15 @@ class ProfileMapper @Inject constructor(
             resolversHidden = profile.resolversHidden,
             defaultResolversJson = defaultResolversJson,
             socks5ServerPort = profile.socks5ServerPort,
+            vaydnsDnsttCompat = profile.vaydnsDnsttCompat,
+            vaydnsRecordType = profile.vaydnsRecordType,
+            vaydnsMaxQnameLen = profile.vaydnsMaxQnameLen,
+            vaydnsRps = profile.vaydnsRps,
+            vaydnsIdleTimeout = profile.vaydnsIdleTimeout,
+            vaydnsKeepalive = profile.vaydnsKeepalive,
+            vaydnsUdpTimeout = profile.vaydnsUdpTimeout,
+            vaydnsMaxNumLabels = profile.vaydnsMaxNumLabels,
+            vaydnsClientIdSize = profile.vaydnsClientIdSize,
             isPinned = profile.isPinned
         )
     }

@@ -64,6 +64,10 @@ object DnsttSocksBridge {
     // Tried before DoH (which bypasses the tunnel entirely).
     private const val LOCALHOST_DNS_HOST = "127.0.0.53"
 
+    /** Check if the upstream tunnel (DNSTT/NoizDNS/VayDNS) is still running.
+     *  Defaults to DnsttBridge; override when using a different bridge. */
+    var upstreamRunningCheck: () -> Boolean = { DnsttBridge.isRunning() }
+
     private var dnsttHost: String = "127.0.0.1"
     private var dnsttPort: Int = 0
     private var socksUsername: String? = null
@@ -620,8 +624,8 @@ object DnsttSocksBridge {
      * Phase 4: DoH fallback if all TCP methods fail.
      */
     private fun forwardDnsPooled(payload: ByteArray): ByteArray? {
-        // Fail fast if DNSTT tunnel is dead
-        if (!DnsttBridge.isRunning()) return null
+        // Fail fast if upstream tunnel is dead
+        if (!upstreamRunningCheck()) return null
         // Circuit breaker: skip if tunnel is overwhelmed
         if (isCircuitOpen()) { notifyPoolDeadIfNeeded(); return null }
 
@@ -886,9 +890,9 @@ object DnsttSocksBridge {
         clientInput: InputStream,
         clientOutput: OutputStream
     ) {
-        // Fail fast if DNSTT tunnel is dead — avoids 10s connect timeout per request
-        if (!DnsttBridge.isRunning()) {
-            logd("CONNECT: DNSTT not running, rejecting $destHost:$destPort")
+        // Fail fast if upstream tunnel is dead — avoids 10s connect timeout per request
+        if (!upstreamRunningCheck()) {
+            logd("CONNECT: upstream tunnel not running, rejecting $destHost:$destPort")
             clientOutput.write(byteArrayOf(0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
             clientOutput.flush()
             return

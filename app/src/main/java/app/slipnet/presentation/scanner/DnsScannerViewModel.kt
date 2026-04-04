@@ -432,6 +432,8 @@ class DnsScannerViewModel @Inject constructor(
     private val gson = Gson()
     @Volatile private var lastPeriodicSaveMs = 0L
     private val periodicSaveIntervalMs = 30_000L
+    /** Set by the UI when user presses back — tells onCleared to stop scans. */
+    @Volatile private var userNavigatedBack = false
 
     // Wake lock to keep CPU alive during scanning when app is backgrounded
     private var wakeLock: PowerManager.WakeLock? = null
@@ -708,6 +710,14 @@ class DnsScannerViewModel @Inject constructor(
             // Load persisted scanner settings first (timeout, concurrency, etc.)
             // so they serve as defaults. A restored session will override them.
             loadScannerSettings()
+
+            // If results were already restored from ScanStateHolder (in-memory),
+            // don't overwrite with potentially stale DataStore data.
+            if (_uiState.value.scannerState.results.isNotEmpty()) {
+                loadProfileDomain()
+                return@launch
+            }
+
             try {
                 val json = preferencesDataStore.getSavedScanSession()
                     ?: try {
@@ -724,12 +734,14 @@ class DnsScannerViewModel @Inject constructor(
                     val session = gson.fromJson(json, SavedScanSession::class.java)
                     val savedMode = try { session.scanMode?.let { ScanMode.valueOf(it) } } catch (_: Exception) { null }
                     val isSimple = savedMode == ScanMode.SIMPLE
-                    // In simple mode, a completed DNS scan is still resumable (E2E may be partial)
+                    // In simple mode, a completed DNS scan is still resumable (E2E may be partial).
+                    // In advanced mode, also restore completed DNS scans that have E2E data.
+                    val hasE2eData = session.results.any { it.e2eSuccess != null }
                     val isResumable = if (isSimple) {
                         session != null && session.resolverList.isNotEmpty() && session.scannedCount > 0
                     } else {
                         session != null && session.resolverList.isNotEmpty() &&
-                            session.scannedCount > 0 && session.scannedCount < session.resolverList.size
+                            session.scannedCount > 0 && (session.scannedCount < session.resolverList.size || hasE2eData)
                     }
                     if (isResumable && session != null) {
                         // Restore the previous scan state.
@@ -803,11 +815,13 @@ class DnsScannerViewModel @Inject constructor(
     private fun saveScanSessionToStore() {
         val state = _uiState.value
         val scanState = state.scannerState
-        // In simple/prism mode, save whenever there's partial progress
+        // In simple/prism mode, save whenever there's partial progress.
+        // In advanced mode, also save completed scans that have E2E results.
         if (state.scanMode == ScanMode.SIMPLE || state.scanMode == ScanMode.PRISM) {
             if (scanState.scannedCount <= 0) return
         } else {
-            if (scanState.scannedCount <= 0 || scanState.scannedCount >= scanState.totalCount + scanState.focusRangeCount) return
+            val hasE2eData = scanState.results.any { it.e2eTestResult != null }
+            if (scanState.scannedCount <= 0 || (!hasE2eData && scanState.scannedCount >= scanState.totalCount + scanState.focusRangeCount)) return
         }
 
         // Capture values on Main, serialize and save on IO to avoid blocking UI
@@ -1912,10 +1926,16 @@ class DnsScannerViewModel @Inject constructor(
                 fun emitState(scanning: Boolean, force: Boolean = false) {
                     if (!force) {
                         val now = System.currentTimeMillis()
-                        if (now - lastEmitTimeMs < 150L) return
+                        if (now - lastEmitTimeMs < 500L) return
                         lastEmitTimeMs = now
                     }
                     _uiState.update { s ->
+                        val dnsResults = rebuildResultsList()
+                        // Preserve E2E data that onResult may have written
+                        val existingE2e = s.scannerState.results.associateBy({ it.host }, { it.e2eTestResult })
+                        val mergedResults = if (existingE2e.any { it.value != null }) {
+                            dnsResults.map { r -> existingE2e[r.host]?.let { r.copy(e2eTestResult = it) } ?: r }
+                        } else dnsResults
                         s.copy(
                             scannerState = ScannerState(
                                 isScanning = scanning,
@@ -1923,17 +1943,16 @@ class DnsScannerViewModel @Inject constructor(
                                 focusRangeCount = focusRangeQueue.size,
                                 scannedCount = scannedCount,
                                 workingCount = workingCount,
-                                results = rebuildResultsList()
+                                results = mergedResults
                             )
                         )
                     }
-                    val currentResults = rebuildResultsList()
                     ScanStateHolder.update { it.copy(
                         isScanning = scanning,
                         scannedCount = scannedCount,
                         totalCount = state.resolverList.size,
                         workingCount = workingCount,
-                        results = currentResults
+                        results = _uiState.value.scannerState.results
                     ) }
                     periodicSaveIfNeeded()
                 }
@@ -2070,11 +2089,17 @@ class DnsScannerViewModel @Inject constructor(
             fun emitState(scanning: Boolean, force: Boolean = false) {
                 if (!force) {
                     val now = System.currentTimeMillis()
-                    if (now - lastEmitTimeMs < 150L) return
+                    if (now - lastEmitTimeMs < 500L) return
                     lastEmitTimeMs = now
                 }
                 val currentResults = workingResults.toList()
                 _uiState.update { s ->
+                    // Preserve E2E data that onResult may have written between
+                    // the snapshot of workingResults and this CAS attempt.
+                    val existingE2e = s.scannerState.results.associateBy({ it.host }, { it.e2eTestResult })
+                    val mergedResults = if (existingE2e.any { it.value != null }) {
+                        currentResults.map { r -> existingE2e[r.host]?.let { r.copy(e2eTestResult = it) } ?: r }
+                    } else currentResults
                     s.copy(
                         scannerState = ScannerState(
                             isScanning = scanning,
@@ -2084,7 +2109,7 @@ class DnsScannerViewModel @Inject constructor(
                             workingCount = workingCount,
                             timeoutCount = timeoutCount,
                             errorCount = errorCount,
-                            results = currentResults
+                            results = mergedResults
                         )
                     )
                 }
@@ -2093,7 +2118,7 @@ class DnsScannerViewModel @Inject constructor(
                     scannedCount = scannedCount,
                     totalCount = allHosts.size,
                     workingCount = workingCount,
-                    results = currentResults
+                    results = _uiState.value.scannerState.results
                 ) }
                 periodicSaveIfNeeded()
             }
@@ -2209,11 +2234,16 @@ class DnsScannerViewModel @Inject constructor(
             fun emitState(scanning: Boolean, force: Boolean = false) {
                 if (!force) {
                     val now = System.currentTimeMillis()
-                    if (now - lastEmitTimeMs < 150L) return
+                    if (now - lastEmitTimeMs < 500L) return
                     lastEmitTimeMs = now
                 }
-                val currentResults = rebuildResultsList()
                 _uiState.update { s ->
+                    val dnsResults = rebuildResultsList()
+                    // Preserve E2E data that onResult may have written
+                    val existingE2e = s.scannerState.results.associateBy({ it.host }, { it.e2eTestResult })
+                    val mergedResults = if (existingE2e.any { it.value != null }) {
+                        dnsResults.map { r -> existingE2e[r.host]?.let { r.copy(e2eTestResult = it) } ?: r }
+                    } else dnsResults
                     s.copy(
                         scannerState = ScannerState(
                             isScanning = scanning,
@@ -2223,7 +2253,7 @@ class DnsScannerViewModel @Inject constructor(
                             workingCount = workingCount,
                             timeoutCount = timeoutCount,
                             errorCount = errorCount,
-                            results = currentResults
+                            results = mergedResults
                         )
                     )
                 }
@@ -2232,7 +2262,7 @@ class DnsScannerViewModel @Inject constructor(
                     scannedCount = scannedCount,
                     totalCount = allHosts.size,
                     workingCount = workingCount,
-                    results = currentResults
+                    results = _uiState.value.scannerState.results
                 ) }
                 periodicSaveIfNeeded()
             }
@@ -2362,11 +2392,16 @@ class DnsScannerViewModel @Inject constructor(
                 val actuallyScanning = scanning && scanJob?.isActive == true
                 if (!force) {
                     val now = System.currentTimeMillis()
-                    if (now - lastEmitTimeMs < 150L) return
+                    if (now - lastEmitTimeMs < 500L) return
                     lastEmitTimeMs = now
                 }
                 val currentResults = workingResults.toList()
                 _uiState.update { s ->
+                    // Preserve E2E data that onResult may have written
+                    val existingE2e = s.scannerState.results.associateBy({ it.host }, { it.e2eTestResult })
+                    val mergedResults = if (existingE2e.any { it.value != null }) {
+                        currentResults.map { r -> existingE2e[r.host]?.let { r.copy(e2eTestResult = it) } ?: r }
+                    } else currentResults
                     s.copy(scannerState = ScannerState(
                         isScanning = actuallyScanning,
                         totalCount = allHosts.size,
@@ -2374,7 +2409,7 @@ class DnsScannerViewModel @Inject constructor(
                         workingCount = workingCount,
                         timeoutCount = timeoutCount,
                         errorCount = errorCount,
-                        results = currentResults
+                        results = mergedResults
                     ))
                 }
                 ScanStateHolder.update { it.copy(
@@ -2382,7 +2417,7 @@ class DnsScannerViewModel @Inject constructor(
                     scannedCount = scannedCount,
                     totalCount = allHosts.size,
                     workingCount = workingCount,
-                    results = currentResults
+                    results = _uiState.value.scannerState.results
                 ) }
                 periodicSaveIfNeeded()
             }
@@ -2455,10 +2490,16 @@ class DnsScannerViewModel @Inject constructor(
             _uiState.value.e2eScannerState.isRunning
         }
 
+        // Cancel jobs first so they stop emitting state updates
+        scanJob?.cancel()
         if (isSimpleMode) {
-            // Simple mode: stop everything (DNS scan + E2E are interleaved)
-            // Update UI immediately so the user sees the stop, then cancel
-            // jobs in background to avoid freezing the main thread.
+            simpleModeE2eJob?.cancel()
+            e2eJob?.cancel()
+            e2ePendingQueue?.close()
+        }
+
+        // Then update UI
+        if (isSimpleMode) {
             _uiState.value = _uiState.value.copy(
                 scannerState = _uiState.value.scannerState.copy(isScanning = false),
                 simpleModeE2eState = _uiState.value.simpleModeE2eState.copy(
@@ -2470,23 +2511,17 @@ class DnsScannerViewModel @Inject constructor(
             )
             ScanStateHolder.update { it.copy(isScanning = false, isE2eRunning = false) }
             viewModelScope.launch(Dispatchers.Default) {
-                scanJob?.cancel()
-                simpleModeE2eJob?.cancel()
-                e2eJob?.cancel()
-                e2ePendingQueue?.close()
                 ScanStateHolder.cancelScope()
+                releaseWakeLock()
+                cleanupBridge()
             }
-            releaseWakeLock()
-            cleanupBridge()
         } else {
-            // Advanced mode: only stop the DNS scan, let E2E continue independently
-            scanJob?.cancel()
             ScanStateHolder.update { it.copy(isScanning = false) }
             _uiState.value = _uiState.value.copy(
                 scannerState = _uiState.value.scannerState.copy(isScanning = false)
             )
             if (!isE2eRunning) {
-                releaseWakeLock()
+                viewModelScope.launch(Dispatchers.Default) { releaseWakeLock() }
             }
         }
         saveScanSessionToStore()
@@ -2871,40 +2906,56 @@ class DnsScannerViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(error = null)
     }
 
+    /** Signal that the user pressed back — onCleared will handle the actual cleanup. */
+    fun signalBack() {
+        userNavigatedBack = true
+    }
+
     /** Stop all scanning and clean up. Called when user navigates away from the screen. */
     fun stopAll() {
-        releaseWakeLock()
-        ScanStateHolder.update { ScanServiceState() }
-        viewModelScope.launch(Dispatchers.Default) {
-            scanJob?.cancel()
-            e2eJob?.cancel()
-            simpleModeE2eJob?.cancel()
-            e2ePendingQueue?.close()
-            ScanStateHolder.reset()
+        // 1. Cancel scan jobs first so they stop emitting state updates
+        scanJob?.cancel()
+        e2eJob?.cancel()
+        simpleModeE2eJob?.cancel()
+        e2ePendingQueue?.close()
+        // 2. Mark scanning as stopped so the UI stops its polling timer
+        //    and the screen becomes lightweight (empty list = fast recomposition)
+        _uiState.update { s ->
+            s.copy(
+                scannerState = s.scannerState.copy(isScanning = false, results = emptyList()),
+                e2eScannerState = E2eScannerState(),
+                simpleModeE2eState = SimpleModeE2eState()
+            )
         }
-        cleanupBridge()
+        // 3. Heavy cleanup in background
+        viewModelScope.launch(Dispatchers.Default) {
+            releaseWakeLock()
+            ScanStateHolder.reset()
+            cleanupBridge()
+        }
     }
 
     override fun onCleared() {
         super.onCleared()
         val scanActive = ScanStateHolder.state.value.let { it.isScanning || it.isE2eRunning }
-        if (!scanActive) {
+        val shouldStop = !scanActive || userNavigatedBack
+        if (shouldStop) {
+            ScanStateHolder.update { ScanServiceState() }
             releaseWakeLock()
             scanJob?.cancel()
             e2eJob?.cancel()
             e2ePendingQueue?.close()
             simpleModeE2eJob?.cancel()
-            cleanupBridge()
             ScanStateHolder.reset()
         }
 
-        // Save partial results so the user can resume after navigating away.
+        // Capture lightweight state values on the main thread, then do all
+        // heavy work (mapping, JSON serialization, file/DataStore writes) on IO
+        // so onCleared returns instantly and back navigation is never blocked.
         val state = _uiState.value
         val ss = state.scannerState
         val isSimple = state.scanMode == ScanMode.SIMPLE
 
-        // Save whenever there's scanned progress. In advanced mode, also save
-        // completed scans if they have E2E results (prism + E2E flow).
         val hasE2eData = ss.results.any { it.e2eTestResult != null }
         val shouldSave = if (isSimple || state.scanMode == ScanMode.PRISM) {
             ss.scannedCount > 0
@@ -2912,35 +2963,66 @@ class DnsScannerViewModel @Inject constructor(
             ss.scannedCount > 0 && (hasE2eData || ss.scannedCount < ss.totalCount + ss.focusRangeCount)
         }
 
-        if (shouldSave) {
-            val savedResults = ss.results
-                .filter { it.status != ResolverStatus.PENDING && it.status != ResolverStatus.SCANNING }
-                .map { it.toSavedResult() }
-            val session = SavedScanSession(
-                resolverList = state.resolverList,
-                testDomain = state.effectiveTestDomain,
-                timeoutMs = state.timeoutMs,
-                concurrency = state.concurrency,
-                listSource = state.listSource.name,
-                scannedCount = ss.scannedCount,
-                workingCount = ss.workingCount,
-                results = savedResults,
-                customRangeInput = state.customRangeInput.ifEmpty { null },
-                scanMode = state.scanMode.name
-            )
-            val json = gson.toJson(session)
-            // Write to cache file synchronously as a safety net (survives even if
-            // the DataStore coroutine doesn't complete before the scope is cancelled).
-            try {
-                java.io.File(appContext.cacheDir, "scan_session.json").writeText(json)
-            } catch (_: Exception) {}
-            // Also persist to DataStore (primary source read on next launch).
-            // viewModelScope is still active during onCleared, but cancelled right
-            // after — use NonCancellable so the write completes.
-            viewModelScope.launch {
-                withContext(NonCancellable) {
+        val profile = state.profile
+        if (shouldSave || !scanActive && profile != null) {
+            // Snapshot everything needed — these are immutable data-class values.
+            val results = ss.results
+            val resolverList = state.resolverList
+            val testDomain = state.effectiveTestDomain
+            val timeoutMs = state.timeoutMs
+            val concurrency = state.concurrency
+            val listSource = state.listSource.name
+            val scannedCount = ss.scannedCount
+            val workingCount = ss.workingCount
+            val customRange = state.customRangeInput.ifEmpty { null }
+            val scanMode = state.scanMode.name
+            val tunnelType = profile?.tunnelType
+
+            viewModelScope.launch(NonCancellable + Dispatchers.IO) {
+                // Clean up tunnel bridge if scan was not active
+                if (!scanActive && tunnelType != null) {
                     try {
-                        preferencesDataStore.saveScanSession(json)
+                        when (tunnelType) {
+                            TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH -> {
+                                SlipstreamBridge.stopClient()
+                                SlipstreamBridge.proxyOnlyMode = false
+                            }
+                            TunnelType.DNSTT, TunnelType.DNSTT_SSH,
+                            TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH -> {
+                                DnsttBridge.stopClient()
+                            }
+                            TunnelType.VAYDNS, TunnelType.VAYDNS_SSH -> {
+                                VaydnsBridge.stopClient()
+                            }
+                            else -> {}
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                if (shouldSave) {
+                    try {
+                        val savedResults = results
+                            .filter { it.status != ResolverStatus.PENDING && it.status != ResolverStatus.SCANNING }
+                            .map { it.toSavedResult() }
+                        val session = SavedScanSession(
+                            resolverList = resolverList,
+                            testDomain = testDomain,
+                            timeoutMs = timeoutMs,
+                            concurrency = concurrency,
+                            listSource = listSource,
+                            scannedCount = scannedCount,
+                            workingCount = workingCount,
+                            results = savedResults,
+                            customRangeInput = customRange,
+                            scanMode = scanMode
+                        )
+                        val json = gson.toJson(session)
+                        try {
+                            java.io.File(appContext.cacheDir, "scan_session.json").writeText(json)
+                        } catch (_: Exception) {}
+                        try {
+                            preferencesDataStore.saveScanSession(json)
+                        } catch (_: Exception) {}
                     } catch (_: Exception) {}
                 }
             }

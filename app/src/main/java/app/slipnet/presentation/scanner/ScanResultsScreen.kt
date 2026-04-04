@@ -90,6 +90,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -114,6 +115,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavBackStackEntry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import app.slipnet.domain.model.E2eScannerState
 import app.slipnet.domain.model.E2eTestResult
 import app.slipnet.domain.model.ResolverScanResult
@@ -136,6 +138,25 @@ fun ScanResultsScreen(
     viewModel: DnsScannerViewModel = hiltViewModel(parentBackStackEntry)
 ) {
     val uiState by viewModel.uiState.collectAsState()
+
+    // Throttle the results list during active scanning so the main thread stays
+    // responsive for back-press and other input.  Counts/progress update in real-time
+    // (they're cheap), but the expensive filter+sort of the full results list only
+    // runs when this throttled snapshot changes (~500ms interval during scanning).
+    val isScanning = uiState.scannerState.isScanning || uiState.simpleModeE2eState.isRunning || uiState.e2eScannerState.isRunning
+    var throttledResults by remember { mutableStateOf(uiState.scannerState.results) }
+    // Single LaunchedEffect handles both scanning (poll) and idle (deferred update).
+    // Never update throttledResults synchronously during composition — always yield
+    // first so back-press and stop-button input can be processed between frames.
+    LaunchedEffect(isScanning, uiState.scannerState.results) {
+        if (isScanning) {
+            delay(500)
+        } else {
+            yield() // let pending input (back button, stop) run before heavy recomposition
+        }
+        throttledResults = uiState.scannerState.results
+    }
+
     val canApply = fromProfile
     val snackbarHostState = remember { SnackbarHostState() }
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues()
@@ -168,8 +189,8 @@ fun ScanResultsScreen(
     val scope = rememberCoroutineScope()
 
     BackHandler {
-        viewModel.stopAll()
         onNavigateBack()
+        viewModel.stopAll()
     }
 
     if (showPrismFilterDialog) {
@@ -219,11 +240,11 @@ fun ScanResultsScreen(
 
     // Single-pass filter: visible E2E-passed and Stage 1 working IPs (respects search/score)
     val isPrism = uiState.scanMode == ScanMode.PRISM
-    val (visibleE2eIps, visibleStage1Ips) = remember(uiState.scannerState.results, scoreFilter, searchQuery, isPrism, prismMinProbes) {
+    val (visibleE2eIps, visibleStage1Ips) = remember(throttledResults, scoreFilter, searchQuery, isPrism, prismMinProbes) {
         val query = searchQuery.trim()
         val e2e = mutableListOf<String>()
         val stage1 = mutableListOf<String>()
-        for (result in uiState.scannerState.results) {
+        for (result in throttledResults) {
             // Prism results have no tunnelTestResult (score), skip score filter for them
             val matchesFilters = if (isPrism) {
                 result.prismVerified == true &&
@@ -240,8 +261,8 @@ fun ScanResultsScreen(
         e2e as List<String> to (stage1 as List<String>)
     }
 
-    val hasE2eResults = remember(uiState.scannerState.results) {
-        uiState.scannerState.results.any { it.e2eTestResult != null }
+    val hasE2eResults = remember(throttledResults) {
+        throttledResults.any { it.e2eTestResult != null }
     }
 
     fun copyIpsToClipboard(ips: List<String>) {
@@ -311,12 +332,7 @@ fun ScanResultsScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(
-                        onClick = {
-                            viewModel.stopAll()
-                            onNavigateBack()
-                        }
-                    ) {
+                    IconButton(onClick = { onNavigateBack(); viewModel.stopAll() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -406,11 +422,11 @@ fun ScanResultsScreen(
                 }
             } else {
                 if (uiState.scannerState.isScanning || uiState.scannerState.results.isNotEmpty() || uiState.scannerState.scannedCount > 0 || uiState.e2eScannerState.isRunning) {
-                    val workingCount = remember(uiState.scannerState.results, isPrismMode) {
+                    val workingCount = remember(throttledResults, isPrismMode) {
                         if (isPrismMode) {
-                            uiState.scannerState.results.count { it.prismVerified == true }
+                            throttledResults.count { it.prismVerified == true }
                         } else {
-                            uiState.scannerState.results.count {
+                            throttledResults.count {
                                 it.status == ResolverStatus.WORKING &&
                                     (it.tunnelTestResult?.score ?: 0) >= 1
                             }
@@ -575,42 +591,42 @@ fun ScanResultsScreen(
 
             // Results
             val isSimpleMode = uiState.scanMode == ScanMode.SIMPLE
-            val displayResults = remember(uiState.scannerState.results, scoreFilter, sortOption, isSimpleMode, isPrismMode, showAllWorking, searchQuery, hasE2eResults, prismMinProbes) {
+            val displayResults = remember(throttledResults, scoreFilter, sortOption, isSimpleMode, isPrismMode, showAllWorking, searchQuery, hasE2eResults, prismMinProbes) {
                 val query = searchQuery.trim()
                 val filtered = if (isPrismMode && !showAllWorking && hasE2eResults) {
-                    uiState.scannerState.results.filter {
+                    throttledResults.filter {
                         it.prismVerified == true &&
                             (it.prismPassedProbes ?: 0) >= prismMinProbes &&
                             it.e2eTestResult?.success == true &&
                             (query.isEmpty() || it.host.contains(query))
                     }
                 } else if (isPrismMode) {
-                    uiState.scannerState.results.filter {
+                    throttledResults.filter {
                         it.prismVerified == true &&
                             (it.prismPassedProbes ?: 0) >= prismMinProbes &&
                             (query.isEmpty() || it.host.contains(query))
                     }
                 } else if (isSimpleMode && !showAllWorking) {
-                    uiState.scannerState.results.filter {
+                    throttledResults.filter {
                         it.e2eTestResult?.success == true &&
                             (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
                             (query.isEmpty() || it.host.contains(query))
                     }
                 } else if (isSimpleMode) {
-                    uiState.scannerState.results.filter {
+                    throttledResults.filter {
                         it.status == ResolverStatus.WORKING &&
                             (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
                             (query.isEmpty() || it.host.contains(query))
                     }
                 } else if (!showAllWorking && hasE2eResults) {
-                    uiState.scannerState.results.filter {
+                    throttledResults.filter {
                         it.status == ResolverStatus.WORKING &&
                             it.e2eTestResult?.success == true &&
                             (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
                             (query.isEmpty() || it.host.contains(query))
                     }
                 } else {
-                    uiState.scannerState.results.filter {
+                    throttledResults.filter {
                         it.status == ResolverStatus.WORKING &&
                             (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
                             (query.isEmpty() || it.host.contains(query))
@@ -675,7 +691,7 @@ fun ScanResultsScreen(
                             )
                         }
                     }
-                    items(displayResults.size, key = { index -> displayResults[index].host }) { index ->
+                    items(displayResults.size, key = { index -> "${displayResults[index].host}_$index" }) { index ->
                         val result = displayResults[index]
                         val isSelected = uiState.selectedResolvers.contains(result.host)
                         val dismissState = rememberSwipeToDismissBoxState(
@@ -1179,7 +1195,7 @@ private fun E2eProgressSection(e2eScannerState: E2eScannerState) {
                 }
             }
 
-            if (e2eScannerState.isRunning && e2eScannerState.activeResolvers.isNotEmpty()) {
+            if (e2eScannerState.isRunning) {
                 ActiveResolversList(e2eScannerState.activeResolvers)
             }
 
@@ -1297,7 +1313,7 @@ private fun SimpleModeProgressSection(
                 }
             }
 
-            if (simpleModeE2eState.isRunning && simpleModeE2eState.activeResolvers.isNotEmpty()) {
+            if (simpleModeE2eState.isRunning) {
                 ActiveResolversList(simpleModeE2eState.activeResolvers)
             }
 
@@ -1380,13 +1396,16 @@ private fun ResultsSelectionControls(
 }
 
 @Composable
-private fun ActiveResolversList(activeResolvers: Map<String, String>) {
+private fun ActiveResolversList(activeResolvers: Map<String, String>, maxSlots: Int = 3) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        activeResolvers.forEach { (host, phase) ->
+        val entries = activeResolvers.entries.toList()
+        for (i in 0 until maxSlots) {
+            val entry = entries.getOrNull(i)
             Text(
-                text = "$host - $phase",
+                text = if (entry != null) "${entry.key} - ${entry.value}" else "Waiting...",
                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (entry != null) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )

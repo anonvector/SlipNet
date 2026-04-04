@@ -156,9 +156,21 @@ data class EditProfileUiState(
     // SOCKS5 proxy fields
     val socks5ServerPort: String = "1080",
     val socks5ServerPortError: String? = null,
+    // VayDNS fields
+    val vaydnsDnsttCompat: Boolean = false,
+    val vaydnsRecordType: String = "txt",
+    val vaydnsMaxQnameLen: Int = 101,
+    val vaydnsRps: String = "0",
+    // VayDNS advanced fields
+    val vaydnsIdleTimeout: String = "0",
+    val vaydnsKeepalive: String = "0",
+    val vaydnsUdpTimeout: String = "0",
+    val vaydnsMaxNumLabels: String = "0",
+    val vaydnsClientIdSize: String = "0",
+    val vaydnsAdvancedExpanded: Boolean = false,
 ) {
     val useSsh: Boolean
-        get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NOIZDNS_SSH
+        get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.VAYDNS_SSH
 
     val isDnsttBased: Boolean
         get() = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
@@ -166,8 +178,14 @@ data class EditProfileUiState(
     val isNoizdnsBased: Boolean
         get() = tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
 
+    val isVaydnsBased: Boolean
+        get() = tunnelType == TunnelType.VAYDNS || tunnelType == TunnelType.VAYDNS_SSH
+
     val isDnsttOrNoizBased: Boolean
         get() = isDnsttBased || isNoizdnsBased
+
+    val isDnsttOrNoizOrVaydnsBased: Boolean
+        get() = isDnsttBased || isNoizdnsBased || isVaydnsBased
 
     val isSlipstreamBased: Boolean
         get() = tunnelType == TunnelType.SLIPSTREAM || tunnelType == TunnelType.SLIPSTREAM_SSH
@@ -236,6 +254,7 @@ class EditProfileViewModel @Inject constructor(
         val needsResolver = initialTunnelType in setOf(
             TunnelType.DNSTT, TunnelType.DNSTT_SSH,
             TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
+            TunnelType.VAYDNS, TunnelType.VAYDNS_SSH,
             TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
         )
         if (!needsResolver) return
@@ -304,6 +323,15 @@ class EditProfileViewModel @Inject constructor(
                     dnsttAuthoritative = profile.dnsttAuthoritative,
                     noizdnsStealth = profile.noizdnsStealth,
                     dnsPayloadSize = profile.dnsPayloadSize,
+                    vaydnsDnsttCompat = profile.vaydnsDnsttCompat,
+                    vaydnsRecordType = profile.vaydnsRecordType,
+                    vaydnsMaxQnameLen = profile.vaydnsMaxQnameLen,
+                    vaydnsRps = if (profile.vaydnsRps > 0) profile.vaydnsRps.toInt().toString() else "0",
+                    vaydnsIdleTimeout = profile.vaydnsIdleTimeout.toString(),
+                    vaydnsKeepalive = profile.vaydnsKeepalive.toString(),
+                    vaydnsUdpTimeout = profile.vaydnsUdpTimeout.toString(),
+                    vaydnsMaxNumLabels = profile.vaydnsMaxNumLabels.toString(),
+                    vaydnsClientIdSize = profile.vaydnsClientIdSize.toString(),
                     naivePort = profile.naivePort.toString(),
                     naiveUsername = profile.naiveUsername,
                     naivePassword = profile.naivePassword,
@@ -372,6 +400,46 @@ class EditProfileViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(dnsPayloadSize = size)
     }
 
+    fun updateVaydnsDnsttCompat(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(vaydnsDnsttCompat = enabled)
+    }
+
+    fun updateVaydnsRecordType(type: String) {
+        _uiState.value = _uiState.value.copy(vaydnsRecordType = type)
+    }
+
+    fun updateVaydnsMaxQnameLen(len: Int) {
+        _uiState.value = _uiState.value.copy(vaydnsMaxQnameLen = len)
+    }
+
+    fun updateVaydnsRps(value: String) {
+        _uiState.value = _uiState.value.copy(vaydnsRps = value)
+    }
+
+    fun updateVaydnsIdleTimeout(value: String) {
+        _uiState.value = _uiState.value.copy(vaydnsIdleTimeout = value)
+    }
+
+    fun updateVaydnsKeepalive(value: String) {
+        _uiState.value = _uiState.value.copy(vaydnsKeepalive = value)
+    }
+
+    fun updateVaydnsUdpTimeout(value: String) {
+        _uiState.value = _uiState.value.copy(vaydnsUdpTimeout = value)
+    }
+
+    fun updateVaydnsMaxNumLabels(value: String) {
+        _uiState.value = _uiState.value.copy(vaydnsMaxNumLabels = value)
+    }
+
+    fun updateVaydnsClientIdSize(value: String) {
+        _uiState.value = _uiState.value.copy(vaydnsClientIdSize = value)
+    }
+
+    fun toggleVaydnsAdvanced() {
+        _uiState.value = _uiState.value.copy(vaydnsAdvancedExpanded = !_uiState.value.vaydnsAdvancedExpanded)
+    }
+
     fun updateKeepAliveInterval(interval: String) {
         _uiState.value = _uiState.value.copy(keepAliveInterval = interval)
     }
@@ -399,10 +467,12 @@ class EditProfileViewModel @Inject constructor(
             useSsh && (currentType == TunnelType.NOIZDNS || currentType == TunnelType.NOIZDNS_SSH) -> TunnelType.NOIZDNS_SSH
             useSsh && (currentType == TunnelType.SLIPSTREAM || currentType == TunnelType.SLIPSTREAM_SSH) -> TunnelType.SLIPSTREAM_SSH
             useSsh && (currentType == TunnelType.NAIVE || currentType == TunnelType.NAIVE_SSH) -> TunnelType.NAIVE_SSH
+            useSsh && (currentType == TunnelType.VAYDNS || currentType == TunnelType.VAYDNS_SSH) -> TunnelType.VAYDNS_SSH
             !useSsh && (currentType == TunnelType.DNSTT || currentType == TunnelType.DNSTT_SSH) -> TunnelType.DNSTT
             !useSsh && (currentType == TunnelType.NOIZDNS || currentType == TunnelType.NOIZDNS_SSH) -> TunnelType.NOIZDNS
             !useSsh && (currentType == TunnelType.SLIPSTREAM || currentType == TunnelType.SLIPSTREAM_SSH) -> TunnelType.SLIPSTREAM
             !useSsh && (currentType == TunnelType.NAIVE || currentType == TunnelType.NAIVE_SSH) -> TunnelType.NAIVE
+            !useSsh && (currentType == TunnelType.VAYDNS || currentType == TunnelType.VAYDNS_SSH) -> TunnelType.VAYDNS
             else -> currentType
         }
         _uiState.value = _uiState.value.copy(
@@ -1046,7 +1116,7 @@ class EditProfileViewModel @Inject constructor(
 
         // DoH URL validation (DOH tunnel type or DNSTT with DoH transport)
         val needsDohUrl = state.tunnelType == TunnelType.DOH ||
-                (state.isDnsttOrNoizBased && state.dnsTransport == DnsTransport.DOH)
+                (state.isDnsttOrNoizOrVaydnsBased && state.dnsTransport == DnsTransport.DOH)
         if (needsDohUrl) {
             if (state.dohUrl.isBlank()) {
                 _uiState.value = _uiState.value.copy(dohUrlError = "DoH server URL is required")
@@ -1061,7 +1131,7 @@ class EditProfileViewModel @Inject constructor(
         // is to find resolvers. Also skip for tunnel types that don't need resolvers.
         val skipResolvers = forScanner || state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
                 state.tunnelType == TunnelType.SNOWFLAKE || state.isNaiveBased || state.isSocks5 ||
-                (state.isDnsttOrNoizBased && state.dnsTransport == DnsTransport.DOH) ||
+                (state.isDnsttOrNoizOrVaydnsBased && state.dnsTransport == DnsTransport.DOH) ||
                 (state.resolversHidden && !state.useCustomResolver)
         if (!skipResolvers) {
             if (state.resolvers.isBlank()) {
@@ -1077,7 +1147,7 @@ class EditProfileViewModel @Inject constructor(
         }
 
         // DNSTT/NoizDNS-specific validation
-        if (state.isDnsttOrNoizBased) {
+        if (state.isDnsttOrNoizOrVaydnsBased) {
             val publicKeyError = validateDnsttPublicKey(state.dnsttPublicKey)
             if (publicKeyError != null) {
                 _uiState.value = _uiState.value.copy(dnsttPublicKeyError = publicKeyError)
@@ -1189,15 +1259,15 @@ class EditProfileViewModel @Inject constructor(
                     sshPassword = if (state.useSsh && state.sshAuthType == SshAuthType.PASSWORD) state.sshPassword else "",
                     sshPort = state.sshPort.toIntOrNull() ?: 22,
                     sshHost = "127.0.0.1",
-                    dohUrl = if (state.isDoh || (state.isDnsttOrNoizBased && state.dnsTransport == DnsTransport.DOH)) state.dohUrl.trim() else "",
-                    dnsTransport = if (state.isDnsttOrNoizBased) state.dnsTransport else DnsTransport.UDP,
+                    dohUrl = if (state.isDoh || (state.isDnsttOrNoizOrVaydnsBased && state.dnsTransport == DnsTransport.DOH)) state.dohUrl.trim() else "",
+                    dnsTransport = if (state.isDnsttOrNoizOrVaydnsBased) state.dnsTransport else DnsTransport.UDP,
                     sshAuthType = if (state.useSsh) state.sshAuthType else SshAuthType.PASSWORD,
                     sshPrivateKey = if (state.useSsh && state.sshAuthType == SshAuthType.KEY) state.sshPrivateKey else "",
                     sshKeyPassphrase = if (state.useSsh && state.sshAuthType == SshAuthType.KEY) state.sshKeyPassphrase else "",
                     torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else "",
                     dnsttAuthoritative = if (state.isDnsttOrNoizBased) state.dnsttAuthoritative else false,
                     noizdnsStealth = if (state.isNoizdnsBased) state.noizdnsStealth else false,
-                    dnsPayloadSize = if (state.isDnsttOrNoizBased) state.dnsPayloadSize else 0,
+                    dnsPayloadSize = if (state.isDnsttOrNoizOrVaydnsBased) state.dnsPayloadSize else 0,
                     naivePort = if (state.isNaiveBased) (state.naivePort.toIntOrNull() ?: 443) else 443,
                     naiveUsername = if (state.isNaiveBased) state.naiveUsername.trim() else "",
                     naivePassword = if (state.isNaiveBased) state.naivePassword else "",
@@ -1210,7 +1280,16 @@ class EditProfileViewModel @Inject constructor(
                     boundDeviceId = state.boundDeviceId,
                     resolversHidden = state.resolversHidden,
                     defaultResolvers = state.defaultResolversList,
-                    socks5ServerPort = if (state.isSocks5) (state.socks5ServerPort.toIntOrNull() ?: 1080) else 1080
+                    socks5ServerPort = if (state.isSocks5) (state.socks5ServerPort.toIntOrNull() ?: 1080) else 1080,
+                    vaydnsDnsttCompat = if (state.isVaydnsBased) state.vaydnsDnsttCompat else false,
+                    vaydnsRecordType = if (state.isVaydnsBased) state.vaydnsRecordType else "txt",
+                    vaydnsMaxQnameLen = if (state.isVaydnsBased) state.vaydnsMaxQnameLen else 101,
+                    vaydnsRps = if (state.isVaydnsBased) (state.vaydnsRps.toDoubleOrNull() ?: 0.0) else 0.0,
+                    vaydnsIdleTimeout = if (state.isVaydnsBased) (state.vaydnsIdleTimeout.toIntOrNull() ?: 0) else 0,
+                    vaydnsKeepalive = if (state.isVaydnsBased) (state.vaydnsKeepalive.toIntOrNull() ?: 0) else 0,
+                    vaydnsUdpTimeout = if (state.isVaydnsBased) (state.vaydnsUdpTimeout.toIntOrNull() ?: 0) else 0,
+                    vaydnsMaxNumLabels = if (state.isVaydnsBased) (state.vaydnsMaxNumLabels.toIntOrNull() ?: 0) else 0,
+                    vaydnsClientIdSize = if (state.isVaydnsBased) (state.vaydnsClientIdSize.toIntOrNull() ?: 0) else 0
                 )
 
                 val savedId = saveProfileUseCase(profile)

@@ -12,6 +12,7 @@ import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.repository.VpnRepository
 import app.slipnet.tunnel.DnsDoHProxy
 import app.slipnet.tunnel.DnsttBridge
+import app.slipnet.tunnel.VaydnsBridge
 import app.slipnet.tunnel.DohBridge
 import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.ResolverConfig
@@ -236,6 +237,54 @@ class VpnRepositoryImpl @Inject constructor(
             val error = result.exceptionOrNull()?.message ?: "Failed to start NoizDNS proxy"
             connectedProfile = null
             Log.e(TAG, "Failed to start NoizDNS proxy: $error")
+            Result.failure(Exception(error))
+        }
+    }
+
+    /**
+     * Start the VayDNS SOCKS5 proxy. Similar to DNSTT but uses the VayDNS
+     * tunnel implementation for DNS tunnelling.
+     */
+    suspend fun startVaydnsProxy(
+        profile: ServerProfile,
+        portOverride: Int? = null,
+        hostOverride: String? = null,
+        resolverOverride: List<DnsResolver>? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        connectedProfile = profile
+
+        // Resolve domain names to IPs — Go on Android cannot resolve hostnames.
+        val dnsServer = formatDnsServerAddress(profile, resolverOverride)
+
+        val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
+        val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
+
+        val result = VaydnsBridge.startClient(
+            dnsServer = dnsServer,
+            tunnelDomain = profile.domain,
+            publicKey = profile.dnsttPublicKey,
+            listenPort = proxyPort,
+            listenHost = proxyHost,
+            dnsttCompat = profile.vaydnsDnsttCompat,
+            maxPayload = 0,
+            recordType = profile.vaydnsRecordType,
+            maxQnameLen = profile.vaydnsMaxQnameLen,
+            rps = profile.vaydnsRps,
+            idleTimeout = profile.vaydnsIdleTimeout,
+            keepalive = profile.vaydnsKeepalive,
+            udpTimeout = profile.vaydnsUdpTimeout,
+            maxNumLabels = profile.vaydnsMaxNumLabels,
+            clientIdSize = profile.vaydnsClientIdSize
+        )
+
+        if (result.isSuccess) {
+            Log.i(TAG, "VayDNS SOCKS5 proxy started successfully")
+            currentTunnelType = TunnelType.VAYDNS
+            Result.success(Unit)
+        } else {
+            val error = result.exceptionOrNull()?.message ?: "Failed to start VayDNS proxy"
+            connectedProfile = null
+            Log.e(TAG, "Failed to start VayDNS proxy: $error")
             Result.failure(Exception(error))
         }
     }
@@ -531,6 +580,11 @@ class VpnRepositoryImpl @Inject constructor(
                 DnsttBridge.stopClient()
                 DnsDoHProxy.stop()
             }
+            TunnelType.VAYDNS -> {
+                Log.d(TAG, "Stopping VayDNS proxy")
+                VaydnsBridge.stopClient()
+                DnsDoHProxy.stop()
+            }
             TunnelType.SSH -> {
                 Log.d(TAG, "Stopping SSH proxy")
                 SshTunnelBridge.stop()
@@ -545,6 +599,12 @@ class VpnRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Stopping NoizDNS+SSH: SSH first, then NoizDNS")
                 SshTunnelBridge.stop()
                 DnsttBridge.stopClient()
+                DnsDoHProxy.stop()
+            }
+            TunnelType.VAYDNS_SSH -> {
+                Log.d(TAG, "Stopping VayDNS+SSH: SSH first, then VayDNS")
+                SshTunnelBridge.stop()
+                VaydnsBridge.stopClient()
                 DnsDoHProxy.stop()
             }
             TunnelType.SLIPSTREAM_SSH -> {
@@ -581,6 +641,7 @@ class VpnRepositoryImpl @Inject constructor(
                 SlipstreamSocksBridge.stop()
                 SlipstreamBridge.stopClient()
                 DnsttBridge.stopClient()
+                VaydnsBridge.stopClient()
                 SshTunnelBridge.stop()
                 DnsDoHProxy.stop()
                 TorSocksBridge.stop()

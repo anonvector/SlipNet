@@ -103,6 +103,8 @@ class ConfigImporter @Inject constructor() {
         private const val MODE_NAIVE_SSH = "naive_ssh"
         private const val MODE_NAIVE = "naive"
         private const val MODE_SOCKS5 = "socks5"
+        private const val MODE_VAYDNS = "vaydns"
+        private const val MODE_VAYDNS_SSH = "vaydns_ssh"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -252,12 +254,14 @@ class ConfigImporter @Inject constructor() {
             "16" -> parseProfileV16(fields, lineNum)
             "17" -> parseProfileV17(fields, lineNum)
             "18" -> parseProfileV18(fields, lineNum)
+            "19" -> parseProfileV19(fields, lineNum)
+            "20" -> parseProfileV20(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 18) {
-                    parseProfileV18(fields, lineNum)
+                if (versionNum != null && versionNum > 20) {
+                    parseProfileV20(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -342,6 +346,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -426,6 +432,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -515,6 +523,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -607,6 +617,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -711,6 +723,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -815,6 +829,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -915,6 +931,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1026,6 +1044,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1158,6 +1178,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1292,6 +1314,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1433,6 +1457,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1575,6 +1601,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1734,6 +1762,8 @@ class ConfigImporter @Inject constructor() {
             MODE_NAIVE_SSH -> TunnelType.NAIVE_SSH
             MODE_NAIVE -> TunnelType.NAIVE
             MODE_SOCKS5 -> TunnelType.SOCKS5
+            MODE_VAYDNS -> TunnelType.VAYDNS
+            MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1946,6 +1976,50 @@ class ConfigImporter @Inject constructor() {
             noizdnsStealth = noizdnsStealth,
             dnsPayloadSize = dnsPayloadSize,
             socks5ServerPort = socks5ServerPort
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV19(fields: List<String>, lineNum: Int): ProfileParseResult {
+        // v19 extends v18 with 3 new VayDNS fields; fall back to v18 parser for the base fields
+        val baseResult = parseProfileV18(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // Extract v19 fields (positions 41-43), defaulting if absent
+        val vaydnsDnsttCompat = if (fields.size > 41) fields[41] == "1" else false
+        val vaydnsRecordType = if (fields.size > 42) fields[42].ifBlank { "txt" } else "txt"
+        val vaydnsMaxQnameLen = if (fields.size > 43) fields[43].toIntOrNull() ?: 101 else 101
+        val vaydnsRps = if (fields.size > 44) fields[44].toDoubleOrNull() ?: 0.0 else 0.0
+
+        val profile = baseResult.profile.copy(
+            vaydnsDnsttCompat = vaydnsDnsttCompat,
+            vaydnsRecordType = vaydnsRecordType,
+            vaydnsMaxQnameLen = vaydnsMaxQnameLen,
+            vaydnsRps = vaydnsRps
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV20(fields: List<String>, lineNum: Int): ProfileParseResult {
+        // v20 extends v19 with 5 new VayDNS advanced fields
+        val baseResult = parseProfileV19(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // Extract v20 fields (positions 45-49), defaulting if absent
+        val vaydnsIdleTimeout = if (fields.size > 45) fields[45].toIntOrNull() ?: 0 else 0
+        val vaydnsKeepalive = if (fields.size > 46) fields[46].toIntOrNull() ?: 0 else 0
+        val vaydnsUdpTimeout = if (fields.size > 47) fields[47].toIntOrNull() ?: 0 else 0
+        val vaydnsMaxNumLabels = if (fields.size > 48) fields[48].toIntOrNull() ?: 0 else 0
+        val vaydnsClientIdSize = if (fields.size > 49) fields[49].toIntOrNull() ?: 0 else 0
+
+        val profile = baseResult.profile.copy(
+            vaydnsIdleTimeout = vaydnsIdleTimeout,
+            vaydnsKeepalive = vaydnsKeepalive,
+            vaydnsUdpTimeout = vaydnsUdpTimeout,
+            vaydnsMaxNumLabels = vaydnsMaxNumLabels,
+            vaydnsClientIdSize = vaydnsClientIdSize
         )
 
         return ProfileParseResult.Success(profile)

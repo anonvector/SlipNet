@@ -30,6 +30,7 @@ import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.model.isAvailable
 import app.slipnet.tunnel.DnsttBridge
 import app.slipnet.tunnel.DnsttSocksBridge
+import app.slipnet.tunnel.VaydnsBridge
 import app.slipnet.tunnel.DohBridge
 import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.HttpProxyServer
@@ -233,6 +234,12 @@ class SlipNetVpnService : VpnService() {
                 disconnect()
             }
             ACTION_RECONNECT -> {
+                // Update notification immediately so user sees feedback
+                val notification = notificationHelper.createVpnNotification(
+                    ConnectionState.Connecting,
+                    isProxyOnly = isProxyOnly
+                )
+                startForeground(NotificationHelper.VPN_NOTIFICATION_ID, notification)
                 handleNetworkChange("manual reconnect")
             }
             null -> {
@@ -307,12 +314,21 @@ class SlipNetVpnService : VpnService() {
             // didn't wait for native code to release ports (e.g. abandoned Rust threads).
             withContext(Dispatchers.IO) {
                 try { stopCurrentProxy() } catch (_: Exception) {}
-                // DnsttBridge is a process-level singleton — a previous service
-                // instance may have left the Go DNSTT listener alive even though
-                // currentTunnelType has been reset.  Always stop it explicitly.
+                // Process-level singletons — a previous service instance may have left
+                // listeners alive even though currentTunnelType has been reset.
+                // Stop ALL bridge types to ensure ports are freed.
+                try { HevSocks5Tunnel.stop() } catch (_: Exception) {}
+                try { DnsttSocksBridge.stop() } catch (_: Exception) {}
+                try { SshTunnelBridge.stopAll() } catch (_: Exception) {}
+                try { SlipstreamSocksBridge.stop() } catch (_: Exception) {}
+                try { NaiveSocksBridge.stop() } catch (_: Exception) {}
+                try { TorSocksBridge.stop() } catch (_: Exception) {}
+                try { Socks5ProxyBridge.stopAll() } catch (_: Exception) {}
                 try { DnsttBridge.stopClient() } catch (_: Exception) {}
+                try { VaydnsBridge.stopClient() } catch (_: Exception) {}
+                try { SlipstreamBridge.stopClient() } catch (_: Exception) {}
                 // Give native threads extra time to fully release ports after stop.
-                // Both Go (DNSTT) and Rust (Slipstream) may take a moment to close listeners.
+                // Both Go (DNSTT/VayDNS) and Rust (Slipstream) may take a moment to close listeners.
                 delay(300)
             }
 
@@ -481,7 +497,7 @@ class SlipNetVpnService : VpnService() {
                 // 127.0.0.53 (systemd-resolved) is unavailable on most servers, causing
                 // DNS workers to fail and fall back — adding ~1s latency at startup.
                 // Only override when user hasn't set a custom remote DNS.
-                if (currentTunnelType == TunnelType.DNSTT_SSH || currentTunnelType == TunnelType.NOIZDNS_SSH) {
+                if (currentTunnelType == TunnelType.DNSTT_SSH || currentTunnelType == TunnelType.NOIZDNS_SSH || currentTunnelType == TunnelType.VAYDNS_SSH) {
                     val dnsMode = preferencesDataStore.remoteDnsMode.first()
                     if (dnsMode == "default") {
                         remoteDns = "8.8.8.8"
@@ -512,6 +528,8 @@ class SlipNetVpnService : VpnService() {
                     TunnelType.SNOWFLAKE -> connectSnowflake(profile, dnsServer)
                     TunnelType.NAIVE_SSH -> connectNaiveSsh(profile, dnsServer, remoteDns, remoteDnsFallback)
                     TunnelType.NAIVE -> connectNaive(profile, dnsServer, remoteDns, remoteDnsFallback)
+                    TunnelType.VAYDNS -> connectVaydns(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
+                    TunnelType.VAYDNS_SSH -> connectVaydnsSsh(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
                     TunnelType.SOCKS5 -> connectSocks5(profile, dnsServer, remoteDns)
                 }
 
@@ -765,6 +783,10 @@ class SlipNetVpnService : VpnService() {
                 DnsttBridge.getClientPort().also {
                     if (it != layerPort) Log.i(TAG, "DNSTT bound to alternative port $it (preferred $layerPort)")
                 }
+            } else if (profile.tunnelType == TunnelType.VAYDNS) {
+                VaydnsBridge.getClientPort().also {
+                    if (it != layerPort) Log.i(TAG, "VayDNS bound to alternative port $it (preferred $layerPort)")
+                }
             } else layerPort
 
             // NaiveProxy needs its own readiness check (log-based, not TCP probe)
@@ -920,6 +942,27 @@ class SlipNetVpnService : VpnService() {
                     else
                         vpnRepository.startDnsttProxy(profile, portOverride = layerPort, hostOverride = "127.0.0.1",
                             socksProxyAddr = socksAddr, socksProxyUser = socksUser, socksProxyPass = socksPass)
+                }
+            }
+            TunnelType.VAYDNS -> {
+                if (isLast) {
+                    val bridgePort = layerPort
+                    val internalPort = internalPortBase
+                    val proxyResult = vpnRepository.startVaydnsProxy(profile, portOverride = internalPort, hostOverride = "127.0.0.1")
+                    if (proxyResult.isFailure) return proxyResult
+                    val actualPort = VaydnsBridge.getClientPort()
+                    DnsttSocksBridge.upstreamRunningCheck = { VaydnsBridge.isRunning() }
+                    DnsttSocksBridge.authoritativeMode = profile.dnsttAuthoritative
+                    DnsttSocksBridge.proxyOnlyMode = isProxyOnly
+                    DnsttSocksBridge.dnsWorkerPoolSize = preferencesDataStore.dnsWorkerMode.first().poolSize
+                    vpnRepository.startDnsttSocksBridge(
+                        dnsttPort = actualPort, dnsttHost = "127.0.0.1",
+                        bridgePort = bridgePort, bridgeHost = layerHost,
+                        socksUsername = profile.socksUsername, socksPassword = profile.socksPassword,
+                        dnsServer = remoteDns, dnsFallback = remoteDnsFallback
+                    )
+                } else {
+                    vpnRepository.startVaydnsProxy(profile, portOverride = layerPort, hostOverride = "127.0.0.1")
                 }
             }
             TunnelType.SLIPSTREAM -> {
@@ -1089,6 +1132,10 @@ class SlipNetVpnService : VpnService() {
             TunnelType.DNSTT, TunnelType.NOIZDNS -> {
                 DnsttSocksBridge.stop()
                 DnsttBridge.stopClient()
+            }
+            TunnelType.VAYDNS -> {
+                DnsttSocksBridge.stop()
+                VaydnsBridge.stopClient()
             }
             TunnelType.SLIPSTREAM -> {
                 SlipstreamSocksBridge.stop()
@@ -1303,6 +1350,7 @@ class SlipNetVpnService : VpnService() {
                 TunnelType.SLIPSTREAM_SSH -> 24
                 TunnelType.DNSTT_SSH -> 12
                 TunnelType.NOIZDNS_SSH -> 12
+                TunnelType.VAYDNS_SSH -> 12
                 else -> 16
             }
         }
@@ -2264,6 +2312,254 @@ class SlipNetVpnService : VpnService() {
     }
 
     /**
+     * Connect using VayDNS tunnel type.
+     * Order: Establish VPN interface (with app exclusion) -> Start VayDNS proxy -> Wait for ready
+     *        -> Start DnsttSocksBridge (reused) -> tun2socks
+     *
+     * VayDNS follows the same 4-step connection pattern as DNSTT but uses VaydnsBridge
+     * instead of DnsttBridge.
+     */
+    private suspend fun connectVaydns(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String, globalResolverOverride: List<app.slipnet.domain.model.DnsResolver>? = null) {
+        val proxyPort = preferencesDataStore.proxyListenPort.first()
+        val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        val vaydnsPort = proxyPort + 1
+
+        // Step 1: Establish VPN interface FIRST (with addDisallowedApplication for this app)
+        // This ensures VayDNS's sockets bypass the VPN when created
+        if (!isProxyOnly) {
+            vpnInterface = establishVpnInterface(dnsServer)
+            if (vpnInterface == null) {
+                connectionManager.onVpnError("Failed to establish VPN interface")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+
+            // Brief delay to let VPN routing settle
+            delay(200)
+        }
+
+        // Step 2: Start VayDNS proxy on internal port
+        val proxyResult = vpnRepository.startVaydnsProxy(profile, portOverride = vaydnsPort, hostOverride = "127.0.0.1", resolverOverride = globalResolverOverride)
+        if (proxyResult.isFailure) {
+            connectionManager.onVpnError(proxyResult.exceptionOrNull()?.message ?: "Failed to start VayDNS proxy")
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Read actual port — may differ from requested if preferred port was stuck
+        val actualVaydnsPort = VaydnsBridge.getClientPort()
+        if (actualVaydnsPort != vaydnsPort) {
+            Log.i(TAG, "VayDNS bound to alternative port $actualVaydnsPort (preferred $vaydnsPort was stuck)")
+        }
+
+        // Step 2.5: Verify VayDNS is listening on internal port
+        if (!waitForProxyReady(actualVaydnsPort, maxAttempts = 20, delayMs = 100)) {
+            handleProxyStartupFailure(actualVaydnsPort)
+            vpnInterface?.close()
+            vpnInterface = null
+            return
+        }
+
+        // Step 3: Start DnsttSocksBridge on proxyPort (reused, with VayDNS upstream check)
+        DnsttSocksBridge.upstreamRunningCheck = { VaydnsBridge.isRunning() }
+        DnsttSocksBridge.authoritativeMode = profile.dnsttAuthoritative
+        DnsttSocksBridge.proxyOnlyMode = isProxyOnly
+        DnsttSocksBridge.dnsWorkerPoolSize = preferencesDataStore.dnsWorkerMode.first().poolSize
+        val bridgeResult = vpnRepository.startDnsttSocksBridge(
+            dnsttPort = actualVaydnsPort,
+            dnsttHost = "127.0.0.1",
+            bridgePort = proxyPort,
+            bridgeHost = proxyHost,
+            socksUsername = profile.socksUsername,
+            socksPassword = profile.socksPassword,
+            dnsServer = remoteDns,
+            dnsFallback = remoteDnsFallback
+        )
+        if (bridgeResult.isFailure) {
+            connectionManager.onVpnError(bridgeResult.exceptionOrNull()?.message ?: "Failed to start VayDNS SOCKS5 bridge")
+            stopCurrentProxy()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Step 3.5: Verify bridge is listening
+        if (!waitForProxyReady(proxyPort, maxAttempts = 20, delayMs = 100)) {
+            Log.e(TAG, "DnsttSocksBridge failed to become ready on port $proxyPort")
+            connectionManager.onVpnError("VayDNS SOCKS5 bridge failed to start")
+            stopCurrentProxy()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Proxy-only mode: skip tun2socks
+        if (isProxyOnly) {
+            vpnRepository.setProxyConnected(profile)
+            Log.i(TAG, "Proxy-only mode: VayDNS SOCKS5 bridge ready on $proxyHost:$proxyPort")
+            finishConnection()
+            return
+        }
+
+        // Step 4: Start tun2socks pointing at bridge on proxyPort
+        val tun2socksResult = vpnRepository.startTun2Socks(profile, vpnInterface!!)
+        if (tun2socksResult.isFailure) {
+            connectionManager.onVpnError(tun2socksResult.exceptionOrNull()?.message ?: "Failed to start tunnel")
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Give VayDNS a moment to establish the connection
+        delay(500)
+        Log.d(TAG, "VayDNS tunnel started with bridge")
+
+        finishConnection()
+    }
+
+    /**
+     * Connect using VayDNS+SSH tunnel type.
+     * Order: VPN interface (with app exclusion) -> Start VayDNS proxy -> Wait for ready
+     *        -> Start SSH over VayDNS proxy -> Wait for SSH ready -> tun2socks on proxyPort
+     *
+     * Traffic flow:
+     * App -> TUN -> hev-socks5-tunnel -> SSH SOCKS5 (proxyPort)
+     *   -> SSH direct-tcpip -> VayDNS (proxyPort+1, 127.0.0.1, raw TCP tunnel)
+     *   -> DNS tunnel (UDP 53) -> VayDNS Server -> SSH Server -> Internet
+     */
+    private suspend fun connectVaydnsSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String, globalResolverOverride: List<app.slipnet.domain.model.DnsResolver>? = null) {
+        val proxyPort = preferencesDataStore.proxyListenPort.first()
+        val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        val vaydnsPort = proxyPort + 1
+
+        if (!isProxyOnly) {
+            // Step 1: Establish VPN interface with addDisallowedApplication
+            vpnInterface = establishVpnInterface(dnsServer)
+            if (vpnInterface == null) {
+                connectionManager.onVpnError("Failed to establish VPN interface")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+
+            // Brief delay to let VPN routing settle
+            delay(200)
+        }
+
+        // Step 2: Start VayDNS proxy on internal port (127.0.0.1 only)
+        val proxyResult = vpnRepository.startVaydnsProxy(profile, portOverride = vaydnsPort, hostOverride = "127.0.0.1", resolverOverride = globalResolverOverride)
+        if (proxyResult.isFailure) {
+            connectionManager.onVpnError(proxyResult.exceptionOrNull()?.message ?: "Failed to start VayDNS proxy")
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Read actual port — may differ from requested if preferred port was stuck
+        val actualVaydnsPort = VaydnsBridge.getClientPort()
+        if (actualVaydnsPort != vaydnsPort) {
+            Log.i(TAG, "VayDNS bound to alternative port $actualVaydnsPort (preferred $vaydnsPort was stuck)")
+        }
+
+        // Step 2.5: Verify proxy is listening
+        if (!waitForProxyReady(actualVaydnsPort, maxAttempts = 20, delayMs = 100)) {
+            handleProxyStartupFailure(actualVaydnsPort)
+            vpnInterface?.close()
+            vpnInterface = null
+            return
+        }
+
+        // Step 3: Switch tunnel type to VAYDNS_SSH before starting SSH
+        vpnRepository.setCurrentTunnelType(TunnelType.VAYDNS_SSH)
+        currentTunnelType = TunnelType.VAYDNS_SSH
+
+        // Step 4: Start SSH tunnel through VayDNS (with retry)
+        configureSshBridge()
+        var sshResult: Result<Unit> = Result.failure(RuntimeException("SSH not attempted"))
+        for (attempt in 1..SSH_OVER_TUNNEL_RETRIES) {
+            sshResult = withContext(Dispatchers.IO) {
+                Log.i(TAG, "Starting SSH tunnel through VayDNS (${profile.sshHost}:${profile.sshPort} via 127.0.0.1:$actualVaydnsPort) attempt $attempt/$SSH_OVER_TUNNEL_RETRIES")
+                SshTunnelBridge.startOverProxy(
+                    sshHost = profile.sshHost,
+                    sshPort = profile.sshPort,
+                    sshUsername = profile.sshUsername,
+                    sshPassword = profile.sshPassword,
+                    proxyHost = "127.0.0.1",
+                    proxyPort = actualVaydnsPort,
+                    listenPort = proxyPort,
+                    listenHost = proxyHost,
+                    blockDirectDns = true,
+                    sshAuthType = profile.sshAuthType,
+                    sshPrivateKey = profile.sshPrivateKey,
+                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                    remoteDnsHost = remoteDns,
+                    remoteDnsFallback = remoteDnsFallback
+                )
+            }
+            if (sshResult.isSuccess) break
+            if (attempt < SSH_OVER_TUNNEL_RETRIES) {
+                Log.w(TAG, "SSH over VayDNS attempt $attempt failed: ${sshResult.exceptionOrNull()?.message}, retrying...")
+                delay(1000L * attempt)
+            }
+        }
+        if (sshResult.isFailure) {
+            connectionManager.onVpnError(sshResult.exceptionOrNull()?.message ?: "Failed to start SSH tunnel over VayDNS")
+            VaydnsBridge.stopClient()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Step 4.5: Wait for SSH SOCKS5 proxy to be ready
+        if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 100)) {
+            Log.e(TAG, "SSH SOCKS5 proxy failed to become ready on port $proxyPort")
+            connectionManager.onVpnError("SSH tunnel failed to start over VayDNS")
+            SshTunnelBridge.stop()
+            VaydnsBridge.stopClient()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Proxy-only mode: skip tun2socks
+        if (isProxyOnly) {
+            vpnRepository.setProxyConnected(profile)
+            Log.i(TAG, "Proxy-only mode: VayDNS+SSH SOCKS5 proxy ready on $proxyHost:$proxyPort")
+            finishConnection()
+            return
+        }
+
+        // Step 5: Start tun2socks pointing at SSH SOCKS5 on proxyPort
+        val tun2socksResult = vpnRepository.startTun2Socks(profile, vpnInterface!!)
+        if (tun2socksResult.isFailure) {
+            connectionManager.onVpnError(tun2socksResult.exceptionOrNull()?.message ?: "Failed to start tunnel")
+            SshTunnelBridge.stop()
+            VaydnsBridge.stopClient()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        delay(500)
+        Log.d(TAG, "VayDNS+SSH tunnel started")
+        finishConnection()
+    }
+
+    /**
      * Connect using DoH (DNS-over-HTTPS) tunnel type.
      * Order: Establish VPN interface (with app exclusion) -> Start DoH proxy -> Wait for ready -> tun2socks
      *
@@ -2679,9 +2975,11 @@ class SlipNetVpnService : VpnService() {
             TunnelType.SLIPSTREAM_SSH -> try { SlipstreamBridge.isNativeRunning() } catch (e: Exception) { false }
             TunnelType.DNSTT -> try { DnsttBridge.isRunning() } catch (e: Exception) { false }
             TunnelType.NOIZDNS -> try { DnsttBridge.isRunning() } catch (e: Exception) { false }
+            TunnelType.VAYDNS -> try { VaydnsBridge.isRunning() } catch (e: Exception) { false }
             TunnelType.SSH -> SshTunnelBridge.isRunning()
             TunnelType.DNSTT_SSH -> try { DnsttBridge.isRunning() } catch (e: Exception) { false }
             TunnelType.NOIZDNS_SSH -> try { DnsttBridge.isRunning() } catch (e: Exception) { false }
+            TunnelType.VAYDNS_SSH -> try { VaydnsBridge.isRunning() } catch (e: Exception) { false }
             TunnelType.DOH -> DohBridge.isRunning()
             TunnelType.NAIVE_SSH -> NaiveBridge.isRunning()
             TunnelType.NAIVE -> NaiveBridge.isRunning()
@@ -2888,6 +3186,12 @@ class SlipNetVpnService : VpnService() {
                         Log.e(TAG, "Error checking NoizDNS state: ${e.message}")
                         true
                     }
+                    TunnelType.VAYDNS -> try {
+                        VaydnsBridge.isRunning()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error checking VayDNS state: ${e.message}")
+                        true
+                    }
                     TunnelType.SSH -> {
                         // Check default instance or any chain instance
                         SshTunnelBridge.isRunning() || (0..3).any {
@@ -2904,6 +3208,12 @@ class SlipNetVpnService : VpnService() {
                         DnsttBridge.isRunning()
                     } catch (e: Exception) {
                         Log.e(TAG, "Error checking NoizDNS state: ${e.message}")
+                        true
+                    }
+                    TunnelType.VAYDNS_SSH -> try {
+                        VaydnsBridge.isRunning()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error checking VayDNS state: ${e.message}")
                         true
                     }
                     TunnelType.DOH -> DohBridge.isRunning()
@@ -2993,7 +3303,7 @@ class SlipNetVpnService : VpnService() {
 
         // Event-driven DNS pool death: react in ~8s instead of waiting 3 polls (45s).
         // The polled check in the loop below remains as a safety net.
-        if (currentTunnelType == TunnelType.DNSTT || currentTunnelType == TunnelType.NOIZDNS) {
+        if (currentTunnelType == TunnelType.DNSTT || currentTunnelType == TunnelType.NOIZDNS || currentTunnelType == TunnelType.VAYDNS) {
             DnsttSocksBridge.onDnsPoolDead = {
                 serviceScope.launch(Dispatchers.Main) {
                     if (healthCheckJob?.isActive == true) {
@@ -3048,6 +3358,7 @@ class SlipNetVpnService : VpnService() {
                 val usesSsh = currentTunnelType == TunnelType.SSH ||
                         currentTunnelType == TunnelType.DNSTT_SSH ||
                         currentTunnelType == TunnelType.NOIZDNS_SSH ||
+                        currentTunnelType == TunnelType.VAYDNS_SSH ||
                         currentTunnelType == TunnelType.SLIPSTREAM_SSH ||
                         currentTunnelType == TunnelType.NAIVE_SSH
                 if (usesSsh && healthCheckCount % SSH_PROBE_INTERVAL == 0) {
@@ -3065,11 +3376,11 @@ class SlipNetVpnService : VpnService() {
                 // In proxy-only mode, DNS workers are unused (apps resolve DNS via CONNECT),
                 // so skip this check to avoid false warnings.
                 val dnsPoolDead = if (isProxyOnly) false else when (currentTunnelType) {
-                    TunnelType.DNSTT, TunnelType.NOIZDNS -> DnsttSocksBridge.isDnsPoolDead()
+                    TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS -> DnsttSocksBridge.isDnsPoolDead()
                     TunnelType.SLIPSTREAM -> SlipstreamSocksBridge.isDnsPoolDead()
                     TunnelType.NAIVE -> NaiveSocksBridge.isDnsPoolDead()
                     TunnelType.SSH, TunnelType.DNSTT_SSH, TunnelType.NOIZDNS_SSH,
-                    TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH -> SshTunnelBridge.isDnsPoolDead()
+                    TunnelType.VAYDNS_SSH, TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH -> SshTunnelBridge.isDnsPoolDead()
                     else -> false
                 }
                 if (dnsPoolDead) {
@@ -3077,6 +3388,7 @@ class SlipNetVpnService : VpnService() {
                     val isDnsTunneled = currentTunnelType in listOf(
                         TunnelType.DNSTT, TunnelType.DNSTT_SSH,
                         TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
+                        TunnelType.VAYDNS, TunnelType.VAYDNS_SSH,
                         TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
                     )
                     val threshold = if (isDnsTunneled) DNS_POOL_DEAD_THRESHOLD else DNS_POOL_DEAD_THRESHOLD_SOCKS
@@ -3096,6 +3408,7 @@ class SlipNetVpnService : VpnService() {
                 val isDnsTunneledStall = currentTunnelType in listOf(
                     TunnelType.DNSTT, TunnelType.DNSTT_SSH,
                     TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
+                    TunnelType.VAYDNS, TunnelType.VAYDNS_SSH,
                     TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
                 )
                 val stallCheckInterval = if (isDnsTunneledStall) TUNNEL_STALL_CHECK_INTERVAL else TUNNEL_STALL_CHECK_INTERVAL_SOCKS
@@ -3136,7 +3449,7 @@ class SlipNetVpnService : VpnService() {
                 // sockets stay open, causing handshake reads to hang indefinitely.
                 val capacityExhausted = when (currentTunnelType) {
                     TunnelType.SLIPSTREAM -> SlipstreamSocksBridge.isCapacityExhausted()
-                    TunnelType.DNSTT, TunnelType.NOIZDNS -> DnsttSocksBridge.isCapacityExhausted()
+                    TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS -> DnsttSocksBridge.isCapacityExhausted()
                     else -> false
                 }
                 if (capacityExhausted) {
@@ -3490,14 +3803,20 @@ class SlipNetVpnService : VpnService() {
                 if (isDnstt) {
                     DnsttBridge.stopClientBlocking()  // no-op if already stopped, but ensures port is released
                 }
+                val isVaydns = currentTunnelType in listOf(
+                    TunnelType.VAYDNS, TunnelType.VAYDNS_SSH
+                )
+                if (isVaydns) {
+                    VaydnsBridge.stopClientBlocking()  // no-op if already stopped, but ensures port is released
+                }
 
                 val proxyPort = preferencesDataStore.proxyListenPort.first()
                 val proxyHost = preferencesDataStore.proxyListenAddress.first()
                 var remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
                 var remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
 
-                // DNSTT+SSH / NoizDNS+SSH: default to server's local resolver (same override as initial connect)
-                if (currentTunnelType == TunnelType.DNSTT_SSH || currentTunnelType == TunnelType.NOIZDNS_SSH) {
+                // DNSTT+SSH / NoizDNS+SSH / VayDNS+SSH: default to server's local resolver (same override as initial connect)
+                if (currentTunnelType == TunnelType.DNSTT_SSH || currentTunnelType == TunnelType.NOIZDNS_SSH || currentTunnelType == TunnelType.VAYDNS_SSH) {
                     val dnsMode = preferencesDataStore.remoteDnsMode.first()
                     if (dnsMode == "default") {
                         remoteDns = "127.0.0.53"
@@ -3592,6 +3911,58 @@ class SlipNetVpnService : VpnService() {
                     if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 50)) {
                         Log.e(TAG, "SSH SOCKS5 proxy failed to restart on port $proxyPort")
                         handleTunnelFailure("failed to reconnect ${if (isNoizdns) "NoizDNS" else "DNSTT"}+SSH after network change")
+                        return@launch
+                    }
+                } else if (currentTunnelType == TunnelType.VAYDNS_SSH) {
+                    // VayDNS+SSH: restart VayDNS on internal port, then SSH on proxyPort
+                    val vaydnsPort = proxyPort + 1
+
+                    val vaydnsResult = vpnRepository.startVaydnsProxy(profile, portOverride = vaydnsPort, hostOverride = "127.0.0.1")
+                    if (vaydnsResult.isFailure) {
+                        Log.e(TAG, "Failed to restart VayDNS after network change", vaydnsResult.exceptionOrNull())
+                        handleTunnelFailure("failed to reconnect VayDNS+SSH after network change")
+                        return@launch
+                    }
+
+                    val actualVaydnsPort = VaydnsBridge.getClientPort()
+
+                    if (!waitForProxyReady(actualVaydnsPort, maxAttempts = 20, delayMs = 50)) {
+                        Log.e(TAG, "VayDNS proxy failed to restart")
+                        handleTunnelFailure("failed to reconnect VayDNS+SSH after network change")
+                        return@launch
+                    }
+
+                    vpnRepository.setCurrentTunnelType(currentTunnelType!!)
+
+                    // Connect SSH directly through the tunnel's local port
+                    configureSshBridge()
+                    val sshResult = withContext(Dispatchers.IO) {
+                        SshTunnelBridge.startOverProxy(
+                            sshHost = profile.sshHost,
+                            sshPort = profile.sshPort,
+                            sshUsername = profile.sshUsername,
+                            sshPassword = profile.sshPassword,
+                            proxyHost = "127.0.0.1",
+                            proxyPort = actualVaydnsPort,
+                            listenPort = proxyPort,
+                            listenHost = proxyHost,
+                            blockDirectDns = true,
+                            sshAuthType = profile.sshAuthType,
+                            sshPrivateKey = profile.sshPrivateKey,
+                            sshKeyPassphrase = profile.sshKeyPassphrase,
+                            remoteDnsHost = remoteDns,
+                            remoteDnsFallback = remoteDnsFallback
+                        )
+                    }
+                    if (sshResult.isFailure) {
+                        Log.e(TAG, "Failed to restart SSH over VayDNS after network change", sshResult.exceptionOrNull())
+                        handleTunnelFailure("failed to reconnect VayDNS+SSH after network change")
+                        return@launch
+                    }
+
+                    if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 50)) {
+                        Log.e(TAG, "SSH SOCKS5 proxy failed to restart on port $proxyPort")
+                        handleTunnelFailure("failed to reconnect VayDNS+SSH after network change")
                         return@launch
                     }
                 } else if (currentTunnelType == TunnelType.SLIPSTREAM_SSH) {
@@ -3742,6 +4113,51 @@ class SlipNetVpnService : VpnService() {
                     if (!waitForProxyReady(proxyPort, maxAttempts = 20, delayMs = 50)) {
                         Log.e(TAG, "${if (isNoizdns) "NoizDNS" else "DNSTT"} bridge failed to restart on port $proxyPort")
                         handleTunnelFailure("failed to reconnect ${if (isNoizdns) "NoizDNS" else "DNSTT"} after network change")
+                        return@launch
+                    }
+                } else if (currentTunnelType == TunnelType.VAYDNS) {
+                    // VayDNS: restart tunnel on internal port + bridge on proxyPort
+                    val vaydnsPort = proxyPort + 1
+
+                    val vaydnsResult = vpnRepository.startVaydnsProxy(profile, portOverride = vaydnsPort, hostOverride = "127.0.0.1")
+                    if (vaydnsResult.isFailure) {
+                        Log.e(TAG, "Failed to restart VayDNS after network change", vaydnsResult.exceptionOrNull())
+                        handleTunnelFailure("failed to reconnect VayDNS after network change")
+                        return@launch
+                    }
+
+                    val actualVaydnsPort = VaydnsBridge.getClientPort()
+
+                    if (!waitForProxyReady(actualVaydnsPort, maxAttempts = 20, delayMs = 50)) {
+                        Log.e(TAG, "VayDNS proxy failed to restart on port $actualVaydnsPort")
+                        handleTunnelFailure("failed to reconnect VayDNS after network change")
+                        return@launch
+                    }
+
+                    // Restart bridge on proxyPort (with auth for Dante)
+                    DnsttSocksBridge.upstreamRunningCheck = { VaydnsBridge.isRunning() }
+                    DnsttSocksBridge.authoritativeMode = profile.dnsttAuthoritative
+                    DnsttSocksBridge.proxyOnlyMode = isProxyOnly
+                    DnsttSocksBridge.dnsWorkerPoolSize = preferencesDataStore.dnsWorkerMode.first().poolSize
+                    val bridgeResult = vpnRepository.startDnsttSocksBridge(
+                        dnsttPort = actualVaydnsPort,
+                        dnsttHost = "127.0.0.1",
+                        bridgePort = proxyPort,
+                        bridgeHost = proxyHost,
+                        socksUsername = profile.socksUsername,
+                        socksPassword = profile.socksPassword,
+                        dnsServer = remoteDns,
+                        dnsFallback = remoteDnsFallback
+                    )
+                    if (bridgeResult.isFailure) {
+                        Log.e(TAG, "Failed to restart VayDNS bridge after network change")
+                        handleTunnelFailure("failed to reconnect VayDNS after network change")
+                        return@launch
+                    }
+
+                    if (!waitForProxyReady(proxyPort, maxAttempts = 20, delayMs = 50)) {
+                        Log.e(TAG, "VayDNS bridge failed to restart on port $proxyPort")
+                        handleTunnelFailure("failed to reconnect VayDNS after network change")
                         return@launch
                     }
                 } else if (currentTunnelType == TunnelType.NAIVE_SSH) {
@@ -4026,6 +4442,12 @@ class SlipNetVpnService : VpnService() {
                 DnsttSocksBridge.stop()
                 DnsttBridge.stopClient()
             }
+            TunnelType.VAYDNS -> {
+                Log.d(TAG, "Stopping VayDNS proxy and bridge")
+                DnsttSocksBridge.onDnsPoolDead = null
+                DnsttSocksBridge.stop()
+                VaydnsBridge.stopClient()
+            }
             TunnelType.SSH -> {
                 Log.d(TAG, "Stopping SSH tunnel")
                 SshTunnelBridge.stop()
@@ -4041,6 +4463,11 @@ class SlipNetVpnService : VpnService() {
                 SshTunnelBridge.stop()
                 DnsttSocksBridge.stop()
                 DnsttBridge.stopClient()
+            }
+            TunnelType.VAYDNS_SSH -> {
+                Log.d(TAG, "Stopping VayDNS+SSH: SSH first, then VayDNS")
+                SshTunnelBridge.stop()
+                VaydnsBridge.stopClient()
             }
             TunnelType.DOH -> {
                 Log.d(TAG, "Stopping DoH proxy")
@@ -4077,9 +4504,11 @@ class SlipNetVpnService : VpnService() {
             TunnelType.SLIPSTREAM_SSH -> { SlipstreamBridge.proxyOnlyMode = false; SlipstreamBridge.setVpnService(null) }
             TunnelType.DNSTT -> DnsttBridge.setVpnService(null)
             TunnelType.NOIZDNS -> DnsttBridge.setVpnService(null)
+            TunnelType.VAYDNS -> { /* VayDNS: no VpnService reference to clear */ }
             TunnelType.SSH -> { /* SSH-only: no bridge reference to clear */ }
             TunnelType.DNSTT_SSH -> DnsttBridge.setVpnService(null)
             TunnelType.NOIZDNS_SSH -> DnsttBridge.setVpnService(null)
+            TunnelType.VAYDNS_SSH -> { /* VayDNS+SSH: no VpnService reference to clear */ }
             TunnelType.DOH -> { /* DOH: no bridge reference to clear */ }
             TunnelType.NAIVE_SSH -> { /* NaiveProxy+SSH: no bridge reference to clear */ }
             TunnelType.NAIVE -> { /* NaiveProxy standalone: no bridge reference to clear */ }
@@ -4103,9 +4532,11 @@ class SlipNetVpnService : VpnService() {
             TunnelType.SLIPSTREAM_SSH -> SlipstreamBridge.isClientHealthy() && SshTunnelBridge.isClientHealthy()
             TunnelType.DNSTT -> DnsttBridge.isClientHealthy() && DnsttSocksBridge.isClientHealthy()
             TunnelType.NOIZDNS -> DnsttBridge.isClientHealthy() && DnsttSocksBridge.isClientHealthy()
+            TunnelType.VAYDNS -> VaydnsBridge.isClientHealthy() && DnsttSocksBridge.isClientHealthy()
             TunnelType.SSH -> SshTunnelBridge.isClientHealthy()
             TunnelType.DNSTT_SSH -> DnsttBridge.isClientHealthy() && SshTunnelBridge.isClientHealthy()
             TunnelType.NOIZDNS_SSH -> DnsttBridge.isClientHealthy() && SshTunnelBridge.isClientHealthy()
+            TunnelType.VAYDNS_SSH -> VaydnsBridge.isClientHealthy() && SshTunnelBridge.isClientHealthy()
             TunnelType.DOH -> DohBridge.isClientHealthy()
             TunnelType.NAIVE_SSH -> NaiveBridge.isClientHealthy() && SshTunnelBridge.isClientHealthy()
             TunnelType.NAIVE -> NaiveBridge.isClientHealthy() && NaiveSocksBridge.isClientHealthy()
@@ -4145,9 +4576,11 @@ class SlipNetVpnService : VpnService() {
 
         val needsSelfExclusion = currentTunnelType == TunnelType.DNSTT ||
                 currentTunnelType == TunnelType.NOIZDNS ||
+                currentTunnelType == TunnelType.VAYDNS ||
                 currentTunnelType == TunnelType.SSH ||
                 currentTunnelType == TunnelType.DNSTT_SSH ||
                 currentTunnelType == TunnelType.NOIZDNS_SSH ||
+                currentTunnelType == TunnelType.VAYDNS_SSH ||
                 currentTunnelType == TunnelType.DOH ||
                 currentTunnelType == TunnelType.SLIPSTREAM ||
                 currentTunnelType == TunnelType.SLIPSTREAM_SSH ||
@@ -4476,7 +4909,8 @@ class SlipNetVpnService : VpnService() {
         val tunnelAlive = if (isProxyOnly) true else HevSocks5Tunnel.isRunning()
         val isDnstt = currentTunnelType in listOf(
             TunnelType.DNSTT, TunnelType.NOIZDNS,
-            TunnelType.DNSTT_SSH, TunnelType.NOIZDNS_SSH
+            TunnelType.DNSTT_SSH, TunnelType.NOIZDNS_SSH,
+            TunnelType.VAYDNS, TunnelType.VAYDNS_SSH
         )
         val maxSeamless = if (isDnstt) MAX_SEAMLESS_RECONNECTS_DNSTT else MAX_SEAMLESS_RECONNECTS
         if (tunnelAlive && seamlessReconnectAttempts < maxSeamless

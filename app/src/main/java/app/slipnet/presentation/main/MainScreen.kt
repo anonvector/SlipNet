@@ -774,7 +774,7 @@ fun MainScreen(
 
             // Bottom sheet for adding profiles
             if (showAddMenu) {
-                val sheetState = rememberModalBottomSheetState()
+                val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
                 ModalBottomSheet(
                     onDismissRequest = { showAddMenu = false },
                     sheetState = sheetState,

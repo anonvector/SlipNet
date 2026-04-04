@@ -1,11 +1,12 @@
 module gomobile-build
 
-go 1.24.0
+go 1.24.4
 
 require (
 	golang.org/x/mobile v0.0.0-20260204172633-1dceadbbeea3
 	noizdns v0.0.0
 	snowflake-mobile v0.0.0
+	vaydns-mobile v0.0.0-00010101000000-000000000000
 )
 
 require (
@@ -32,6 +33,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/reedsolomon v1.13.0 // indirect
 	github.com/miekg/dns v1.1.65 // indirect
+	github.com/net2share/vaydns v0.0.0-00010101000000-000000000000 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
 	github.com/pion/dtls/v3 v3.0.11 // indirect
@@ -52,6 +54,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/realclientip/realclientip-go v1.0.0 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
+	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/theodorsm/covert-dtls v1.4.1 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/txthinking/runnergroup v0.0.0-20210608031112-152c7c4432bf // indirect
@@ -75,7 +78,10 @@ require (
 
 replace (
 	dnstt-mobile => ../dnstt-mobile
+	github.com/net2share/vaydns => ../vaydns
+	github.com/xtaci/kcp-go/v5 => github.com/net2share/kcp-go/v5 v5.0.0-20260325165956-416ba9d3856d
 	noizdns => ../noizdns
 	snowflake-mobile => ../snowflake-mobile
+	vaydns-mobile => ../vaydns-mobile
 	www.bamsoftware.com/git/dnstt.git => ../dnstt
 )

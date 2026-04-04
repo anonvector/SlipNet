@@ -69,6 +69,24 @@ data class ServerProfile(
     val defaultResolvers: List<DnsResolver> = emptyList(),
     // SOCKS5 proxy server port (for SOCKS5 tunnel type)
     val socks5ServerPort: Int = 1080,
+    // VayDNS: enable dnstt wire-format compatibility (8-byte ClientID, padding prefixes)
+    val vaydnsDnsttCompat: Boolean = false,
+    // VayDNS: DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)
+    val vaydnsRecordType: String = "txt",
+    // VayDNS: maximum QNAME wire length (controls query size on the wire, default 101)
+    val vaydnsMaxQnameLen: Int = 101,
+    // VayDNS: DNS query rate limit (queries per second, 0 = unlimited)
+    val vaydnsRps: Double = 0.0,
+    // VayDNS advanced: session idle timeout in seconds (0 = default: 10s, or 120s with dnsttCompat)
+    val vaydnsIdleTimeout: Int = 0,
+    // VayDNS advanced: keepalive interval in seconds (0 = default: 2s, or 10s with dnsttCompat)
+    val vaydnsKeepalive: Int = 0,
+    // VayDNS advanced: per-query UDP response timeout in ms (0 = default ~500ms)
+    val vaydnsUdpTimeout: Int = 0,
+    // VayDNS advanced: max number of data labels in query name (0 = unlimited)
+    val vaydnsMaxNumLabels: Int = 0,
+    // VayDNS advanced: ClientID size in bytes (0 = default 2, ignored when dnsttCompat is true)
+    val vaydnsClientIdSize: Int = 0,
     // Pinned to top of profile list
     val isPinned: Boolean = false
 ) {
@@ -104,7 +122,9 @@ enum class TunnelType(val value: String, val displayName: String) {
     SNOWFLAKE("snowflake", "Tor"),
     NAIVE_SSH("naive_ssh", "NaiveProxy + SSH"),
     NAIVE("naive", "NaiveProxy"),
-    SOCKS5("socks5", "SOCKS5 Proxy");
+    SOCKS5("socks5", "SOCKS5 Proxy"),
+    VAYDNS("vaydns", "VayDNS"),
+    VAYDNS_SSH("vaydns_ssh", "VayDNS + SSH");
 
     companion object {
         fun fromValue(value: String): TunnelType {
