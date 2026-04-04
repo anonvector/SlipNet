@@ -14,8 +14,8 @@ import javax.inject.Singleton
  * Single profile format: slipnet://[base64-encoded-profile]
  * Multiple profiles: one URI per line
  *
- * Encoded profile format v18 (pipe-delimited):
- * v18|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId|resolversHidden|hiddenResolvers|noizdnsStealth|dnsPayloadSize|socks5ServerPort
+ * Encoded profile format v20 (pipe-delimited):
+ * v20|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId|resolversHidden|hiddenResolvers|noizdnsStealth|dnsPayloadSize|socks5ServerPort|vaydnsDnsttCompat|vaydnsRecordType|vaydnsMaxQnameLen|vaydnsRps|vaydnsIdleTimeout|vaydnsKeepalive|vaydnsUdpTimeout|vaydnsMaxNumLabels|vaydnsClientIdSize
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -25,7 +25,7 @@ class ConfigExporter @Inject constructor() {
     companion object {
         const val SCHEME = "slipnet://"
         const val ENCRYPTED_SCHEME = "slipnet-enc://"
-        const val VERSION = "18"
+        const val VERSION = "20"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -38,6 +38,8 @@ class ConfigExporter @Inject constructor() {
         const val MODE_NAIVE_SSH = "naive_ssh"
         const val MODE_NAIVE = "naive"
         const val MODE_SOCKS5 = "socks5"
+        const val MODE_VAYDNS = "vaydns"
+        const val MODE_VAYDNS_SSH = "vaydns_ssh"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -105,6 +107,8 @@ class ConfigExporter @Inject constructor() {
             TunnelType.NAIVE_SSH -> MODE_NAIVE_SSH
             TunnelType.NAIVE -> MODE_NAIVE
             TunnelType.SOCKS5 -> MODE_SOCKS5
+            TunnelType.VAYDNS -> MODE_VAYDNS
+            TunnelType.VAYDNS_SSH -> MODE_VAYDNS_SSH
         }
 
         // When hideResolvers is true, leave position 4 empty so old versions (v1-v16)
@@ -133,7 +137,7 @@ class ConfigExporter @Inject constructor() {
             sanitize(profile.dnsttPublicKey),
             sanitize(profile.socksUsername ?: ""),
             sanitize(profile.socksPassword ?: ""),
-            if (profile.tunnelType == TunnelType.SSH || profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.SLIPSTREAM_SSH || profile.tunnelType == TunnelType.NAIVE_SSH) "1" else "0",
+            if (profile.tunnelType == TunnelType.SSH || profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.SLIPSTREAM_SSH || profile.tunnelType == TunnelType.NAIVE_SSH || profile.tunnelType == TunnelType.VAYDNS_SSH) "1" else "0",
             sanitize(profile.sshUsername),
             sanitize(profile.sshPassword),
             profile.sshPort.toString(),
@@ -159,7 +163,16 @@ class ConfigExporter @Inject constructor() {
             hiddenResolvers,
             if (profile.noizdnsStealth) "1" else "0",
             profile.dnsPayloadSize.toString(),
-            profile.socks5ServerPort.toString()
+            profile.socks5ServerPort.toString(),
+            if (profile.vaydnsDnsttCompat) "1" else "0",
+            sanitize(profile.vaydnsRecordType),
+            profile.vaydnsMaxQnameLen.toString(),
+            profile.vaydnsRps.toString(),
+            profile.vaydnsIdleTimeout.toString(),
+            profile.vaydnsKeepalive.toString(),
+            profile.vaydnsUdpTimeout.toString(),
+            profile.vaydnsMaxNumLabels.toString(),
+            profile.vaydnsClientIdSize.toString()
         ).joinToString(FIELD_DELIMITER)
     }
 

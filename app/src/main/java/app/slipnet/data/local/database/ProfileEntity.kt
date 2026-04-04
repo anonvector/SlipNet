@@ -144,6 +144,33 @@ data class ProfileEntity(
     @ColumnInfo(name = "socks5_server_port", defaultValue = "1080")
     val socks5ServerPort: Int = 1080,
 
+    @ColumnInfo(name = "vaydns_dnstt_compat", defaultValue = "0")
+    val vaydnsDnsttCompat: Boolean = false,
+
+    @ColumnInfo(name = "vaydns_record_type", defaultValue = "txt")
+    val vaydnsRecordType: String = "txt",
+
+    @ColumnInfo(name = "vaydns_max_qname_len", defaultValue = "101")
+    val vaydnsMaxQnameLen: Int = 101,
+
+    @ColumnInfo(name = "vaydns_rps", defaultValue = "0.0")
+    val vaydnsRps: Double = 0.0,
+
+    @ColumnInfo(name = "vaydns_idle_timeout", defaultValue = "0")
+    val vaydnsIdleTimeout: Int = 0,
+
+    @ColumnInfo(name = "vaydns_keepalive", defaultValue = "0")
+    val vaydnsKeepalive: Int = 0,
+
+    @ColumnInfo(name = "vaydns_udp_timeout", defaultValue = "0")
+    val vaydnsUdpTimeout: Int = 0,
+
+    @ColumnInfo(name = "vaydns_max_num_labels", defaultValue = "0")
+    val vaydnsMaxNumLabels: Int = 0,
+
+    @ColumnInfo(name = "vaydns_clientid_size", defaultValue = "0")
+    val vaydnsClientIdSize: Int = 0,
+
     @ColumnInfo(name = "is_pinned", defaultValue = "0")
     val isPinned: Boolean = false
 )

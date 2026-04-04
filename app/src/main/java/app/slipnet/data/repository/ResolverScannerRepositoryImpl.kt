@@ -18,6 +18,7 @@ import app.slipnet.tunnel.DnsttBridge
 import app.slipnet.tunnel.DnsttSocksBridge
 import app.slipnet.tunnel.ResolverConfig
 import app.slipnet.tunnel.SlipstreamBridge
+import app.slipnet.tunnel.VaydnsBridge
 import com.jcraft.jsch.JSch
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.async
@@ -1004,6 +1005,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 testResolverDnstt(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate, fullVerification = fullVerification)
             TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH ->
                 testResolverDnstt(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate, noizMode = true, fullVerification = fullVerification)
+            TunnelType.VAYDNS, TunnelType.VAYDNS_SSH ->
+                testResolverVaydns(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate, fullVerification = fullVerification)
             else ->
                 E2eTestResult(errorMessage = "Unsupported tunnel type: ${profile.tunnelType.displayName}")
         }
@@ -1042,6 +1045,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 testResolverDnsttIsolated(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate, fullVerification = fullVerification)
             TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH ->
                 testResolverDnsttIsolated(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate, noizMode = true, fullVerification = fullVerification)
+            TunnelType.VAYDNS, TunnelType.VAYDNS_SSH ->
+                testResolverVaydnsIsolated(resolverHost, resolverPort, profile, testUrl, timeoutMs, onPhaseUpdate, fullVerification = fullVerification)
             else ->
                 E2eTestResult(errorMessage = "Unsupported tunnel type: ${profile.tunnelType.displayName}")
         }
@@ -1219,6 +1224,332 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             )
         } finally {
             try { client?.stop() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Test a single resolver using an ephemeral VayDNS Go client.
+     * Creates its own VaydnsClient on a unique port — safe for concurrent use.
+     * Does NOT touch the singleton VaydnsBridge or DnsttSocksBridge.
+     */
+    private suspend fun testResolverVaydnsIsolated(
+        resolverHost: String,
+        resolverPort: Int,
+        profile: ServerProfile,
+        testUrl: String,
+        timeoutMs: Long,
+        onPhaseUpdate: (String) -> Unit,
+        fullVerification: Boolean = false
+    ): E2eTestResult = withContext(Dispatchers.IO) {
+        val totalStart = SystemClock.elapsedRealtime()
+        val vaydnsPort = findFreePort()
+        var client: vaydns.VaydnsClient? = null
+        try {
+            val result = withTimeoutOrNull(timeoutMs) {
+                onPhaseUpdate("Starting VayDNS...")
+
+                val dnsServer = formatDnsServer(resolverHost, resolverPort, profile.dnsTransport)
+                    ?: return@withTimeoutOrNull E2eTestResult(
+                        errorMessage = "DoH transport uses URL, not per-resolver IP",
+                        phase = E2eTestPhase.TUNNEL_SETUP
+                    )
+
+                val listenAddr = "127.0.0.1:$vaydnsPort"
+                val newClient = vaydns.Vaydns.newClient(dnsServer, profile.domain, profile.dnsttPublicKey, listenAddr)
+                newClient.setDnsttCompat(profile.vaydnsDnsttCompat)
+                if (profile.vaydnsRecordType != "txt") {
+                    newClient.setRecordType(profile.vaydnsRecordType)
+                }
+                if (profile.vaydnsMaxQnameLen != 101) {
+                    newClient.setMaxQnameLen(profile.vaydnsMaxQnameLen.toLong())
+                }
+                if (profile.vaydnsRps > 0) {
+                    newClient.setRPS(profile.vaydnsRps)
+                }
+                client = newClient
+                newClient.start()
+
+                onPhaseUpdate("Waiting for VayDNS...")
+                var remaining = timeoutMs - (SystemClock.elapsedRealtime() - totalStart)
+                val readyTimeout = minOf(remaining, 10000L)
+                val readyStart = SystemClock.elapsedRealtime()
+                var running = false
+                while (SystemClock.elapsedRealtime() - readyStart < readyTimeout) {
+                    if (newClient.isRunning) {
+                        running = true
+                        break
+                    }
+                    delay(100)
+                }
+
+                if (!running) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        errorMessage = "VayDNS startup timeout",
+                        phase = E2eTestPhase.TUNNEL_SETUP
+                    )
+                }
+
+                val isSshVariant = profile.tunnelType == TunnelType.VAYDNS_SSH
+                onPhaseUpdate(if (isSshVariant) "SSH tunnel handshake..." else "Tunnel handshake...")
+                remaining = timeoutMs - (SystemClock.elapsedRealtime() - totalStart)
+                if (remaining <= 0) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        errorMessage = "Timeout before tunnel handshake",
+                        phase = E2eTestPhase.TUNNEL_SETUP
+                    )
+                }
+                val warmupOk = if (isSshVariant) {
+                    warmupSshTunnel(vaydnsPort, remaining)
+                } else {
+                    warmupDnsttTunnel(vaydnsPort, remaining, profile.socksUsername, profile.socksPassword)
+                }
+                if (!warmupOk) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        errorMessage = "VayDNS tunnel handshake timeout (resolver may not work)",
+                        phase = E2eTestPhase.TUNNEL_SETUP
+                    )
+                }
+
+                val tunnelSetupMs = SystemClock.elapsedRealtime() - totalStart
+
+                if (!fullVerification) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        tunnelSetupMs = tunnelSetupMs,
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        success = true,
+                        phase = E2eTestPhase.COMPLETED
+                    )
+                }
+
+                remaining = timeoutMs - (SystemClock.elapsedRealtime() - totalStart)
+                if (remaining <= 0) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        tunnelSetupMs = tunnelSetupMs,
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        errorMessage = "Timeout after tunnel setup",
+                        phase = E2eTestPhase.HTTP_REQUEST
+                    )
+                }
+
+                if (isSshVariant) {
+                    onPhaseUpdate("SSH connect...")
+                    val bannerResult = verifySshConnection(vaydnsPort, profile, remaining)
+                    E2eTestResult(
+                        tunnelSetupMs = tunnelSetupMs,
+                        httpLatencyMs = bannerResult.latencyMs,
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        httpStatusCode = if (bannerResult.success) 200 else 0,
+                        success = bannerResult.success,
+                        errorMessage = bannerResult.errorMessage,
+                        phase = E2eTestPhase.COMPLETED
+                    )
+                } else {
+                    onPhaseUpdate("HTTP request...")
+                    val httpResult = performHttpThroughSocks(vaydnsPort, profile, testUrl, remaining)
+                    E2eTestResult(
+                        tunnelSetupMs = tunnelSetupMs,
+                        httpLatencyMs = httpResult.latencyMs,
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        httpStatusCode = httpResult.statusCode,
+                        success = httpResult.success,
+                        errorMessage = httpResult.errorMessage,
+                        phase = E2eTestPhase.COMPLETED
+                    )
+                }
+            }
+            result ?: E2eTestResult(
+                totalMs = SystemClock.elapsedRealtime() - totalStart,
+                errorMessage = "E2E test timed out (${timeoutMs}ms)",
+                phase = E2eTestPhase.TUNNEL_SETUP
+            )
+        } catch (e: Exception) {
+            E2eTestResult(
+                totalMs = SystemClock.elapsedRealtime() - totalStart,
+                errorMessage = e.message ?: "Unknown error",
+                phase = E2eTestPhase.TUNNEL_SETUP
+            )
+        } finally {
+            try { client?.stop() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Test a single resolver using the shared VaydnsBridge singleton + DnsttSocksBridge.
+     * NOT safe for concurrent use — only one VayDNS tunnel at a time.
+     */
+    private suspend fun testResolverVaydns(
+        resolverHost: String,
+        resolverPort: Int,
+        profile: ServerProfile,
+        testUrl: String,
+        timeoutMs: Long,
+        onPhaseUpdate: (String) -> Unit,
+        fullVerification: Boolean = false
+    ): E2eTestResult = withContext(Dispatchers.IO) {
+        val totalStart = SystemClock.elapsedRealtime()
+        val vaydnsPort = findFreePort()
+        var bridgePort = 0
+        try {
+            val result = withTimeoutOrNull(timeoutMs) {
+                onPhaseUpdate("Starting VayDNS...")
+
+                val dnsServer = formatDnsServer(resolverHost, resolverPort, profile.dnsTransport)
+                    ?: return@withTimeoutOrNull E2eTestResult(
+                        errorMessage = "DoH transport uses URL, not per-resolver IP",
+                        phase = E2eTestPhase.TUNNEL_SETUP
+                    )
+
+                val startResult = VaydnsBridge.startClient(
+                    dnsServer = dnsServer,
+                    tunnelDomain = profile.domain,
+                    publicKey = profile.dnsttPublicKey,
+                    listenPort = vaydnsPort,
+                    listenHost = "127.0.0.1",
+                    dnsttCompat = profile.vaydnsDnsttCompat,
+                    recordType = profile.vaydnsRecordType,
+                    maxQnameLen = profile.vaydnsMaxQnameLen,
+                    rps = profile.vaydnsRps
+                )
+
+                if (startResult.isFailure) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        errorMessage = "VayDNS start failed: ${startResult.exceptionOrNull()?.message}",
+                        phase = E2eTestPhase.TUNNEL_SETUP
+                    )
+                }
+
+                onPhaseUpdate("Waiting for VayDNS...")
+                var remaining = timeoutMs - (SystemClock.elapsedRealtime() - totalStart)
+                val readyTimeout = minOf(remaining, 10000L)
+                val readyStart = SystemClock.elapsedRealtime()
+                var running = false
+                while (SystemClock.elapsedRealtime() - readyStart < readyTimeout) {
+                    if (VaydnsBridge.isRunning()) {
+                        running = true
+                        break
+                    }
+                    delay(100)
+                }
+
+                if (!running) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        errorMessage = "VayDNS startup timeout",
+                        phase = E2eTestPhase.TUNNEL_SETUP
+                    )
+                }
+
+                val isSshVariant = profile.tunnelType == TunnelType.VAYDNS_SSH
+                onPhaseUpdate(if (isSshVariant) "SSH tunnel handshake..." else "Tunnel handshake...")
+                remaining = timeoutMs - (SystemClock.elapsedRealtime() - totalStart)
+                if (remaining <= 0) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        errorMessage = "Timeout before tunnel handshake",
+                        phase = E2eTestPhase.TUNNEL_SETUP
+                    )
+                }
+                val warmupOk = if (isSshVariant) {
+                    warmupSshTunnel(vaydnsPort, remaining)
+                } else {
+                    warmupDnsttTunnel(vaydnsPort, remaining, profile.socksUsername, profile.socksPassword)
+                }
+                if (!warmupOk) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        errorMessage = "VayDNS tunnel handshake timeout (resolver may not work)",
+                        phase = E2eTestPhase.TUNNEL_SETUP
+                    )
+                }
+
+                if (!isSshVariant) {
+                    onPhaseUpdate("Starting bridge...")
+                    bridgePort = findFreePort()
+                    DnsttSocksBridge.authoritativeMode = profile.dnsttAuthoritative
+                    DnsttSocksBridge.upstreamRunningCheck = { VaydnsBridge.isRunning() }
+                    val bridgeResult = DnsttSocksBridge.start(
+                        dnsttPort = vaydnsPort,
+                        dnsttHost = "127.0.0.1",
+                        listenPort = bridgePort,
+                        listenHost = "127.0.0.1",
+                        socksUsername = profile.socksUsername,
+                        socksPassword = profile.socksPassword
+                    )
+
+                    if (bridgeResult.isFailure) {
+                        return@withTimeoutOrNull E2eTestResult(
+                            totalMs = SystemClock.elapsedRealtime() - totalStart,
+                            errorMessage = "Bridge start failed: ${bridgeResult.exceptionOrNull()?.message}",
+                            phase = E2eTestPhase.TUNNEL_SETUP
+                        )
+                    }
+                }
+
+                val tunnelSetupMs = SystemClock.elapsedRealtime() - totalStart
+
+                if (!fullVerification) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        tunnelSetupMs = tunnelSetupMs,
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        success = true,
+                        phase = E2eTestPhase.COMPLETED
+                    )
+                }
+
+                remaining = timeoutMs - (SystemClock.elapsedRealtime() - totalStart)
+                if (remaining <= 0) {
+                    return@withTimeoutOrNull E2eTestResult(
+                        tunnelSetupMs = tunnelSetupMs,
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        errorMessage = "Timeout after tunnel setup",
+                        phase = E2eTestPhase.HTTP_REQUEST
+                    )
+                }
+
+                if (isSshVariant) {
+                    onPhaseUpdate("SSH connect...")
+                    val bannerResult = verifySshConnection(vaydnsPort, profile, remaining)
+                    E2eTestResult(
+                        tunnelSetupMs = tunnelSetupMs,
+                        httpLatencyMs = bannerResult.latencyMs,
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        httpStatusCode = if (bannerResult.success) 200 else 0,
+                        success = bannerResult.success,
+                        errorMessage = bannerResult.errorMessage,
+                        phase = E2eTestPhase.COMPLETED
+                    )
+                } else {
+                    onPhaseUpdate("HTTP request...")
+                    val httpResult = performHttpThroughSocks(bridgePort, profile, testUrl, remaining)
+                    E2eTestResult(
+                        tunnelSetupMs = tunnelSetupMs,
+                        httpLatencyMs = httpResult.latencyMs,
+                        totalMs = SystemClock.elapsedRealtime() - totalStart,
+                        httpStatusCode = httpResult.statusCode,
+                        success = httpResult.success,
+                        errorMessage = httpResult.errorMessage,
+                        phase = E2eTestPhase.COMPLETED
+                    )
+                }
+            }
+            result ?: E2eTestResult(
+                totalMs = SystemClock.elapsedRealtime() - totalStart,
+                errorMessage = "E2E test timed out (${timeoutMs}ms)",
+                phase = E2eTestPhase.TUNNEL_SETUP
+            )
+        } catch (e: Exception) {
+            E2eTestResult(
+                totalMs = SystemClock.elapsedRealtime() - totalStart,
+                errorMessage = e.message ?: "Unknown error",
+                phase = E2eTestPhase.TUNNEL_SETUP
+            )
+        } finally {
+            try { DnsttSocksBridge.stop() } catch (_: Exception) {}
+            try { VaydnsBridge.stopClient() } catch (_: Exception) {}
         }
     }
 

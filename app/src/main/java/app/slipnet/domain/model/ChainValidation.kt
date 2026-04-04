@@ -29,21 +29,21 @@ object ChainValidation {
 
     /** Tunnel types that can be used in a chain (single-layer types only). */
     val CHAINABLE_TYPES = setOf(
-        TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.SLIPSTREAM,
+        TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS, TunnelType.SLIPSTREAM,
         TunnelType.SSH, TunnelType.NAIVE, TunnelType.SNOWFLAKE, TunnelType.DOH,
         TunnelType.SOCKS5
     )
 
     /** Tunnel types that can serve as an intermediate (non-final) layer. */
     val CAN_BE_INTERMEDIATE = setOf(
-        TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.SLIPSTREAM,
+        TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS, TunnelType.SLIPSTREAM,
         TunnelType.NAIVE, TunnelType.SNOWFLAKE, TunnelType.SOCKS5,
         TunnelType.SSH
     )
 
     /** Tunnel types that can serve as the final (innermost) layer. */
     val CAN_BE_FINAL = setOf(
-        TunnelType.SSH, TunnelType.DNSTT, TunnelType.NOIZDNS,
+        TunnelType.SSH, TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS,
         TunnelType.SLIPSTREAM, TunnelType.NAIVE, TunnelType.SNOWFLAKE, TunnelType.DOH,
         TunnelType.SOCKS5
     )
@@ -52,7 +52,7 @@ object ChainValidation {
     fun outputType(type: TunnelType): LayerOutput? = when (type) {
         // Standalone DNSTT/NoizDNS/Slipstream tunnel to a remote Dante SOCKS5 proxy,
         // so the next layer must perform a SOCKS5 handshake (with auth) to connect.
-        TunnelType.DNSTT, TunnelType.NOIZDNS -> LayerOutput.SOCKS5
+        TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS -> LayerOutput.SOCKS5
         TunnelType.SLIPSTREAM -> LayerOutput.SOCKS5
         TunnelType.SSH -> LayerOutput.SOCKS5
         TunnelType.NAIVE -> LayerOutput.SOCKS5
@@ -65,7 +65,7 @@ object ChainValidation {
     fun canConsumeInput(type: TunnelType, input: LayerOutput): Boolean = when (type) {
         TunnelType.SSH -> true  // SSH can connect over raw TCP or SOCKS5
         TunnelType.SOCKS5 -> true  // SOCKS5 outbound traffic is routed through VPN/previous layer
-        TunnelType.DNSTT, TunnelType.NOIZDNS -> input == LayerOutput.SOCKS5  // needs SOCKS5 for resolver bypass
+        TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS -> input == LayerOutput.SOCKS5  // needs SOCKS5 for resolver bypass
         TunnelType.NAIVE -> true  // NaiveProxy outbound is routed through VPN/previous layer
         TunnelType.SLIPSTREAM -> false  // Slipstream connects to its own server directly
         TunnelType.DOH -> false
@@ -79,6 +79,7 @@ object ChainValidation {
      */
     fun bridgeGroup(type: TunnelType): String = when (type) {
         TunnelType.DNSTT, TunnelType.NOIZDNS -> "dnstt"
+        TunnelType.VAYDNS -> "vaydns"
         TunnelType.SLIPSTREAM -> "slipstream"
         TunnelType.SSH -> "ssh"
         TunnelType.NAIVE -> "naive"
