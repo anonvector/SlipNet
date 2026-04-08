@@ -1,10 +1,10 @@
-.PHONY: build windows resolvers clean
+.PHONY: build windows resolvers keygen clean
 
 VERSION ?= dev
 
 # CONFIG_ENCRYPTION_KEY: 64-char hex string for slipnet-enc:// decryption.
-# Pass via: make CONFIG_ENCRYPTION_KEY=abc123...
-CONFIG_ENCRYPTION_KEY ?=
+# Auto-read from ../local.properties, or override: make CONFIG_ENCRYPTION_KEY=abc123...
+CONFIG_ENCRYPTION_KEY ?= $(shell grep -s '^CONFIG_ENCRYPTION_KEY=' ../local.properties | cut -d= -f2)
 
 LDFLAGS := -s -w -X main.version=$(VERSION)
 BUILD_TAGS :=
@@ -33,7 +33,7 @@ resolvers:
 # Generate XOR-obfuscated key file (or clean it for keyless builds)
 keygen:
 ifneq ($(CONFIG_ENCRYPTION_KEY),)
-	go run ./cmd/keygen $(CONFIG_ENCRYPTION_KEY) > key_generated.go
+	CONFIG_ENCRYPTION_KEY=$(CONFIG_ENCRYPTION_KEY) go run ./cmd/keygen > key_generated.go
 else
 	rm -f key_generated.go
 endif

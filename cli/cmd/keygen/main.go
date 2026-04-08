@@ -10,12 +10,17 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "usage: keygen <64-char-hex-key>\n")
+	// Read key from env var (CI-safe) or fall back to CLI arg.
+	hexKey := os.Getenv("CONFIG_ENCRYPTION_KEY")
+	if hexKey == "" && len(os.Args) == 2 {
+		hexKey = os.Args[1]
+	}
+	if hexKey == "" {
+		fmt.Fprintf(os.Stderr, "usage: CONFIG_ENCRYPTION_KEY=<hex> keygen\n       keygen <64-char-hex-key>\n")
 		os.Exit(1)
 	}
 
-	key, err := hex.DecodeString(os.Args[1])
+	key, err := hex.DecodeString(hexKey)
 	if err != nil || len(key) != 32 {
 		fmt.Fprintf(os.Stderr, "error: key must be exactly 64 hex characters (32 bytes)\n")
 		os.Exit(1)

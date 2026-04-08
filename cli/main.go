@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"noizdns/mobile"
+	"vaydns-mobile/vaydns"
 )
 
 // version is set at build time via -ldflags "-X main.version=..."
@@ -53,6 +54,35 @@ type Profile struct {
 	SSHHost       string
 	DNSTransport  string // udp, tcp, tls (DoT), https (DoH)
 	DoHURL        string
+
+	// VayDNS-specific fields (config positions 41-49)
+	VaydnsDnsttCompat  bool
+	VaydnsRecordType   string
+	VaydnsMaxQnameLen  int
+	VaydnsRps          float64
+	VaydnsIdleTimeout  int // seconds
+	VaydnsKeepalive    int // seconds
+	VaydnsUdpTimeout   int // milliseconds
+	VaydnsMaxNumLabels int
+	VaydnsClientIdSize int
+
+	// SSH over TLS (config positions 50-51)
+	SSHTlsEnabled bool
+	SSHTlsSni     string
+
+	// SSH over HTTP CONNECT proxy (config positions 52-54)
+	SSHHttpProxyHost       string
+	SSHHttpProxyPort       int
+	SSHHttpProxyCustomHost string
+
+	// SSH over WebSocket (config positions 55-58)
+	SSHWsEnabled    bool
+	SSHWsPath       string
+	SSHWsUseTls     bool
+	SSHWsCustomHost string
+
+	// SSH payload — raw prefix for DPI bypass (config position 59, base64-encoded)
+	SSHPayload string
 }
 
 func parseURI(uri string) (*Profile, error) {
@@ -156,6 +186,58 @@ func parseURI(uri string) (*Profile, error) {
 	// DNS transport (field 22)
 	if len(fields) > 22 && fields[22] != "" {
 		p.DNSTransport = fields[22]
+	}
+
+	// VayDNS fields (positions 41-49)
+	if len(fields) > 49 {
+		p.VaydnsDnsttCompat = fields[41] == "1"
+		if fields[42] != "" {
+			p.VaydnsRecordType = fields[42]
+		}
+		if v, err := strconv.Atoi(fields[43]); err == nil {
+			p.VaydnsMaxQnameLen = v
+		}
+		if v, err := strconv.ParseFloat(fields[44], 64); err == nil {
+			p.VaydnsRps = v
+		}
+		if v, err := strconv.Atoi(fields[45]); err == nil {
+			p.VaydnsIdleTimeout = v
+		}
+		if v, err := strconv.Atoi(fields[46]); err == nil {
+			p.VaydnsKeepalive = v
+		}
+		if v, err := strconv.Atoi(fields[47]); err == nil {
+			p.VaydnsUdpTimeout = v
+		}
+		if v, err := strconv.Atoi(fields[48]); err == nil {
+			p.VaydnsMaxNumLabels = v
+		}
+		if v, err := strconv.Atoi(fields[49]); err == nil {
+			p.VaydnsClientIdSize = v
+		}
+	}
+
+	// SSH over TLS / HTTP CONNECT / WebSocket / Payload (positions 50-59)
+	if len(fields) > 59 {
+		p.SSHTlsEnabled = fields[50] == "1"
+		p.SSHTlsSni = fields[51]
+		p.SSHHttpProxyHost = fields[52]
+		if v, err := strconv.Atoi(fields[53]); err == nil && v > 0 {
+			p.SSHHttpProxyPort = v
+		} else {
+			p.SSHHttpProxyPort = 8080
+		}
+		p.SSHHttpProxyCustomHost = fields[54]
+		p.SSHWsEnabled = fields[55] == "1"
+		p.SSHWsPath = fields[56]
+		if p.SSHWsPath == "" {
+			p.SSHWsPath = "/"
+		}
+		p.SSHWsUseTls = fields[57] == "1"
+		p.SSHWsCustomHost = fields[58]
+		if decoded, err := base64.StdEncoding.DecodeString(fields[59]); err == nil {
+			p.SSHPayload = string(decoded)
+		}
 	}
 
 	return p, nil
@@ -334,6 +416,8 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	switch profile.TunnelType {
 	case "dnstt", "dnstt_ssh", "sayedns", "sayedns_ssh":
 		// DNSTT/NoizDNS — handled below via noizdns/mobile
+	case "vaydns", "vaydns_ssh":
+		// VayDNS — handled below via vaydns-mobile/vaydns
 	case "ssh", "direct_ssh":
 		if portOverride > 0 {
 			profile.Port = portOverride
@@ -348,7 +432,7 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		return
 	case "ss", "slipstream_ssh", "doh", "snowflake", "naive":
 		fmt.Fprintf(os.Stderr, "  Error: This config uses tunnel type %q which is not supported by the CLI.\n"+
-			"  SlipNet CLI supports DNSTT, NoizDNS, SSH, and SOCKS5 tunnel types.\n"+
+			"  SlipNet CLI supports DNSTT, NoizDNS, VayDNS, SSH, and SOCKS5 tunnel types.\n"+
 			"  Use the SlipNet app for other tunnel types.\n", profile.TunnelType)
 		return
 	default:
@@ -455,33 +539,95 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	fmt.Println()
 	fmt.Println("  Connecting...")
 
-	client, err := mobile.NewClient(dnsAddr, profile.Domain, profile.PublicKey, listenAddr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "  Error: Failed to create client: %v\n", err)
-		return
+	isVaydns := profile.TunnelType == "vaydns" || profile.TunnelType == "vaydns_ssh"
+
+	// tunnelClient abstracts over DNSTT/NoizDNS and VayDNS client types.
+	type tunnelClient interface {
+		Start() error
+		Stop()
+		IsRunning() bool
 	}
 
-	client.SetAuthoritativeMode(authMode)
+	newClient := func() (tunnelClient, error) {
+		if isVaydns {
+			c, err := vaydns.NewClient(dnsAddr, profile.Domain, profile.PublicKey, listenAddr)
+			if err != nil {
+				return nil, err
+			}
+			if profile.VaydnsDnsttCompat {
+				c.SetDnsttCompat(true)
+			}
+			if profile.VaydnsRecordType != "" {
+				c.SetRecordType(profile.VaydnsRecordType)
+			}
+			if profile.VaydnsMaxQnameLen > 0 {
+				c.SetMaxQnameLen(profile.VaydnsMaxQnameLen)
+			}
+			if profile.VaydnsRps > 0 {
+				c.SetRPS(profile.VaydnsRps)
+			}
+			if profile.VaydnsIdleTimeout > 0 {
+				c.SetIdleTimeout(profile.VaydnsIdleTimeout)
+			}
+			if profile.VaydnsKeepalive > 0 {
+				c.SetKeepAlive(profile.VaydnsKeepalive)
+			}
+			if profile.VaydnsUdpTimeout > 0 {
+				c.SetUDPTimeout(profile.VaydnsUdpTimeout)
+			}
+			if profile.VaydnsMaxNumLabels > 0 {
+				c.SetMaxNumLabels(profile.VaydnsMaxNumLabels)
+			}
+			if profile.VaydnsClientIdSize > 0 {
+				c.SetClientIDSize(profile.VaydnsClientIdSize)
+			}
+			if querySize > 0 {
+				c.SetMaxPayload(querySize)
+			}
+			if utlsOverride != "" {
+				c.SetUTLSFingerprint(utlsOverride)
+			}
+			return c, nil
+		}
 
-	if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
-		client.SetNoizMode(true)
-	}
-
-	if querySize > 0 {
-		client.SetMaxPayload(querySize)
+		// DNSTT / NoizDNS
+		c, err := mobile.NewClient(dnsAddr, profile.Domain, profile.PublicKey, listenAddr)
+		if err != nil {
+			return nil, err
+		}
+		c.SetAuthoritativeMode(authMode)
+		if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
+			c.SetNoizMode(true)
+		}
+		if querySize > 0 {
+			c.SetMaxPayload(querySize)
+		}
+		if utlsOverride != "" {
+			c.SetUTLSFingerprint(utlsOverride)
+		}
+		// Only inject SOCKS5 auth for pure SOCKS5 tunnel types.
+		// _ssh variants carry raw SSH, not SOCKS5.
+		isSocks5Tunnel := profile.TunnelType == "dnstt" || profile.TunnelType == "sayedns" || profile.TunnelType == ""
+		if profile.SOCKSUser != "" && isSocks5Tunnel {
+			c.SetSocksCredentials(profile.SOCKSUser, profile.SOCKSPass)
+		}
+		return c, nil
 	}
 
 	if utlsOverride != "" {
-		client.SetUTLSFingerprint(utlsOverride)
 		fmt.Printf("  uTLS:       %s\n", utlsOverride)
 	}
+	if profile.SOCKSUser != "" && !isVaydns {
+		isSocks5Tunnel := profile.TunnelType == "dnstt" || profile.TunnelType == "sayedns" || profile.TunnelType == ""
+		if isSocks5Tunnel {
+			fmt.Printf("  SOCKS5 Auth: enabled (injected automatically)\n")
+		}
+	}
 
-	// Only inject SOCKS5 auth for pure SOCKS5 tunnel types.
-	// dnstt_ssh/sayedns_ssh carry raw SSH, not SOCKS5.
-	isSocks5Tunnel := profile.TunnelType == "dnstt" || profile.TunnelType == "sayedns" || profile.TunnelType == ""
-	if profile.SOCKSUser != "" && isSocks5Tunnel {
-		client.SetSocksCredentials(profile.SOCKSUser, profile.SOCKSPass)
-		fmt.Printf("  SOCKS5 Auth: enabled (injected automatically)\n")
+	client, err := newClient()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Error: Failed to create client: %v\n", err)
+		return
 	}
 
 	if err := client.Start(); err != nil {
@@ -525,25 +671,11 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 				client.Stop()
 				time.Sleep(reconnectDelay)
 
-				client, err = mobile.NewClient(dnsAddr, profile.Domain, profile.PublicKey, listenAddr)
+				client, err = newClient()
 				if err != nil {
 					fmt.Printf("  Failed to create client: %v\n", err)
 					continue
 				}
-				client.SetAuthoritativeMode(authMode)
-				if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
-					client.SetNoizMode(true)
-				}
-				if querySize > 0 {
-					client.SetMaxPayload(querySize)
-				}
-				if utlsOverride != "" {
-					client.SetUTLSFingerprint(utlsOverride)
-				}
-				if profile.SOCKSUser != "" && isSocks5Tunnel {
-					client.SetSocksCredentials(profile.SOCKSUser, profile.SOCKSPass)
-				}
-
 				if err := client.Start(); err != nil {
 					fmt.Printf("  Reconnect failed: %v\n", err)
 					continue
@@ -564,6 +696,7 @@ func runScanCommand(args []string) {
 	var e2eEnabled bool
 	var pubkey string
 	var noizdns bool
+	var vaydnsMode bool
 	var e2eConcurrency = 10
 	var e2eTimeout = 15000
 	var e2eURL string
@@ -629,6 +762,8 @@ func runScanCommand(args []string) {
 			}
 		case "--noizdns":
 			noizdns = true
+		case "--vaydns":
+			vaydnsMode = true
 		case "--e2e-concurrency":
 			if i+1 < len(args) {
 				v, err := strconv.Atoi(args[i+1])
@@ -720,7 +855,7 @@ func runScanCommand(args []string) {
 		}
 	}
 
-	// If --config is provided, extract domain, pubkey, noizdns, and ssh mode from slipnet:// URI
+	// If --config is provided, extract domain, pubkey, tunnel mode, and ssh mode from slipnet:// URI
 	var sshMode bool
 	var socksUser, socksPass string
 	if configURI != "" {
@@ -738,7 +873,10 @@ func runScanCommand(args []string) {
 		if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
 			noizdns = true
 		}
-		if profile.TunnelType == "dnstt_ssh" || profile.TunnelType == "sayedns_ssh" {
+		if profile.TunnelType == "vaydns" || profile.TunnelType == "vaydns_ssh" {
+			vaydnsMode = true
+		}
+		if profile.TunnelType == "dnstt_ssh" || profile.TunnelType == "sayedns_ssh" || profile.TunnelType == "vaydns_ssh" {
 			sshMode = true
 		}
 		socksUser = profile.SOCKSUser
@@ -793,6 +931,7 @@ func runScanCommand(args []string) {
 				TunnelDomain: domain,
 				PublicKey:     pubkey,
 				NoizMode:      noizdns,
+				VaydnsMode:    vaydnsMode,
 				SSHMode:       sshMode,
 				TimeoutMs:     e2eTimeout,
 				Concurrency:   e2eConcurrency,
@@ -815,6 +954,7 @@ func runScanCommand(args []string) {
 			TunnelDomain: domain,
 			PublicKey:     pubkey,
 			NoizMode:      noizdns,
+			VaydnsMode:    vaydnsMode,
 			SSHMode:       sshMode,
 			TimeoutMs:     e2eTimeout,
 			Concurrency:   e2eConcurrency,
@@ -837,6 +977,7 @@ func runScanCommand(args []string) {
 			TunnelDomain:   domain,
 			PublicKey:       pubkey,
 			NoizMode:        noizdns,
+			VaydnsMode:      vaydnsMode,
 			SSHMode:         sshMode,
 			TimeoutMs:       e2eTimeout,
 			Concurrency:     e2eConcurrency,
@@ -853,7 +994,7 @@ func runScanCommand(args []string) {
 
 func printUsage() {
 	prog := filepath.Base(os.Args[0])
-	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - Tunnel proxy (DNSTT, NoizDNS, SSH, SOCKS5)
+	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - Tunnel proxy (DNSTT, NoizDNS, VayDNS, SSH, SOCKS5)
 
 Usage:
   %s [options] slipnet://BASE64...
@@ -887,6 +1028,7 @@ Options (scan):
   --e2e-only          E2E test only: skip DNS scan, test resolvers directly
   --pubkey KEY        Server public key for E2E (required with --e2e/--e2e-only)
   --noizdns           Use NoizDNS mode for E2E (default: DNSTT)
+  --vaydns            Use VayDNS mode for E2E
   --e2e-concurrency N Parallel E2E tests (default: 10)
   --e2e-timeout MS    E2E HTTP timeout in ms (default: 15000)
   --e2e-url URL       Custom URL for E2E verification (default: gstatic generate_204)

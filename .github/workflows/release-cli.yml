@@ -1,0 +1,133 @@
+name: Build CLI Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+      create_release:
+        description: 'Create a GitHub release'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build-cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - goos: linux
+            goarch: arm
+            goarm: '7'
+            suffix: linux-armv7
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64
+            ext: .exe
+
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY != '' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+
+      - name: Install garble
+        run: go install mvdan.cc/garble@latest
+
+      - name: Copy resolver list for embedding
+        run: cp app/src/main/res/raw/resolvers.txt cli/resolvers.txt
+
+      - name: Generate obfuscated config key
+        if: env.HAS_KEY == 'true'
+        working-directory: cli
+        env:
+          CONFIG_ENCRYPTION_KEY: ${{ secrets.CONFIG_ENCRYPTION_KEY }}
+        run: go run ./cmd/keygen > key_generated.go
+
+      - name: Build
+        working-directory: cli
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+          TAGS=""
+          if [ "$HAS_KEY" = "true" ]; then
+            TAGS="has_config_key"
+          fi
+          garble -seed=random build \
+            -tags "${TAGS}" -trimpath \
+            -ldflags="${LDFLAGS}" \
+            -o ../slipnet-${{ matrix.suffix }}${{ matrix.ext }} .
+
+      - name: Compress with UPX
+        if: matrix.goos != 'windows' && matrix.goos != 'darwin'
+        run: |
+          sudo apt-get install -y upx-ucl > /dev/null 2>&1
+          upx --best --lzma slipnet-${{ matrix.suffix }} || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slipnet-${{ matrix.suffix }}
+          path: slipnet-${{ matrix.suffix }}${{ matrix.ext }}
+
+  release:
+    needs: build-cli
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Collect binaries
+        run: |
+          mkdir -p release
+          find artifacts -type f -name 'slipnet-*' -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          files: release/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') || contains(github.ref, 'rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -981,7 +982,9 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 	}
 	if e2eConfig != nil {
 		mode := "DNSTT"
-		if e2eConfig.NoizMode {
+		if e2eConfig.VaydnsMode {
+			mode = "VayDNS"
+		} else if e2eConfig.NoizMode {
 			mode = "NoizDNS"
 		}
 		if e2eConfig.SSHMode {
@@ -1197,14 +1200,12 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 	fmt.Println()
 
 	// Sort by score descending, then by latency ascending
-	for i := 0; i < len(compatible); i++ {
-		for j := i + 1; j < len(compatible); j++ {
-			if compatible[j].score > compatible[i].score ||
-				(compatible[j].score == compatible[i].score && compatible[j].LatencyMs < compatible[i].LatencyMs) {
-				compatible[i], compatible[j] = compatible[j], compatible[i]
-			}
+	sort.Slice(compatible, func(i, j int) bool {
+		if compatible[i].score != compatible[j].score {
+			return compatible[i].score > compatible[j].score
 		}
-	}
+		return compatible[i].LatencyMs < compatible[j].LatencyMs
+	})
 
 	// Print results
 	fmt.Println("  ── Results ──────────────────────────────────────")
@@ -1264,15 +1265,12 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 		copy(sortedE2E, e2eResults)
 		e2eMu.Unlock()
 
-		for i := 0; i < len(sortedE2E); i++ {
-			for j := i + 1; j < len(sortedE2E); j++ {
-				ri, rj := sortedE2E[i], sortedE2E[j]
-				if (!ri.Success && rj.Success) ||
-					(ri.Success == rj.Success && ri.TotalMs > rj.TotalMs) {
-					sortedE2E[i], sortedE2E[j] = sortedE2E[j], sortedE2E[i]
-				}
+		sort.Slice(sortedE2E, func(i, j int) bool {
+			if sortedE2E[i].Success != sortedE2E[j].Success {
+				return sortedE2E[i].Success
 			}
-		}
+			return sortedE2E[i].TotalMs < sortedE2E[j].TotalMs
+		})
 
 		fmt.Printf("  %-18s %7s  %7s  %7s  %s\n", "RESOLVER", "TUNNEL", "HTTP", "TOTAL", "STATUS")
 		fmt.Printf("  %-18s %7s  %7s  %7s  %s\n", "────────────────", "───────", "───────", "───────", "──────")
@@ -1315,7 +1313,9 @@ func RunE2EOnlyScanner(resolvers []string, config E2EConfig, outputFile string) 
 	var stopped atomic.Bool
 
 	mode := "DNSTT"
-	if config.NoizMode {
+	if config.VaydnsMode {
+		mode = "VayDNS"
+	} else if config.NoizMode {
 		mode = "NoizDNS"
 	}
 	if config.SSHMode {

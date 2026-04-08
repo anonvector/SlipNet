@@ -35,6 +35,8 @@ SlipNet supports multiple tunnel types with optional SSH chaining:
 | **DNSTT + SSH** | KCP + Noise + SSH | DNSTT with SSH chaining for zero DNS leaks |
 | **NoizDNS** | KCP + Noise | DPI-resistant DNS tunneling |
 | **NoizDNS + SSH** | KCP + Noise + SSH | NoizDNS with SSH chaining |
+| **VayDNS** | KCP + Noise | Optimized DNS tunneling with configurable wire format |
+| **VayDNS + SSH** | KCP + Noise + SSH | VayDNS with SSH chaining |
 | **Slipstream** | QUIC | High-performance QUIC tunneling |
 | **Slipstream + SSH** | QUIC + SSH | Slipstream with SSH chaining |
 | **SSH** | SSH | Standalone SSH tunnel (no DNS tunneling) |
@@ -43,14 +45,19 @@ SlipNet supports multiple tunnel types with optional SSH chaining:
 | **DOH** | DNS over HTTPS | DNS-only encryption via HTTPS (RFC 8484) |
 | **Tor** | Tor Network | Connect via Tor with Snowflake, obfs4, Meek, or custom bridges |
 
-**Note:** DNSTT is the default and recommended tunnel type for most users. NoizDNS adds DPI resistance on top of DNSTT for censored networks. SSH variants add an extra layer of encryption and can prevent DNS leaks.
+**Note:** DNSTT is the default and recommended tunnel type for most users. NoizDNS adds DPI resistance on top of DNSTT for censored networks. VayDNS offers an optimized wire format with configurable QNAME lengths, record types, and rate limiting. SSH variants add an extra layer of encryption and can prevent DNS leaks.
 
 ## Features
 
 - **Modern UI**: Built entirely with Jetpack Compose and Material 3 design
-- **Multiple Tunnel Types**: DNSTT, NoizDNS, Slipstream, SSH, NaiveProxy, DOH, and Tor with optional SSH chaining
+- **Multiple Tunnel Types**: DNSTT, NoizDNS, VayDNS, Slipstream, SSH, NaiveProxy, DOH, and Tor with optional SSH chaining
 - **NoizDNS**: DPI-resistant DNS tunneling with optional stealth mode
-- **SSH Tunneling**: Chain SSH through DNSTT, NoizDNS, Slipstream, or NaiveProxy, or use standalone SSH
+- **VayDNS**: Optimized DNS tunneling with configurable wire format, record types, QNAME lengths, and rate limiting
+- **SSH Tunneling**: Chain SSH through DNSTT, NoizDNS, VayDNS, Slipstream, or NaiveProxy, or use standalone SSH
+- **SSH over TLS**: Wrap SSH in TLS with custom SNI for domain fronting and DPI bypass
+- **SSH over WebSocket**: Tunnel SSH through WebSocket (ws/wss) for CDN-based proxying (Cloudflare, etc.)
+- **SSH over HTTP CONNECT**: Route SSH through HTTP CONNECT proxies with custom Host headers
+- **SSH Payload Injection**: Send raw bytes before SSH handshake to disguise traffic for DPI bypass
 - **NaiveProxy**: Chromium-based HTTPS tunnel with authentic TLS fingerprinting to evade DPI
 - **DNS over HTTPS**: Encrypt DNS queries via HTTPS without tunneling other traffic
 - **DNS Transport Selection**: Choose UDP, DoT, or DoH for DNSTT DNS resolution
@@ -116,7 +123,7 @@ To use this client, you must have a compatible server. Please configure your ser
 
 ### CLI Client
 - Go 1.24+ (auto-downloaded via GOTOOLCHAIN if needed)
-- No other dependencies (statically linked binaries)
+- No external dependencies — fully self-contained (native Go SSH, no `ssh`/`sshpass` binaries needed)
 
 ## Building (Android)
 
@@ -168,7 +175,7 @@ To use this client, you must have a compatible server. Please configure your ser
 
 ## CLI Client
 
-SlipNet includes a cross-platform CLI client for **macOS**, **Linux**, and **Windows**. It connects using a `slipnet://` config URI and starts a local SOCKS5 proxy. For a GUI alternative, see [SlipStreamGUI](https://github.com/mirzaaghazadeh/SlipStreamGUI).
+SlipNet includes a cross-platform CLI client for **macOS**, **Linux**, and **Windows**. It supports DNSTT, NoizDNS, VayDNS, SSH, and SOCKS5 tunnel types. It connects using a `slipnet://` config URI and starts a local SOCKS5 proxy. For a GUI alternative, see [SlipStreamGUI](https://github.com/mirzaaghazadeh/SlipStreamGUI).
 
 ### Download
 
@@ -223,6 +230,118 @@ google-chrome --proxy-server="socks5://127.0.0.1:1080"
 
 The CLI auto-detects when DNS delegation isn't available and falls back to connecting directly to the server via its NS record.
 
+### Tunnel Types & Transport Guide
+
+All transport settings (TLS, WebSocket, HTTP CONNECT, payload) are embedded in the `slipnet://` config URI exported from the app. The CLI auto-detects the tunnel type and transport — no extra flags needed.
+
+#### DNS Tunnels (DNSTT, NoizDNS, VayDNS)
+
+DNS tunnels encode traffic in DNS queries. The config specifies the tunnel type, and the CLI handles everything automatically.
+
+```bash
+# DNSTT — reliable DNS tunneling (default)
+./slipnet 'slipnet://BASE64...'
+
+# NoizDNS — DPI-resistant DNS tunneling
+./slipnet 'slipnet://BASE64...'
+
+# VayDNS — optimized wire format with configurable record types and QNAME
+./slipnet 'slipnet://BASE64...'
+
+# Override DNS resolver (useful when ISP blocks certain resolvers)
+./slipnet --dns 1.1.1.1 'slipnet://BASE64...'
+
+# Connect directly to server (bypass recursive resolvers)
+./slipnet --direct 'slipnet://BASE64...'
+
+# Override uTLS fingerprint for DoH/DoT transports
+./slipnet --utls Chrome_120 'slipnet://BASE64...'
+
+# Limit query size for restrictive networks
+./slipnet --max-query-size 80 'slipnet://BASE64...'
+```
+
+#### DNS + SSH Tunnels (DNSTT+SSH, NoizDNS+SSH, VayDNS+SSH)
+
+SSH is chained through the DNS tunnel for an extra layer of encryption and zero DNS leaks.
+
+```bash
+# DNS tunnel carries raw SSH — all settings from config
+./slipnet 'slipnet://BASE64...'
+
+# Override port and DNS resolver
+./slipnet --port 9050 --dns 8.8.8.8 'slipnet://BASE64...'
+```
+
+#### Standalone SSH Tunnel
+
+Connects directly via SSH and runs a SOCKS5 proxy through the SSH session. No external `ssh` or `sshpass` binaries needed — uses native Go SSH.
+
+```bash
+# Plain SSH — credentials and host from config
+./slipnet 'slipnet://BASE64...'
+
+# Custom local port
+./slipnet --port 9050 'slipnet://BASE64...'
+```
+
+#### SSH over TLS (stunnel-style)
+
+The config enables TLS wrapping with a custom SNI hostname. The CLI wraps the SSH connection in TLS automatically — useful for bypassing DPI that blocks SSH.
+
+```bash
+# Config has sshTlsEnabled=true, sshTlsSni=cdn.example.com
+# CLI auto-detects and wraps SSH in TLS
+./slipnet 'slipnet://BASE64...'
+```
+
+Connection flow: `TCP → TLS (custom SNI) → SSH → SOCKS5`
+
+#### SSH over HTTP CONNECT Proxy
+
+Routes SSH through an HTTP CONNECT proxy. Supports custom Host headers for CDN-based facades.
+
+```bash
+# Config has sshHttpProxyHost, sshHttpProxyPort, optional custom Host header
+./slipnet 'slipnet://BASE64...'
+```
+
+Connection flow: `TCP → HTTP CONNECT tunnel → (optional TLS) → SSH → SOCKS5`
+
+#### SSH over WebSocket
+
+Tunnels SSH through a WebSocket connection. Compatible with CDN WebSocket proxies (Cloudflare Workers, xray, wstunnel, websockify, etc.).
+
+```bash
+# Config has sshWsEnabled=true, sshWsPath, sshWsUseTls, optional custom Host
+./slipnet 'slipnet://BASE64...'
+```
+
+Connection flow (wss): `TCP → TLS → WebSocket upgrade → WS frames → SSH → SOCKS5`
+Connection flow (ws): `TCP → WebSocket upgrade → WS frames → SSH → SOCKS5`
+
+#### SSH with Payload (DPI Bypass)
+
+Sends raw bytes before the SSH handshake to disguise the initial connection. The payload supports placeholders that are resolved at connect time.
+
+```bash
+# Config has sshPayload with template like "GET / HTTP/1.1\r\nHost: [host]\r\n\r\n"
+./slipnet 'slipnet://BASE64...'
+```
+
+Connection flow: `TCP → raw payload bytes → (optional TLS) → SSH → SOCKS5`
+
+Supported placeholders: `[host]` (SSH server), `[port]` (SSH port), `[crlf]` (`\r\n`), `[cr]` (`\r`), `[lf]` (`\n`)
+
+#### Direct SOCKS5
+
+Forwards to a remote SOCKS5 proxy (e.g., microsocks on the server) via SSH port forwarding.
+
+```bash
+# Config has tunnel type "socks5" or "direct_socks"
+./slipnet 'slipnet://BASE64...'
+```
+
 ### Scanner
 
 The CLI includes a built-in DNS scanner with multiple scan modes:
@@ -255,6 +374,9 @@ Runs DNS scanning and automatically feeds resolvers meeting the score threshold 
 
 # With NoizDNS mode
 ./slipnet scan --domain t.example.com --ips resolvers.txt --e2e --pubkey HEXKEY --noizdns
+
+# With VayDNS mode
+./slipnet scan --domain t.example.com --ips resolvers.txt --e2e --pubkey HEXKEY --vaydns
 ```
 
 #### E2E Test Only
@@ -289,7 +411,7 @@ Sends HMAC-authenticated probes to verify that the tunnel server is genuine. Req
 Running `./slipnet` with no arguments launches an interactive menu with all modes accessible via numbered options:
 
 ```
-  1) Connect (DNSTT / NoizDNS / Slipstream)
+  1) Connect (DNSTT / NoizDNS / VayDNS / Slipstream)
   2) DNS Scanner
   3) DNS Scanner + E2E Test
   4) Quick Scan (single IP)
@@ -387,7 +509,7 @@ SlipNet follows Clean Architecture principles with three main layers:
 Each server profile contains:
 
 - **Name**: Display name for the profile
-- **Tunnel Type**: DNSTT, NoizDNS, Slipstream, SSH, NaiveProxy, DOH, Tor, or their SSH variants
+- **Tunnel Type**: DNSTT, NoizDNS, VayDNS, Slipstream, SSH, NaiveProxy, DOH, Tor, or their SSH variants
 - **Domain**: Server domain for DNS tunneling
 - **Resolvers**: DNS resolver configurations
 
@@ -395,6 +517,17 @@ Each server profile contains:
 - **Public Key**: Server's Noise protocol public key (hex format)
 - **DNS Transport**: UDP, TCP, DoT (DNS over TLS), or DoH (DNS over HTTPS)
 - **Stealth Mode** (NoizDNS only): Trades speed for harder DPI detection
+
+#### VayDNS-specific settings:
+- **DNSTT Compatibility**: Use original dnstt wire format (8-byte ClientID) for dnstt server compatibility
+- **Record Type**: DNS record type for downstream data (TXT, CNAME, A, AAAA, MX, NS, SRV)
+- **Max QNAME Length**: Maximum query name wire length (default: 101)
+- **Rate Limit (RPS)**: Maximum outgoing DNS queries per second (0 = unlimited)
+- **Idle Timeout**: Session idle timeout in seconds
+- **Keep-Alive**: smux keep-alive interval in seconds
+- **UDP Timeout**: Per-query UDP response timeout in milliseconds
+- **Max Data Labels**: Maximum number of data labels in the query name
+- **Client ID Size**: ClientID size in bytes (default: 2)
 
 #### Slipstream-specific settings:
 - **Congestion Control**: QUIC congestion control algorithm (BBR, DCUBIC)
@@ -407,11 +540,17 @@ Each server profile contains:
 - **Proxy Username**: HTTP proxy authentication username
 - **Proxy Password**: HTTP proxy authentication password
 
-#### SSH settings (SSH, DNSTT+SSH, NoizDNS+SSH, Slipstream+SSH, NaiveProxy+SSH):
+#### SSH settings (SSH, DNSTT+SSH, NoizDNS+SSH, VayDNS+SSH, Slipstream+SSH, NaiveProxy+SSH):
 - **SSH Host**: SSH server address
 - **SSH Port**: SSH server port (default 22)
 - **SSH Username/Password**: Authentication credentials
 - **SSH Cipher**: Preferred encryption algorithm (AES-128-GCM, ChaCha20, AES-128-CTR)
+
+#### SSH transport options (available for all SSH tunnel types):
+- **SSH over TLS**: Wrap SSH in TLS with custom SNI hostname for domain fronting
+- **HTTP CONNECT Proxy**: Route SSH through an HTTP CONNECT proxy with custom Host header for CDN facades
+- **SSH over WebSocket**: Tunnel SSH through WebSocket (ws:// or wss://) with custom path and Host header, compatible with CDN proxies (Cloudflare Workers, xray, wstunnel, etc.)
+- **SSH Payload**: Send raw bytes before the SSH handshake to disguise traffic (DPI bypass). Supports placeholders: `[host]`, `[port]`, `[crlf]`, `[cr]`, `[lf]`
 
 #### DOH settings:
 - **DoH Server URL**: HTTPS endpoint for DNS queries (e.g., `https://cloudflare-dns.com/dns-query`)
