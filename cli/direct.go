@@ -3,17 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"net"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
 	"syscall"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // connectSSHTunnel opens an SSH dynamic port forward (SOCKS5 proxy via SSH).
-// Equivalent to: ssh -D <local_port> -N -p <ssh_port> user@host
+// Uses native Go SSH with support for TLS, HTTP CONNECT, WebSocket, and payload.
 func connectSSHTunnel(profile *Profile) {
 	sshHost := profile.SSHHost
 	if sshHost == "" {
@@ -39,6 +39,7 @@ func connectSSHTunnel(profile *Profile) {
 	fmt.Printf("  Type:       SSH Tunnel\n")
 	fmt.Printf("  SSH Host:   %s:%d\n", sshHost, sshPort)
 	fmt.Printf("  SSH User:   %s\n", sshUser)
+	printTransportInfo(profile)
 	fmt.Printf("  SOCKS5:     %s\n", listenAddr)
 	fmt.Println()
 
@@ -47,53 +48,20 @@ func connectSSHTunnel(profile *Profile) {
 		return
 	}
 
-	// Find ssh binary
-	sshBin, err := exec.LookPath("ssh")
-	if err != nil {
-		fmt.Println("  Error: ssh binary not found in PATH")
-		return
-	}
-
-	args := []string{
-		"-D", listenAddr,
-		"-N",                           // no remote command
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ServerAliveInterval=30",
-		"-o", "ServerAliveCountMax=3",
-		"-p", fmt.Sprintf("%d", sshPort),
-	}
-
-	// Use sshpass for password auth if available and password is set
-	var cmd *exec.Cmd
-	if profile.SSHPass != "" {
-		sshpassBin, err := exec.LookPath("sshpass")
-		if err == nil {
-			// Use sshpass
-			sshpassArgs := []string{"-p", profile.SSHPass, sshBin}
-			sshpassArgs = append(sshpassArgs, args...)
-			sshpassArgs = append(sshpassArgs, fmt.Sprintf("%s@%s", sshUser, sshHost))
-			cmd = exec.Command(sshpassBin, sshpassArgs...)
-		} else {
-			fmt.Println("  Note: sshpass not found, SSH will prompt for password")
-			args = append(args, fmt.Sprintf("%s@%s", sshUser, sshHost))
-			cmd = exec.Command(sshBin, args...)
-		}
-	} else {
-		args = append(args, fmt.Sprintf("%s@%s", sshUser, sshHost))
-		cmd = exec.Command(sshBin, args...)
-	}
-
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
 	fmt.Println("  Starting SSH tunnel...")
 
-	if err := cmd.Start(); err != nil {
-		fmt.Printf("\n  Error: %v\n", err)
+	client, err := sshConnect(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
 		return
 	}
+
+	// Run SOCKS5 server in background
+	go func() {
+		if err := runSOCKS5Server(client, listenAddr, "", ""); err != nil {
+			fmt.Fprintf(os.Stderr, "\n  SOCKS5 server error: %v\n", err)
+		}
+	}()
 
 	if !waitForPort(context.Background(), listenAddr, 15*time.Second) {
 		fmt.Println("  Warning: SOCKS5 proxy not ready yet (SSH handshake may still be in progress)")
@@ -112,38 +80,27 @@ func connectSSHTunnel(profile *Profile) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	doneCh := make(chan error, 1)
-	go func() { doneCh <- cmd.Wait() }()
-
 	select {
 	case <-sigCh:
 		fmt.Println("\n  Disconnecting...")
-		if runtime.GOOS == "windows" {
-			cmd.Process.Kill()
-		} else {
-			cmd.Process.Signal(syscall.SIGTERM)
-		}
-		select {
-		case <-doneCh:
-		case <-time.After(5 * time.Second):
-			cmd.Process.Kill()
-		}
+		client.Close()
 		fmt.Println("  Done.")
-	case err := <-doneCh:
-		if err != nil {
-			fmt.Printf("\n  SSH exited: %v\n", err)
-		} else {
-			fmt.Println("\n  SSH tunnel closed.")
-		}
 	}
 }
 
-// connectSOCKS5 connects to a remote SOCKS5 proxy and forwards local traffic.
-// Opens a local SOCKS5 listener that relays through the remote server.
+// connectSOCKS5 connects to a remote SOCKS5 proxy via SSH port forwarding.
 func connectSOCKS5(profile *Profile) {
 	sshHost := profile.SSHHost
 	if sshHost == "" {
 		sshHost = profile.Domain
+	}
+	sshPort := profile.SSHPort
+	if sshPort == 0 {
+		sshPort = 22
+	}
+	sshUser := profile.SSHUser
+	if sshUser == "" {
+		sshUser = profile.SOCKSUser
 	}
 
 	listenAddr := fmt.Sprintf("%s:%d", profile.Host, profile.Port)
@@ -156,73 +113,32 @@ func connectSOCKS5(profile *Profile) {
 	fmt.Printf("  Profile:    %s\n", profile.Name)
 	fmt.Printf("  Type:       Direct SOCKS5\n")
 	fmt.Printf("  Server:     %s\n", sshHost)
+	printTransportInfo(profile)
 	fmt.Println()
 
-	// For direct SOCKS5, we use SSH tunnel to the server's microsocks
-	// since the SOCKS5 proxy is on 127.0.0.1:1080 (not exposed)
-	sshPort := profile.SSHPort
-	if sshPort == 0 {
-		sshPort = 22
-	}
-	sshUser := profile.SSHUser
 	if sshUser == "" {
-		sshUser = profile.SOCKSUser
-	}
-
-	if sshUser == "" {
-		log.Fatal("SSH credentials required to reach SOCKS5 proxy.\n" +
-			"The server's SOCKS5 proxy listens on localhost only.\n" +
-			"An SSH tunnel is needed to forward traffic to it.\n" +
-			"Add SSH or SOCKS5 credentials to your config and re-export.")
-	}
-
-	// SSH local port forward: local:port -> remote:1080 (microsocks)
-	fmt.Printf("  Forwarding %s → %s:1080 via SSH\n", listenAddr, sshHost)
-
-	sshBin, err := exec.LookPath("ssh")
-	if err != nil {
-		fmt.Println("  Error: ssh binary not found in PATH")
+		fmt.Fprintln(os.Stderr, "  Error: SSH credentials required to reach SOCKS5 proxy.\n"+
+			"  The server's SOCKS5 proxy listens on localhost only.\n"+
+			"  An SSH tunnel is needed to forward traffic to it.\n"+
+			"  Add SSH or SOCKS5 credentials to your config and re-export.")
 		return
 	}
 
-	args := []string{
-		"-L", fmt.Sprintf("%s:127.0.0.1:1080", listenAddr),
-		"-N",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ServerAliveInterval=30",
-		"-o", "ServerAliveCountMax=3",
-		"-p", fmt.Sprintf("%d", sshPort),
-	}
-
-	var cmd *exec.Cmd
-	if profile.SSHPass != "" {
-		sshpassBin, err := exec.LookPath("sshpass")
-		if err == nil {
-			sshpassArgs := []string{"-p", profile.SSHPass, sshBin}
-			sshpassArgs = append(sshpassArgs, args...)
-			sshpassArgs = append(sshpassArgs, fmt.Sprintf("%s@%s", sshUser, sshHost))
-			cmd = exec.Command(sshpassBin, sshpassArgs...)
-		} else {
-			fmt.Println("  Note: sshpass not found, SSH will prompt for password")
-			args = append(args, fmt.Sprintf("%s@%s", sshUser, sshHost))
-			cmd = exec.Command(sshBin, args...)
-		}
-	} else {
-		args = append(args, fmt.Sprintf("%s@%s", sshUser, sshHost))
-		cmd = exec.Command(sshBin, args...)
-	}
-
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
+	fmt.Printf("  Forwarding %s -> %s:1080 via SSH\n", listenAddr, sshHost)
 	fmt.Println("  Starting SSH port forward...")
 
-	if err := cmd.Start(); err != nil {
-		fmt.Printf("\n  Error: %v\n", err)
+	client, err := sshConnect(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
 		return
 	}
+
+	// SSH local port forward: local -> remote:1080 (microsocks)
+	go func() {
+		if err := runPortForward(client, listenAddr, "127.0.0.1:1080"); err != nil {
+			fmt.Fprintf(os.Stderr, "\n  Port forward error: %v\n", err)
+		}
+	}()
 
 	if !waitForPort(context.Background(), listenAddr, 15*time.Second) {
 		fmt.Println("  Warning: Port forward not ready yet")
@@ -238,28 +154,70 @@ func connectSOCKS5(profile *Profile) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	doneCh := make(chan error, 1)
-	go func() { doneCh <- cmd.Wait() }()
-
 	select {
 	case <-sigCh:
 		fmt.Println("\n  Disconnecting...")
-		if runtime.GOOS == "windows" {
-			cmd.Process.Kill()
-		} else {
-			cmd.Process.Signal(syscall.SIGTERM)
-		}
-		select {
-		case <-doneCh:
-		case <-time.After(5 * time.Second):
-			cmd.Process.Kill()
-		}
+		client.Close()
 		fmt.Println("  Done.")
-	case err := <-doneCh:
+	}
+}
+
+// runPortForward implements SSH local port forwarding (-L equivalent).
+func runPortForward(client *ssh.Client, localAddr, remoteAddr string) error {
+	ln, err := net.Listen("tcp", localAddr)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		client.Wait()
+		ln.Close()
+	}()
+
+	for {
+		local, err := ln.Accept()
 		if err != nil {
-			fmt.Printf("\n  SSH exited: %v\n", err)
-		} else {
-			fmt.Println("\n  Connection closed.")
+			return nil
 		}
+		go func() {
+			defer local.Close()
+			remote, err := client.Dial("tcp", remoteAddr)
+			if err != nil {
+				return
+			}
+			defer remote.Close()
+			relay(local, remote)
+		}()
+	}
+}
+
+// printTransportInfo displays transport details for SSH connections.
+func printTransportInfo(profile *Profile) {
+	if profile.SSHWsEnabled {
+		proto := "ws"
+		if profile.SSHWsUseTls {
+			proto = "wss"
+		}
+		fmt.Printf("  Transport:  WebSocket (%s://%s%s)\n", proto,
+			profile.SSHHost, profile.SSHWsPath)
+		if profile.SSHWsCustomHost != "" {
+			fmt.Printf("  WS Host:    %s\n", profile.SSHWsCustomHost)
+		}
+	} else if profile.SSHHttpProxyHost != "" {
+		fmt.Printf("  Proxy:      HTTP CONNECT via %s:%d\n",
+			profile.SSHHttpProxyHost, profile.SSHHttpProxyPort)
+		if profile.SSHHttpProxyCustomHost != "" {
+			fmt.Printf("  Proxy Host: %s\n", profile.SSHHttpProxyCustomHost)
+		}
+	}
+	if profile.SSHTlsEnabled {
+		sni := profile.SSHTlsSni
+		if sni == "" {
+			sni = profile.SSHHost
+		}
+		fmt.Printf("  TLS:        enabled (SNI: %s)\n", sni)
+	}
+	if profile.SSHPayload != "" {
+		fmt.Printf("  Payload:    %d bytes\n", len(profile.SSHPayload))
 	}
 }

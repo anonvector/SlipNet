@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"noizdns/mobile"
+	"vaydns-mobile/vaydns"
 
 	"golang.org/x/net/proxy"
 )
@@ -32,7 +33,8 @@ type E2EConfig struct {
 	TunnelDomain   string
 	PublicKey       string
 	NoizMode        bool
-	SSHMode         bool // true for dnstt_ssh/sayedns_ssh — tunnel carries raw SSH, not SOCKS5
+	VaydnsMode      bool
+	SSHMode         bool // true for dnstt_ssh/sayedns_ssh/vaydns_ssh — tunnel carries raw SSH, not SOCKS5
 	TimeoutMs       int
 	Concurrency     int // max parallel E2E tests (bridges are NOT singletons in Go)
 	QuerySize       int // max DNS query payload size (0 = full capacity)
@@ -95,23 +97,43 @@ func testResolverE2E(parentCtx context.Context, resolverIP string, localPort int
 	totalStart := time.Now()
 
 	// Phase 1: Start tunnel
-	tunnelStart := time.Now()
-	client, err := mobile.NewClient(dnsAddr, config.TunnelDomain, config.PublicKey, listenAddr)
-	if err != nil {
-		result.Error = fmt.Sprintf("create client: %v", err)
-		result.TotalMs = time.Since(totalStart).Milliseconds()
-		return result
+	type tunnelClient interface {
+		Start() error
+		Stop()
+		IsRunning() bool
 	}
 
-	client.SetAuthoritativeMode(false)
-	if config.NoizMode {
-		client.SetNoizMode(true)
-	}
-	if config.QuerySize > 0 {
-		client.SetMaxPayload(config.QuerySize)
-	}
-	if config.SOCKSUser != "" && !config.SSHMode {
-		client.SetSocksCredentials(config.SOCKSUser, config.SOCKSPass)
+	tunnelStart := time.Now()
+	var client tunnelClient
+	if config.VaydnsMode {
+		c, err := vaydns.NewClient(dnsAddr, config.TunnelDomain, config.PublicKey, listenAddr)
+		if err != nil {
+			result.Error = fmt.Sprintf("create client: %v", err)
+			result.TotalMs = time.Since(totalStart).Milliseconds()
+			return result
+		}
+		if config.QuerySize > 0 {
+			c.SetMaxPayload(config.QuerySize)
+		}
+		client = c
+	} else {
+		c, err := mobile.NewClient(dnsAddr, config.TunnelDomain, config.PublicKey, listenAddr)
+		if err != nil {
+			result.Error = fmt.Sprintf("create client: %v", err)
+			result.TotalMs = time.Since(totalStart).Milliseconds()
+			return result
+		}
+		c.SetAuthoritativeMode(false)
+		if config.NoizMode {
+			c.SetNoizMode(true)
+		}
+		if config.QuerySize > 0 {
+			c.SetMaxPayload(config.QuerySize)
+		}
+		if config.SOCKSUser != "" && !config.SSHMode {
+			c.SetSocksCredentials(config.SOCKSUser, config.SOCKSPass)
+		}
+		client = c
 	}
 
 	// Run client.Start() with deadline — the API has no context support,
@@ -137,7 +159,7 @@ func testResolverE2E(parentCtx context.Context, resolverIP string, localPort int
 		startCh <- client.Start()
 	}()
 	select {
-	case err = <-startCh:
+	case err := <-startCh:
 		if err != nil {
 			stopSync()
 			result.Error = fmt.Sprintf("start tunnel: %v", err)
