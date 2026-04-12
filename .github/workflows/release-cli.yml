@@ -59,9 +59,6 @@ jobs:
         with:
           go-version-file: cli/go.mod
 
-      - name: Install garble
-        run: go install mvdan.cc/garble@v0.14.0
-
       - name: Copy resolver list for embedding
         run: cp app/src/main/res/raw/resolvers.txt cli/resolvers.txt
 
@@ -86,7 +83,7 @@ jobs:
           if [ "$HAS_KEY" = "true" ]; then
             TAGS="has_config_key"
           fi
-          garble -seed=random build \
+          go build \
             -tags "${TAGS}" -trimpath \
             -ldflags="${LDFLAGS}" \
             -o ../slipnet-${{ matrix.suffix }}${{ matrix.ext }} .
