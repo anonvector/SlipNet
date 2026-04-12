@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -30,6 +31,25 @@ import (
 
 // version is set at build time via -ldflags "-X main.version=..."
 var version = "dev"
+
+// vaydnsCLIOverrides holds VayDNS settings from CLI flags that override config values.
+type vaydnsCLIOverrides struct {
+	recordType      string
+	rps             float64
+	rpsSet          bool
+	dnsttCompat     bool
+	dnsttCompatSet  bool
+	idleTimeout     int
+	idleTimeoutSet  bool
+	keepalive       int
+	keepaliveSet    bool
+	udpTimeout      int
+	udpTimeoutSet   bool
+	maxNumLabels    int
+	maxNumLabelsSet bool
+	clientIdSize    int
+	clientIdSizeSet bool
+}
 
 // Profile fields (v18 pipe-delimited format)
 type Profile struct {
@@ -52,8 +72,10 @@ type Profile struct {
 	SSHPass       string
 	SSHPort       int
 	SSHHost       string
-	DNSTransport  string // udp, tcp, tls (DoT), https (DoH)
-	DoHURL        string
+	DNSTransport    string // udp, tcp, tls (DoT), https (DoH)
+	DoHURL          string
+	NoizdnsStealth  bool   // config position 38
+	DnsPayloadSize  int    // config position 39 — max DNS query payload (0 = full capacity)
 
 	// VayDNS-specific fields (config positions 41-49)
 	VaydnsDnsttCompat  bool
@@ -83,6 +105,9 @@ type Profile struct {
 
 	// SSH payload — raw prefix for DPI bypass (config position 59, base64-encoded)
 	SSHPayload string
+
+	// Multi-resolver mode (config position 60): "fanout" or "roundrobin"
+	ResolverMode string
 }
 
 func parseURI(uri string) (*Profile, error) {
@@ -188,6 +213,14 @@ func parseURI(uri string) (*Profile, error) {
 		p.DNSTransport = fields[22]
 	}
 
+	// NoizDNS stealth + DNS payload size (positions 38-39)
+	if len(fields) > 39 {
+		p.NoizdnsStealth = fields[38] == "1"
+		if v, err := strconv.Atoi(fields[39]); err == nil {
+			p.DnsPayloadSize = v
+		}
+	}
+
 	// VayDNS fields (positions 41-49)
 	if len(fields) > 49 {
 		p.VaydnsDnsttCompat = fields[41] == "1"
@@ -238,6 +271,11 @@ func parseURI(uri string) (*Profile, error) {
 		if decoded, err := base64.StdEncoding.DecodeString(fields[59]); err == nil {
 			p.SSHPayload = string(decoded)
 		}
+	}
+
+	// Resolver mode (position 60)
+	if len(fields) > 60 && fields[60] != "" {
+		p.ResolverMode = fields[60]
 	}
 
 	return p, nil
@@ -329,6 +367,9 @@ func main() {
 	var hostOverride string
 	var forceDirectMode bool
 	var querySize int
+	var maxQnameLen int
+	var resolverModeOverride string
+	var vaydnsOpts vaydnsCLIOverrides
 	var uriParts []string
 
 	for i := 1; i < len(os.Args); i++ {
@@ -376,6 +417,90 @@ func main() {
 			} else {
 				log.Fatal("--max-query-size requires a value (e.g., --max-query-size 100)")
 			}
+		case "--max-qname-len", "-mqn", "--qname-len":
+			if i+1 < len(os.Args) {
+				v, err := strconv.Atoi(os.Args[i+1])
+				if err != nil || v < 10 {
+					log.Fatal("--max-qname-len requires a value >= 10")
+				}
+				maxQnameLen = v
+				i++
+			} else {
+				log.Fatal("--max-qname-len requires a value (e.g., --max-qname-len 150)")
+			}
+		case "--vaydns-record-type":
+			if i+1 < len(os.Args) {
+				vaydnsOpts.recordType = os.Args[i+1]
+				i++
+			}
+		case "--vaydns-rps":
+			if i+1 < len(os.Args) {
+				if v, err := strconv.ParseFloat(os.Args[i+1], 64); err == nil {
+					vaydnsOpts.rps = v
+					vaydnsOpts.rpsSet = true
+				}
+				i++
+			}
+		case "--vaydns-dnstt-compat":
+			vaydnsOpts.dnsttCompat = true
+			vaydnsOpts.dnsttCompatSet = true
+		case "--vaydns-idle-timeout":
+			if i+1 < len(os.Args) {
+				if v, err := strconv.Atoi(os.Args[i+1]); err == nil {
+					vaydnsOpts.idleTimeout = v
+					vaydnsOpts.idleTimeoutSet = true
+				}
+				i++
+			}
+		case "--vaydns-keepalive":
+			if i+1 < len(os.Args) {
+				if v, err := strconv.Atoi(os.Args[i+1]); err == nil {
+					vaydnsOpts.keepalive = v
+					vaydnsOpts.keepaliveSet = true
+				}
+				i++
+			}
+		case "--vaydns-udp-timeout":
+			if i+1 < len(os.Args) {
+				if v, err := strconv.Atoi(os.Args[i+1]); err == nil {
+					vaydnsOpts.udpTimeout = v
+					vaydnsOpts.udpTimeoutSet = true
+				}
+				i++
+			}
+		case "--vaydns-max-labels":
+			if i+1 < len(os.Args) {
+				if v, err := strconv.Atoi(os.Args[i+1]); err == nil {
+					vaydnsOpts.maxNumLabels = v
+					vaydnsOpts.maxNumLabelsSet = true
+				}
+				i++
+			}
+		case "--vaydns-client-id-size":
+			if i+1 < len(os.Args) {
+				if v, err := strconv.Atoi(os.Args[i+1]); err == nil {
+					vaydnsOpts.clientIdSize = v
+					vaydnsOpts.clientIdSizeSet = true
+				}
+				i++
+			}
+		case "--resolver-mode", "-resolver-mode":
+			if i+1 < len(os.Args) {
+				mode := strings.ToLower(os.Args[i+1])
+				if mode != "fanout" && mode != "roundrobin" && mode != "reliable" && mode != "fast" {
+					log.Fatal("--resolver-mode requires 'fast' (roundrobin) or 'reliable' (fanout)")
+				}
+				// Normalize friendly names to protocol values
+				if mode == "fast" {
+					mode = "roundrobin"
+				} else if mode == "reliable" {
+					mode = "fanout"
+				}
+				resolverModeOverride = mode
+				i++
+			} else {
+				log.Fatal("--resolver-mode requires a value: fast or reliable")
+			}
 		case "--direct", "-direct":
 			forceDirectMode = true
 		case "--version", "-version", "-v":
@@ -397,11 +522,11 @@ func main() {
 
 	// Join all non-flag args in case terminal line-wrapping split the URI
 	uri := strings.TrimSpace(strings.Join(uriParts, ""))
-	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize)
+	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize, maxQnameLen, resolverModeOverride, vaydnsOpts)
 }
 
 // connectWithParams runs the tunnel connection with the given parameters.
-func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool, querySize int) {
+func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool, querySize int, maxQnameLen int, resolverMode string, vOpts vaydnsCLIOverrides) {
 	profile, err := parseURI(uri)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Error: Failed to parse URI: %v\n", err)
@@ -430,9 +555,17 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		}
 		connectSOCKS5(profile)
 		return
-	case "ss", "slipstream_ssh", "doh", "snowflake", "naive":
+	case "doh":
+		if portOverride > 0 {
+			profile.Port = portOverride
+		} else if profile.Port == 0 {
+			profile.Port = 5353
+		}
+		connectDoH(profile)
+		return
+	case "ss", "slipstream_ssh", "snowflake", "naive":
 		fmt.Fprintf(os.Stderr, "  Error: This config uses tunnel type %q which is not supported by the CLI.\n"+
-			"  SlipNet CLI supports DNSTT, NoizDNS, VayDNS, SSH, and SOCKS5 tunnel types.\n"+
+			"  SlipNet CLI supports DNSTT, NoizDNS, VayDNS, SSH, SOCKS5, and DoH tunnel types.\n"+
 			"  Use the SlipNet app for other tunnel types.\n", profile.TunnelType)
 		return
 	default:
@@ -528,7 +661,19 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	if querySize > 0 {
 		fmt.Printf("  Query Size: %d bytes\n", querySize)
 	}
+	if maxQnameLen > 0 {
+		fmt.Printf("  QNAME Len:  %d\n", maxQnameLen)
+	}
 	fmt.Printf("  Auth Mode:  %v\n", authMode)
+	effectiveMode := profile.ResolverMode
+	if resolverMode != "" {
+		effectiveMode = resolverMode
+	}
+	if effectiveMode == "roundrobin" {
+		fmt.Printf("  Resolver:   fast (round-robin)\n")
+	} else if effectiveMode == "fanout" {
+		fmt.Printf("  Resolver:   reliable (fanout)\n")
+	}
 	if len(profile.PublicKey) > 16 {
 		fmt.Printf("  Public Key: %s...%s\n", profile.PublicKey[:8], profile.PublicKey[len(profile.PublicKey)-8:])
 	} else {
@@ -538,6 +683,9 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	fmt.Printf("  SOCKS5 Proxy: %s\n", listenAddr)
 	fmt.Println()
 	fmt.Println("  Connecting...")
+
+	// Suppress noisy tunnel library stream-copy logs (e.g., wsarecv connection reset).
+	log.SetOutput(io.Discard)
 
 	isVaydns := profile.TunnelType == "vaydns" || profile.TunnelType == "vaydns_ssh"
 
@@ -554,38 +702,94 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 			if err != nil {
 				return nil, err
 			}
-			if profile.VaydnsDnsttCompat {
+			// Apply CLI overrides, falling back to config values
+			dnsttCompat := profile.VaydnsDnsttCompat
+			if vOpts.dnsttCompatSet {
+				dnsttCompat = vOpts.dnsttCompat
+			}
+			if dnsttCompat {
 				c.SetDnsttCompat(true)
 			}
-			if profile.VaydnsRecordType != "" {
-				c.SetRecordType(profile.VaydnsRecordType)
+
+			recordType := profile.VaydnsRecordType
+			if vOpts.recordType != "" {
+				recordType = vOpts.recordType
 			}
-			if profile.VaydnsMaxQnameLen > 0 {
-				c.SetMaxQnameLen(profile.VaydnsMaxQnameLen)
+			if recordType != "" {
+				c.SetRecordType(recordType)
 			}
-			if profile.VaydnsRps > 0 {
-				c.SetRPS(profile.VaydnsRps)
+
+			qnameLen := profile.VaydnsMaxQnameLen
+			if maxQnameLen > 0 {
+				qnameLen = maxQnameLen
 			}
-			if profile.VaydnsIdleTimeout > 0 {
-				c.SetIdleTimeout(profile.VaydnsIdleTimeout)
+			if qnameLen > 0 {
+				c.SetMaxQnameLen(qnameLen)
 			}
-			if profile.VaydnsKeepalive > 0 {
-				c.SetKeepAlive(profile.VaydnsKeepalive)
+
+			rps := profile.VaydnsRps
+			if vOpts.rpsSet {
+				rps = vOpts.rps
 			}
-			if profile.VaydnsUdpTimeout > 0 {
-				c.SetUDPTimeout(profile.VaydnsUdpTimeout)
+			if rps > 0 {
+				c.SetRPS(rps)
 			}
-			if profile.VaydnsMaxNumLabels > 0 {
-				c.SetMaxNumLabels(profile.VaydnsMaxNumLabels)
+
+			idleTimeout := profile.VaydnsIdleTimeout
+			if vOpts.idleTimeoutSet {
+				idleTimeout = vOpts.idleTimeout
 			}
-			if profile.VaydnsClientIdSize > 0 {
-				c.SetClientIDSize(profile.VaydnsClientIdSize)
+			if idleTimeout > 0 {
+				c.SetIdleTimeout(idleTimeout)
+			}
+
+			keepalive := profile.VaydnsKeepalive
+			if vOpts.keepaliveSet {
+				keepalive = vOpts.keepalive
+			}
+			if keepalive > 0 {
+				c.SetKeepAlive(keepalive)
+			}
+
+			udpTimeout := profile.VaydnsUdpTimeout
+			if vOpts.udpTimeoutSet {
+				udpTimeout = vOpts.udpTimeout
+			}
+			if udpTimeout > 0 {
+				c.SetUDPTimeout(udpTimeout)
+			}
+
+			maxLabels := profile.VaydnsMaxNumLabels
+			if vOpts.maxNumLabelsSet {
+				maxLabels = vOpts.maxNumLabels
+			}
+			if maxLabels > 0 {
+				c.SetMaxNumLabels(maxLabels)
+			}
+
+			clientIdSize := profile.VaydnsClientIdSize
+			if vOpts.clientIdSizeSet {
+				clientIdSize = vOpts.clientIdSize
+			}
+			if clientIdSize > 0 {
+				c.SetClientIDSize(clientIdSize)
 			}
 			if querySize > 0 {
 				c.SetMaxPayload(querySize)
 			}
 			if utlsOverride != "" {
 				c.SetUTLSFingerprint(utlsOverride)
+			}
+			if profile.SOCKSUser != "" {
+				c.SetSocksCredentials(profile.SOCKSUser, profile.SOCKSPass)
+			}
+			// Resolver mode: CLI flag > config > default (roundrobin)
+			rMode := profile.ResolverMode
+			if resolverMode != "" {
+				rMode = resolverMode
+			}
+			if rMode != "" {
+				c.SetResolverMode(rMode)
 			}
 			return c, nil
 		}
@@ -598,9 +802,17 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		c.SetAuthoritativeMode(authMode)
 		if profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" {
 			c.SetNoizMode(true)
+			if profile.NoizdnsStealth {
+				c.SetStealthMode(true)
+			}
 		}
+		// CLI flag overrides config's DnsPayloadSize
+		payload := profile.DnsPayloadSize
 		if querySize > 0 {
-			c.SetMaxPayload(querySize)
+			payload = querySize
+		}
+		if payload > 0 {
+			c.SetMaxPayload(payload)
 		}
 		if utlsOverride != "" {
 			c.SetUTLSFingerprint(utlsOverride)
@@ -611,14 +823,22 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		if profile.SOCKSUser != "" && isSocks5Tunnel {
 			c.SetSocksCredentials(profile.SOCKSUser, profile.SOCKSPass)
 		}
+		// Resolver mode: CLI flag > config > default (roundrobin)
+		rMode := profile.ResolverMode
+		if resolverMode != "" {
+			rMode = resolverMode
+		}
+		if rMode != "" {
+			c.SetResolverMode(rMode)
+		}
 		return c, nil
 	}
 
 	if utlsOverride != "" {
 		fmt.Printf("  uTLS:       %s\n", utlsOverride)
 	}
-	if profile.SOCKSUser != "" && !isVaydns {
-		isSocks5Tunnel := profile.TunnelType == "dnstt" || profile.TunnelType == "sayedns" || profile.TunnelType == ""
+	if profile.SOCKSUser != "" {
+		isSocks5Tunnel := isVaydns || profile.TunnelType == "dnstt" || profile.TunnelType == "sayedns" || profile.TunnelType == ""
 		if isSocks5Tunnel {
 			fmt.Printf("  SOCKS5 Auth: enabled (injected automatically)\n")
 		}
@@ -710,6 +930,7 @@ func runScanCommand(args []string) {
 	var querySize int
 	var prismPrefilter bool
 	var e2eOnly bool
+	var e2eResultsOnly bool
 	var outputFile string
 
 	for i := 0; i < len(args); i++ {
@@ -831,6 +1052,8 @@ func runScanCommand(args []string) {
 			prismPrefilter = true
 		case "--e2e-only":
 			e2eOnly = true
+		case "--e2e-results-only":
+			e2eResultsOnly = true
 		case "--config", "-config":
 			if i+1 < len(args) {
 				configURI = args[i+1]
@@ -989,12 +1212,12 @@ func runScanCommand(args []string) {
 		}
 	}
 
-	RunScanner(resolvers, domain, port, timeoutMs, concurrency, querySize, e2eConfig, outputFile)
+	RunScanner(resolvers, domain, port, timeoutMs, concurrency, querySize, e2eConfig, outputFile, e2eResultsOnly)
 }
 
 func printUsage() {
 	prog := filepath.Base(os.Args[0])
-	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - Tunnel proxy (DNSTT, NoizDNS, VayDNS, SSH, SOCKS5)
+	fmt.Fprintf(os.Stderr, `SlipNet CLI %s - Tunnel proxy (DNSTT, NoizDNS, VayDNS, SSH, SOCKS5, DoH)
 
 Usage:
   %s [options] slipnet://BASE64...
@@ -1014,6 +1237,24 @@ Options (connect):
                       Max DNS query payload size in bytes (default: full capacity)
                       Lower values produce smaller queries for restrictive networks
                       Minimum: 50. Presets: 100 (large), 80 (medium), 60 (small), 50 (minimum)
+  --max-qname-len N, -mqn N
+                      Max QNAME wire length for VayDNS (default: 101, or 253 with dnstt compat)
+                      Overrides the value from config. Minimum: 10
+  --resolver-mode MODE
+                      Multi-resolver query distribution: fast (round-robin) or reliable (fanout)
+                      fast: sends each query to one resolver in rotation (bandwidth aggregation)
+                      reliable: sends each query to all resolvers (default from config)
+
+VayDNS options (override config values):
+  --vaydns-record-type TYPE   DNS record type: txt, cname, a, aaaa, mx, ns, srv, null, caa (default: txt)
+  --vaydns-rps N              Max queries per second, 0 = unlimited (default: 0)
+  --vaydns-dnstt-compat       Enable DNSTT wire format compatibility
+  --vaydns-idle-timeout SECS  Session idle timeout in seconds (default: 10)
+  --vaydns-keepalive SECS     Keepalive interval in seconds (default: 2)
+  --vaydns-udp-timeout MS     Per-query UDP timeout in milliseconds (default: ~500)
+  --vaydns-max-labels N       Max data labels in query name, 0 = unlimited (default: 0)
+  --vaydns-client-id-size N   Client ID size in bytes (default: 2)
+
   --version           Show version
   --help              Show this help
 

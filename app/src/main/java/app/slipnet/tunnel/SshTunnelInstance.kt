@@ -92,6 +92,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
     private var configCipher: String? = null       // null = auto
     private var configCompression: Boolean = false
     private var configMaxChannels: Int = DEFAULT_MAX_CHANNELS
+    var localAuthUsername: String? = null
+    var localAuthPassword: String? = null
     private var session: Session? = null
     private var serverSocket: ServerSocket? = null
     private var acceptorThread: Thread? = null
@@ -217,7 +219,10 @@ class SshTunnelInstance(val instanceId: String = "default") {
         sshPrivateKey: String = "",
         sshKeyPassphrase: String = "",
         remoteDnsHost: String = "8.8.8.8",
-        remoteDnsFallback: String = "1.1.1.1"
+        remoteDnsFallback: String = "1.1.1.1",
+        tlsEnabled: Boolean = false,
+        tlsSni: String = "",
+        sshPayload: String = ""
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting SSH tunnel (direct mode)")
@@ -226,6 +231,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
         Log.i(TAG, "  SOCKS5 Listen: $listenHost:$listenPort")
         Log.i(TAG, "  DNS through SSH: $forwardDnsThroughSsh")
         Log.i(TAG, "  Remote DNS: $remoteDnsHost (fallback: $remoteDnsFallback)")
+        if (tlsEnabled) Log.i(TAG, "  TLS: enabled (SNI: ${tlsSni.ifBlank { tunnelHost }})")
+        if (sshPayload.isNotBlank()) Log.i(TAG, "  SSH Payload: ${sshPayload.length} chars")
         Log.i(TAG, "========================================")
 
         stop()
@@ -252,6 +259,18 @@ class SshTunnelInstance(val instanceId: String = "default") {
             } else {
                 newSession.setPassword(sshPassword)
             }
+            // Wrap connection: payload + optional TLS, or TLS-only, or plain
+            if (sshPayload.isNotBlank()) {
+                newSession.setSocketFactory(PayloadSocketFactory(
+                    payload = sshPayload,
+                    tlsEnabled = tlsEnabled,
+                    tlsSni = tlsSni.ifBlank { tunnelHost },
+                    connectTimeoutMs = CONNECT_TIMEOUT_MS
+                ))
+            } else if (tlsEnabled) {
+                val sniHost = tlsSni.ifBlank { tunnelHost }
+                newSession.setSocketFactory(TlsSocketFactory(sniHost, CONNECT_TIMEOUT_MS))
+            }
             applySessionConfig(newSession)
             newSession.connect(CONNECT_TIMEOUT_MS)
 
@@ -260,7 +279,7 @@ class SshTunnelInstance(val instanceId: String = "default") {
             }
 
             session = newSession
-            Log.i(TAG, "SSH session connected (direct mode, auth=${sshAuthType.value})")
+            Log.i(TAG, "SSH session connected (direct mode, auth=${sshAuthType.value}${if (tlsEnabled) ", TLS" else ""})")
 
             startSocksServer(listenHost, listenPort)
 
@@ -272,6 +291,194 @@ class SshTunnelInstance(val instanceId: String = "default") {
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start SSH tunnel", e)
+            stop()
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Start SSH tunnel through an HTTP CONNECT proxy.
+     * The proxy establishes a TCP tunnel to the SSH server via the CONNECT method.
+     * Supports custom Host header for CDN facades and optional TLS wrapping.
+     */
+    fun startOverHttpProxy(
+        sshHost: String,
+        sshPort: Int,
+        sshUsername: String,
+        sshPassword: String,
+        proxyHost: String,
+        proxyPort: Int,
+        customHostHeader: String = "",
+        listenPort: Int,
+        listenHost: String = "127.0.0.1",
+        blockDirectDns: Boolean = true,
+        sshAuthType: SshAuthType = SshAuthType.PASSWORD,
+        sshPrivateKey: String = "",
+        sshKeyPassphrase: String = "",
+        remoteDnsHost: String = "8.8.8.8",
+        remoteDnsFallback: String = "1.1.1.1",
+        tlsEnabled: Boolean = false,
+        tlsSni: String = ""
+    ): Result<Unit> {
+        Log.i(TAG, "========================================")
+        Log.i(TAG, "Starting SSH tunnel (over HTTP CONNECT proxy)")
+        Log.i(TAG, "  SSH target: $sshHost:$sshPort")
+        Log.i(TAG, "  SSH User: $sshUsername")
+        Log.i(TAG, "  HTTP proxy: $proxyHost:$proxyPort")
+        if (customHostHeader.isNotBlank()) Log.i(TAG, "  Custom Host header: $customHostHeader")
+        if (tlsEnabled) Log.i(TAG, "  TLS after CONNECT: enabled (SNI: ${tlsSni.ifBlank { sshHost }})")
+        Log.i(TAG, "  SOCKS5 Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  Block direct DNS: $blockDirectDns")
+        Log.i(TAG, "  Remote DNS: $remoteDnsHost (fallback: $remoteDnsFallback)")
+        Log.i(TAG, "========================================")
+
+        stop()
+        directDns = false
+        preventDnsFallback = blockDirectDns
+        dnsServers = buildDnsServerList(remoteDnsHost, remoteDnsFallback)
+        dnsServerIndex.set(0)
+        dnsSshFailCount.set(0)
+
+        return try {
+            val jsch = JSch()
+            if (sshAuthType == SshAuthType.KEY && sshPrivateKey.isNotBlank()) {
+                jsch.addIdentity(
+                    "ssh-key",
+                    sshPrivateKey.toByteArray(Charsets.UTF_8),
+                    null,
+                    if (sshKeyPassphrase.isNotBlank()) sshKeyPassphrase.toByteArray(Charsets.UTF_8) else null
+                )
+            }
+            // Create session targeting the real SSH server
+            val newSession = jsch.getSession(sshUsername, sshHost, sshPort)
+            if (sshAuthType == SshAuthType.KEY) {
+                newSession.setConfig("PreferredAuthentications", "publickey")
+            } else {
+                newSession.setPassword(sshPassword)
+            }
+
+            // Set up HTTP CONNECT proxy with optional TLS and custom Host header
+            val proxy = ProxyHttpConnect(
+                proxyHost = proxyHost,
+                proxyPort = proxyPort,
+                customHost = customHostHeader,
+                tlsEnabled = tlsEnabled,
+                tlsSni = tlsSni.ifBlank { sshHost }
+            )
+            newSession.setProxy(proxy)
+            applySessionConfig(newSession)
+            newSession.connect(CONNECT_TIMEOUT_MS)
+
+            if (!newSession.isConnected) {
+                return Result.failure(RuntimeException("SSH session failed to connect through HTTP proxy"))
+            }
+
+            session = newSession
+            Log.i(TAG, "SSH session connected (over HTTP proxy, auth=${sshAuthType.value}${if (tlsEnabled) ", TLS" else ""})")
+
+            startSocksServer(listenHost, listenPort)
+
+            Log.i(TAG, "SSH SOCKS5 proxy started on $listenHost:$listenPort (over HTTP proxy)")
+
+            // Pre-warm DNS channel pool in background (DNS goes through SSH)
+            prewarmDnsChannels()
+
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start SSH tunnel over HTTP proxy", e)
+            stop()
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Start SSH tunnel through a WebSocket connection.
+     * The WebSocket proxy on the server forwards traffic to the SSH daemon.
+     * Supports TLS (wss://), custom Host header, and custom path.
+     */
+    fun startOverWebSocket(
+        sshHost: String,
+        sshPort: Int,
+        sshUsername: String,
+        sshPassword: String,
+        wsPath: String = "/",
+        wsUseTls: Boolean = true,
+        wsCustomHost: String = "",
+        wsTlsSni: String = "",
+        listenPort: Int,
+        listenHost: String = "127.0.0.1",
+        blockDirectDns: Boolean = true,
+        sshAuthType: SshAuthType = SshAuthType.PASSWORD,
+        sshPrivateKey: String = "",
+        sshKeyPassphrase: String = "",
+        remoteDnsHost: String = "8.8.8.8",
+        remoteDnsFallback: String = "1.1.1.1"
+    ): Result<Unit> {
+        val scheme = if (wsUseTls) "wss" else "ws"
+        Log.i(TAG, "========================================")
+        Log.i(TAG, "Starting SSH tunnel (over WebSocket)")
+        Log.i(TAG, "  SSH target: $sshHost:$sshPort")
+        Log.i(TAG, "  SSH User: $sshUsername")
+        Log.i(TAG, "  WebSocket: $scheme://$sshHost:$sshPort$wsPath")
+        if (wsCustomHost.isNotBlank()) Log.i(TAG, "  WS Host header: $wsCustomHost")
+        if (wsTlsSni.isNotBlank()) Log.i(TAG, "  TLS SNI: $wsTlsSni")
+        Log.i(TAG, "  SOCKS5 Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  Block direct DNS: $blockDirectDns")
+        Log.i(TAG, "  Remote DNS: $remoteDnsHost (fallback: $remoteDnsFallback)")
+        Log.i(TAG, "========================================")
+
+        stop()
+        directDns = false
+        preventDnsFallback = blockDirectDns
+        dnsServers = buildDnsServerList(remoteDnsHost, remoteDnsFallback)
+        dnsServerIndex.set(0)
+        dnsSshFailCount.set(0)
+
+        return try {
+            val jsch = JSch()
+            if (sshAuthType == SshAuthType.KEY && sshPrivateKey.isNotBlank()) {
+                jsch.addIdentity(
+                    "ssh-key",
+                    sshPrivateKey.toByteArray(Charsets.UTF_8),
+                    null,
+                    if (sshKeyPassphrase.isNotBlank()) sshKeyPassphrase.toByteArray(Charsets.UTF_8) else null
+                )
+            }
+            val newSession = jsch.getSession(sshUsername, sshHost, sshPort)
+            if (sshAuthType == SshAuthType.KEY) {
+                newSession.setConfig("PreferredAuthentications", "publickey")
+            } else {
+                newSession.setPassword(sshPassword)
+            }
+
+            val proxy = ProxyWebSocket(
+                wsHost = sshHost,
+                wsPort = sshPort,
+                path = wsPath,
+                useTls = wsUseTls,
+                tlsSni = wsTlsSni,
+                customHost = wsCustomHost
+            )
+            newSession.setProxy(proxy)
+            applySessionConfig(newSession)
+            newSession.connect(CONNECT_TIMEOUT_MS)
+
+            if (!newSession.isConnected) {
+                return Result.failure(RuntimeException("SSH session failed to connect through WebSocket"))
+            }
+
+            session = newSession
+            Log.i(TAG, "SSH session connected (over WebSocket, auth=${sshAuthType.value})")
+
+            startSocksServer(listenHost, listenPort)
+
+            Log.i(TAG, "SSH SOCKS5 proxy started on $listenHost:$listenPort (over WebSocket)")
+
+            prewarmDnsChannels()
+
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start SSH tunnel over WebSocket", e)
             stop()
             Result.failure(e)
         }
@@ -502,11 +709,22 @@ class SshTunnelInstance(val instanceId: String = "default") {
         }
         serverSocket = null
 
-        // Interrupt acceptor thread
-        acceptorThread?.interrupt()
+        // Wait for acceptor thread to fully exit before proceeding.
+        // This prevents the old acceptor from racing with a new startSocksServer()
+        // call that binds the same port, which could cause accepted connections to
+        // be routed through the dead session (stale-connection bug).
+        val oldAcceptor = acceptorThread
         acceptorThread = null
+        oldAcceptor?.interrupt()
+        try {
+            oldAcceptor?.join(2000)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
 
-        // Shutdown thread pool (interrupts all running tasks)
+        // Shutdown thread pool — shutdownNow() sends interrupts; workers that
+        // are blocked on JSch channel I/O will unblock once session.disconnect()
+        // is called below, so no need to awaitTermination() here.
         try {
             executor?.shutdownNow()
         } catch (_: Exception) {}
@@ -516,7 +734,8 @@ class SshTunnelInstance(val instanceId: String = "default") {
         dnsKeepaliveJob?.cancel(true)
         dnsKeepaliveJob = null
 
-        // Close persistent DNS workers
+        // Close persistent DNS workers before disconnecting session —
+        // workers hold open channels that reference the session.
         for (i in dnsWorkers.indices) {
             val w = dnsWorkers[i] ?: continue
             try { w.channel.disconnect() } catch (_: Exception) {}
@@ -537,6 +756,9 @@ class SshTunnelInstance(val instanceId: String = "default") {
         carriedRxBytes.addAndGet(tunnelRxBytes.getAndSet(0))
         dnsConsecutiveFailures.set(0)
         dnsCircuitOpenUntil = 0
+
+        // Reset channel semaphore to avoid leaking permits across reconnections
+        channelSemaphore = Semaphore(configMaxChannels)
 
         logd("SSH tunnel stopped")
     }
@@ -811,9 +1033,10 @@ class SshTunnelInstance(val instanceId: String = "default") {
                     val methods = ByteArray(nMethods)
                     input.readFully(methods)
 
-                    // Respond: no authentication required
-                    output.write(byteArrayOf(0x05, 0x00))
-                    output.flush()
+                    // Authenticate local client
+                    if (!LocalProxyAuth.handleGreeting(methods, input, output, localAuthUsername, localAuthPassword)) {
+                        return@submit
+                    }
 
                     // SOCKS5 CONNECT request
                     val ver = input.read() // version
@@ -1437,8 +1660,13 @@ class SshTunnelInstance(val instanceId: String = "default") {
 
     private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null, limiter: RateLimiter? = null) {
         val buffer = ByteArray(BUFFER_SIZE)
+        // When rate-limited, cap reads to ~250ms worth of data to avoid large bursts.
+        // e.g. at 4KB/s → read 1KB at a time; at 64KB/s → read 16KB at a time.
+        val maxRead = if (limiter != null && limiter.bytesPerSecond > 0) {
+            (limiter.bytesPerSecond / 4).toInt().coerceIn(1024, BUFFER_SIZE)
+        } else BUFFER_SIZE
         while (!Thread.currentThread().isInterrupted) {
-            val bytesRead = input.read(buffer)
+            val bytesRead = input.read(buffer, 0, maxRead)
             if (bytesRead == -1) break
             limiter?.acquire(bytesRead)
             output.write(buffer, 0, bytesRead)

@@ -77,15 +77,13 @@ func connectSSHTunnel(profile *Profile) {
 	fmt.Println()
 	fmt.Println("  Press Ctrl+C to disconnect.")
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case <-sigCh:
-		fmt.Println("\n  Disconnecting...")
-		client.Close()
-		fmt.Println("  Done.")
-	}
+	sshMonitorLoop(client, profile, listenAddr, func(c *ssh.Client) {
+		go func() {
+			if err := runSOCKS5Server(c, listenAddr, "", ""); err != nil {
+				fmt.Fprintf(os.Stderr, "\n  SOCKS5 server error: %v\n", err)
+			}
+		}()
+	})
 }
 
 // connectSOCKS5 connects to a remote SOCKS5 proxy via SSH port forwarding.
@@ -151,14 +149,60 @@ func connectSOCKS5(profile *Profile) {
 	fmt.Println()
 	fmt.Println("  Press Ctrl+C to disconnect.")
 
+	sshMonitorLoop(client, profile, listenAddr, func(c *ssh.Client) {
+		go func() {
+			if err := runPortForward(c, listenAddr, "127.0.0.1:1080"); err != nil {
+				fmt.Fprintf(os.Stderr, "\n  Port forward error: %v\n", err)
+			}
+		}()
+	})
+}
+
+// sshMonitorLoop monitors the SSH connection and auto-reconnects when it dies.
+// onConnect is called after each successful (re)connection to start the server goroutine.
+func sshMonitorLoop(client *ssh.Client, profile *Profile, listenAddr string, onConnect func(*ssh.Client)) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	select {
-	case <-sigCh:
-		fmt.Println("\n  Disconnecting...")
-		client.Close()
-		fmt.Println("  Done.")
+	reconnectDelay := 3 * time.Second
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- client.Wait() }()
+
+	for {
+		select {
+		case <-sigCh:
+			fmt.Println("\n  Disconnecting...")
+			client.Close()
+			fmt.Println("  Done.")
+			return
+		case <-waitCh:
+			fmt.Printf("\n  SSH connection lost, reconnecting in %v...\n", reconnectDelay)
+			client.Close()
+			time.Sleep(reconnectDelay)
+
+			newClient, err := sshConnect(profile)
+			if err != nil {
+				fmt.Printf("  Reconnect failed: %v\n", err)
+				// Keep retrying
+				waitCh = make(chan error, 1)
+				go func() {
+					time.Sleep(reconnectDelay)
+					waitCh <- fmt.Errorf("retry")
+				}()
+				continue
+			}
+
+			client = newClient
+			onConnect(client)
+
+			if !waitForPort(context.Background(), listenAddr, 10*time.Second) {
+				fmt.Println("  Warning: proxy not ready after reconnect")
+			}
+			fmt.Println("  Reconnected!")
+
+			waitCh = make(chan error, 1)
+			go func() { waitCh <- client.Wait() }()
+		}
 	}
 }
 

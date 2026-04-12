@@ -14,12 +14,14 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // DNS record types
@@ -271,27 +273,6 @@ func testNXDOMAIN(host string, port int, timeoutMs int) bool {
 		}
 	}
 	return good >= 2
-}
-
-// DetectTransparentProxy tests if the ISP intercepts DNS queries
-// by sending queries to RFC 5737 TEST-NET IPs that should never host DNS servers.
-func DetectTransparentProxy(testDomain string, timeoutMs int) bool {
-	testNets := []string{"192.0.2.1", "198.51.100.1", "203.0.113.1"}
-	var detected atomic.Bool
-	var wg sync.WaitGroup
-	for _, ip := range testNets {
-		wg.Add(1)
-		go func(ip string) {
-			defer wg.Done()
-			sub := randomLabel(8)
-			resp, err := dnsQuery(ip, 53, sub+"."+testDomain, dnsTypeA, timeoutMs, nil)
-			if err == nil && resp != nil {
-				detected.Store(true)
-			}
-		}(ip)
-	}
-	wg.Wait()
-	return detected.Load()
 }
 
 // --- DNS packet construction & parsing ---
@@ -932,7 +913,7 @@ func LoadIPList(content string) []string {
 // RunScanner is the main entry point for the CLI scanner.
 // If e2eConfig is non-nil, E2E tests run in parallel as resolvers meeting the score threshold are found.
 // querySize caps DNS probes to match the user's --max-query-size (0 = full capacity).
-func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, querySize int, e2eConfig *E2EConfig, outputFile string) {
+func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, concurrency int, querySize int, e2eConfig *E2EConfig, outputFile string, e2eResultsOnly bool) {
 	total := len(resolvers)
 	var scanned int64
 	var working int64
@@ -992,16 +973,7 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 		}
 		fmt.Printf("  E2E:         enabled (%s, concurrency: %d, threshold: %d/6)\n", mode, e2eConfig.Concurrency, e2eConfig.ScoreThreshold)
 	}
-	fmt.Println()
-
-	// Transparent proxy detection
-	fmt.Print("  Checking for transparent DNS proxy... ")
-	if DetectTransparentProxy(testDomain, 2000) {
-		fmt.Println("DETECTED")
-		fmt.Println("  ⚠ Your ISP intercepts DNS queries. Results may be inaccurate.")
-	} else {
-		fmt.Println("not detected")
-	}
+	fmt.Println("  Press Ctrl+C to stop early and see results so far.")
 	fmt.Println()
 
 	startTime := time.Now()
@@ -1030,10 +1002,9 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 								e2eMu.Unlock()
 								ep := atomic.LoadInt64(&e2ePassed)
 								printMu.Lock()
-								fmt.Printf("\r  ✗ E2E %-18s FAIL  panic        (E2E: %d/%d)\n", host, ep, n)
 								s := atomic.LoadInt64(&scanned)
 								w := atomic.LoadInt64(&working)
-								fmt.Printf("  Scanning... %d/%d  (working: %d)  |  E2E: %d/%d passed", s, total, w, ep, n)
+								fmt.Printf("\r  Scanning... %d/%d  (working: %d)  |  E2E: %d/%d passed", s, total, w, ep, n)
 								printMu.Unlock()
 							}
 						}()
@@ -1058,20 +1029,11 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 						ep := atomic.LoadInt64(&e2ePassed)
 						printMu.Lock()
 						if result.Success {
-							fmt.Printf("\r  ✓ E2E %-18s PASS  %5dms        (E2E: %d/%d)\n", result.Host, result.TotalMs, ep, n)
-						} else {
-							errMsg := result.Error
-							if errMsg == "" {
-								errMsg = "unknown"
-							}
-							if len(errMsg) > 20 {
-								errMsg = errMsg[:20]
-							}
-							fmt.Printf("\r  ✗ E2E %-18s FAIL  %s        (E2E: %d/%d)\n", result.Host, errMsg, ep, n)
+							fmt.Printf("\r%-80s\r  \033[32m✓ %-18s  E2E passed  %5dms\033[0m\n", "", result.Host, result.TotalMs)
 						}
 						s := atomic.LoadInt64(&scanned)
 						w := atomic.LoadInt64(&working)
-						fmt.Printf("  Scanning... %d/%d  (working: %d)  |  E2E: %d/%d passed", s, total, w, ep, n)
+						fmt.Printf("\r  Scanning... %d/%d  (working: %d)  |  E2E: %d/%d passed", s, total, w, ep, n)
 						printMu.Unlock()
 					}(ip)
 				}
@@ -1146,12 +1108,20 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 				mu.Unlock()
 			}
 
-			// Progress update
-			progressThresh := 6
-			if e2eConfig != nil {
-				progressThresh = e2eConfig.ScoreThreshold
-			}
-			if n%10 == 0 || n == int64(total) || (result.Tunnel != nil && result.Tunnel.Score() >= progressThresh) {
+			// Print working resolver as it's found
+			if result.Tunnel != nil && result.Tunnel.Score() > 0 {
+				printMu.Lock()
+				fmt.Printf("\r%-80s\r  %-18s %d/6  %4dms  %s\n", "", host, result.Tunnel.Score(), result.LatencyMs, result.Tunnel.Details())
+				w := atomic.LoadInt64(&working)
+				if e2eConfig != nil {
+					ep := atomic.LoadInt64(&e2ePassed)
+					et := atomic.LoadInt64(&e2eTested)
+					fmt.Printf("\r  Scanning... %d/%d  (working: %d)  |  E2E: %d/%d passed", n, total, w, ep, et)
+				} else {
+					fmt.Printf("\r  Scanning... %d/%d  (working: %d)", n, total, w)
+				}
+				printMu.Unlock()
+			} else if n%10 == 0 || n == int64(total) {
 				printMu.Lock()
 				w := atomic.LoadInt64(&working)
 				if e2eConfig != nil {
@@ -1208,14 +1178,24 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 	})
 
 	// Print results
-	fmt.Println("  ── Results ──────────────────────────────────────")
+	hasE2E := e2eConfig != nil && len(e2eResults) > 0
+
+	fmt.Println("╔══════════════════════════════════════════════════╗")
+	fmt.Println("║                   Scan Results                   ║")
+	fmt.Println("╚══════════════════════════════════════════════════╝")
 	fmt.Println()
 	if stopped.Load() {
-		fmt.Printf("  Scanned: %d/%d (interrupted)\n", s, total)
+		fmt.Printf("  Scanned:  %d/%d (interrupted)\n", s, total)
+	} else {
+		fmt.Printf("  Scanned:  %d\n", s)
 	}
-	fmt.Printf("  Total: %d | Working: %d | Timeout: %d | Error: %d\n",
-		s, w, t, e)
-	fmt.Printf("  Elapsed: %s\n", elapsed.Round(time.Millisecond))
+	fmt.Printf("  Working:  %d   Timeout: %d   Error: %d\n", w, t, e)
+	fmt.Printf("  Elapsed:  %s\n", elapsed.Round(time.Millisecond))
+	if hasE2E {
+		ep := atomic.LoadInt64(&e2ePassed)
+		et := atomic.LoadInt64(&e2eTested)
+		fmt.Printf("  E2E:      %d/%d passed\n", ep, et)
+	}
 	fmt.Println()
 
 	if len(compatible) == 0 {
@@ -1224,69 +1204,118 @@ func RunScanner(resolvers []string, testDomain string, port int, timeoutMs int, 
 		return
 	}
 
-	// Print compatible resolvers
-	fmt.Printf("  Compatible resolvers (%d):\n\n", len(compatible))
-	fmt.Printf("  %-18s %5s  %5s  %s\n", "RESOLVER", "SCORE", "MS", "DETAILS")
-	fmt.Printf("  %-18s %5s  %5s  %s\n", "────────────────", "─────", "─────", "──────────────────────────────")
-
-	for _, r := range compatible {
-		marker := " "
-		if r.score == 6 {
-			marker = "*"
-		}
-		fmt.Printf(" %s%-18s %d/6    %4dms  %s\n",
-			marker, r.Host, r.score, r.LatencyMs, r.Tunnel.Details())
-	}
-	fmt.Println()
-	fmt.Println("  * = fully compatible (6/6)")
-	fmt.Println()
-
-	// Print top resolvers as comma-separated for easy copy
-	var top []string
-	for _, r := range compatible {
-		if r.score == 6 {
-			top = append(top, r.Host)
-		}
-	}
-
-	// E2E summary
-	if e2eConfig != nil && len(e2eResults) > 0 {
-		ep := atomic.LoadInt64(&e2ePassed)
-		et := atomic.LoadInt64(&e2eTested)
-
-		fmt.Println("  ── E2E Results ──────────────────────────────────")
-		fmt.Println()
-		fmt.Printf("  E2E: %d/%d passed\n", ep, et)
-		fmt.Println()
-
-		// Sort: passed first by latency, then failed
+	if hasE2E {
+		// Build E2E passed set and sorted list
+		e2ePassedSet := make(map[string]bool)
+		var e2ePassed []E2EResult
 		e2eMu.Lock()
-		sortedE2E := make([]E2EResult, len(e2eResults))
-		copy(sortedE2E, e2eResults)
-		e2eMu.Unlock()
-
-		sort.Slice(sortedE2E, func(i, j int) bool {
-			if sortedE2E[i].Success != sortedE2E[j].Success {
-				return sortedE2E[i].Success
+		for _, r := range e2eResults {
+			if r.Success {
+				e2ePassedSet[r.Host] = true
+				e2ePassed = append(e2ePassed, r)
 			}
-			return sortedE2E[i].TotalMs < sortedE2E[j].TotalMs
+		}
+		e2eMu.Unlock()
+		sort.Slice(e2ePassed, func(i, j int) bool {
+			return e2ePassed[i].TotalMs < e2ePassed[j].TotalMs
 		})
 
-		fmt.Printf("  %-18s %7s  %7s  %7s  %s\n", "RESOLVER", "TUNNEL", "HTTP", "TOTAL", "STATUS")
-		fmt.Printf("  %-18s %7s  %7s  %7s  %s\n", "────────────────", "───────", "───────", "───────", "──────")
+		// Filter DNS-only (not E2E passed)
+		var dnsOnly []scoredResult
+		if !e2eResultsOnly {
+			for _, r := range compatible {
+				if !e2ePassedSet[r.Host] {
+					dnsOnly = append(dnsOnly, r)
+				}
+			}
+		}
 
-		for _, r := range sortedE2E {
-			if r.Success {
-				fmt.Printf("  %-18s %5dms  %5dms  %5dms  PASS\n",
-					r.Host, r.TunnelMs, r.HTTPMs, r.TotalMs)
+		// Side-by-side column layout
+		const lw = 38 // left column width
+
+		// pad returns s right-padded to visual width w (rune-aware)
+		pad := func(s string, w int) string {
+			n := utf8.RuneCountInString(s)
+			if n >= w {
+				return s
+			}
+			return s + strings.Repeat(" ", w-n)
+		}
+
+		// Build left column lines (E2E Passed)
+		var leftLines []string
+		leftLines = append(leftLines, fmt.Sprintf("  E2E Passed (%d)", len(e2ePassed)))
+		leftLines = append(leftLines, "  "+strings.Repeat("─", lw-2))
+		if len(e2ePassed) > 0 {
+			leftLines = append(leftLines, fmt.Sprintf("  %-16s %7s %7s", "RESOLVER", "HTTP", "TOTAL"))
+			leftLines = append(leftLines, "  "+pad("──────────────", 16)+" "+pad("──────", 7)+" "+pad("──────", 7))
+			for _, r := range e2ePassed {
+				leftLines = append(leftLines, fmt.Sprintf("  %-16s %5dms %5dms", r.Host, r.HTTPMs, r.TotalMs))
+			}
+		} else {
+			leftLines = append(leftLines, "  (none)")
+		}
+
+		// Build right column lines (DNS Working)
+		var rightLines []string
+		if !e2eResultsOnly && len(dnsOnly) > 0 {
+			rightLines = append(rightLines, fmt.Sprintf("  DNS Working (%d)", len(dnsOnly)))
+			rightLines = append(rightLines, "  "+strings.Repeat("─", 34))
+			rightLines = append(rightLines, fmt.Sprintf("  %-16s %3s %5s", "RESOLVER", "SCR", "MS"))
+			rightLines = append(rightLines, "  "+pad("──────────────", 16)+" "+pad("───", 3)+" "+pad("─────", 5))
+			for _, r := range dnsOnly {
+				rightLines = append(rightLines, fmt.Sprintf("  %-16s %d/6 %4dms", r.Host, r.score, r.LatencyMs))
+			}
+		}
+
+		// Print side by side
+		rows := len(leftLines)
+		if len(rightLines) > rows {
+			rows = len(rightLines)
+		}
+		fmt.Println()
+		for i := 0; i < rows; i++ {
+			left := ""
+			if i < len(leftLines) {
+				left = leftLines[i]
+			}
+			if len(rightLines) > 0 {
+				right := ""
+				if i < len(rightLines) {
+					right = rightLines[i]
+				}
+				fmt.Printf("%s  %s  %s\n", pad(left, lw), "│", right)
+			} else {
+				fmt.Println(left)
 			}
 		}
 		fmt.Println()
+	} else {
+		// No E2E — show all compatible resolvers
+		fmt.Printf("  ── Compatible Resolvers (%d) ─────────────────────\n", len(compatible))
+		fmt.Println()
+		fmt.Printf("  %-18s %5s  %5s  %s\n", "RESOLVER", "SCORE", "MS", "DETAILS")
+		fmt.Printf("  %-18s %5s  %5s  %s\n", "────────────────", "─────", "─────", "──────────────────────────────")
 
+		for _, r := range compatible {
+			marker := " "
+			if r.score == 6 {
+				marker = "*"
+			}
+			fmt.Printf(" %s%-18s %d/6    %4dms  %s\n",
+				marker, r.Host, r.score, r.LatencyMs, r.Tunnel.Details())
+		}
+		fmt.Println()
+		fmt.Println("  * = fully compatible (6/6)")
+		fmt.Println()
 	}
 
 	// Save results to files
-	saveResultsPrompt(workingIPs, e2ePassedIPs, outputFile, stopped.Load())
+	if e2eResultsOnly {
+		saveResultsPrompt(nil, e2ePassedIPs, outputFile, stopped.Load())
+	} else {
+		saveResultsPrompt(workingIPs, e2ePassedIPs, outputFile, stopped.Load())
+	}
 }
 
 // RunE2EOnlyScanner runs E2E tunnel tests directly on the given resolvers
@@ -1506,6 +1535,10 @@ func saveResultsPrompt(workingIPs []string, e2ePassedIPs []string, outputFile st
 
 	// If --output was specified, save all results to that file without prompting
 	if outputFile != "" {
+		if !filepath.IsAbs(outputFile) {
+			exe, _ := os.Executable()
+			outputFile = filepath.Join(filepath.Dir(exe), outputFile)
+		}
 		var allIPs []string
 		if len(e2ePassedIPs) > 0 {
 			allIPs = e2ePassedIPs
@@ -1533,6 +1566,29 @@ func saveResultsPrompt(workingIPs []string, e2ePassedIPs []string, outputFile st
 		}
 	}
 
+	// When both working and E2E results exist, let user choose what to save
+	if len(workingIPs) > 0 && len(e2ePassedIPs) > 0 {
+		fmt.Println("  Save results to files?")
+		fmt.Printf("    1) Both working (%d) + E2E passed (%d)\n", len(workingIPs), len(e2ePassedIPs))
+		fmt.Printf("    2) Working only (%d)\n", len(workingIPs))
+		fmt.Printf("    3) E2E passed only (%d)\n", len(e2ePassedIPs))
+		fmt.Println("    n) Don't save")
+		fmt.Print("  Select (1/2/3/n) [1]: ")
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(strings.ToLower(choice))
+		switch choice {
+		case "n", "no":
+			return
+		case "2":
+			saveResults(workingIPs, nil)
+		case "3":
+			saveResults(nil, e2ePassedIPs)
+		default:
+			saveResults(workingIPs, e2ePassedIPs)
+		}
+		return
+	}
+
 	fmt.Print("  Save results to files? (Y/n): ")
 	choice, _ := reader.ReadString('\n')
 	choice = strings.TrimSpace(strings.ToLower(choice))
@@ -1544,8 +1600,11 @@ func saveResultsPrompt(workingIPs []string, e2ePassedIPs []string, outputFile st
 }
 
 func saveResults(workingIPs []string, e2ePassedIPs []string) {
+	exe, _ := os.Executable()
+	dir := filepath.Dir(exe)
+
 	if len(workingIPs) > 0 {
-		filename := "working.txt"
+		filename := filepath.Join(dir, "working.txt")
 		content := strings.Join(workingIPs, "\n") + "\n"
 		if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
 			fmt.Printf("  Error saving: %v\n", err)
@@ -1555,7 +1614,7 @@ func saveResults(workingIPs []string, e2ePassedIPs []string) {
 	}
 
 	if len(e2ePassedIPs) > 0 {
-		filename := "e2e_passed.txt"
+		filename := filepath.Join(dir, "e2e_passed.txt")
 		content := strings.Join(e2ePassedIPs, "\n") + "\n"
 		if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
 			fmt.Printf("  Error saving: %v\n", err)

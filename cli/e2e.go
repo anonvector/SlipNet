@@ -115,6 +115,9 @@ func testResolverE2E(parentCtx context.Context, resolverIP string, localPort int
 		if config.QuerySize > 0 {
 			c.SetMaxPayload(config.QuerySize)
 		}
+		if config.SOCKSUser != "" && !config.SSHMode {
+			c.SetSocksCredentials(config.SOCKSUser, config.SOCKSPass)
+		}
 		client = c
 	} else {
 		c, err := mobile.NewClient(dnsAddr, config.TunnelDomain, config.PublicKey, listenAddr)

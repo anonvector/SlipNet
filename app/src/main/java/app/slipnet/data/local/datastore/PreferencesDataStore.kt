@@ -39,6 +39,10 @@ class PreferencesDataStore @Inject constructor(
         // Proxy Settings Keys
         val PROXY_LISTEN_ADDRESS = stringPreferencesKey("proxy_listen_address")
         val PROXY_LISTEN_PORT = intPreferencesKey("proxy_listen_port")
+        // Proxy Auth Keys
+        val PROXY_AUTH_ENABLED = booleanPreferencesKey("proxy_auth_enabled")
+        val PROXY_AUTH_USERNAME = stringPreferencesKey("proxy_auth_username")
+        val PROXY_AUTH_PASSWORD = stringPreferencesKey("proxy_auth_password")
         // Network Settings Keys
         val DISABLE_QUIC = booleanPreferencesKey("disable_quic")
         val BLOCK_IPV6 = booleanPreferencesKey("block_ipv6")
@@ -212,7 +216,7 @@ class PreferencesDataStore @Inject constructor(
 
     // Proxy Settings
     val proxyListenAddress: Flow<String> = dataStore.data.map { prefs ->
-        prefs[Keys.PROXY_LISTEN_ADDRESS] ?: "0.0.0.0"
+        prefs[Keys.PROXY_LISTEN_ADDRESS] ?: "127.0.0.1"
     }
 
     suspend fun setProxyListenAddress(address: String) {
@@ -231,14 +235,55 @@ class PreferencesDataStore @Inject constructor(
         }
     }
 
+    // Proxy Auth Settings
+    val proxyAuthEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.PROXY_AUTH_ENABLED] ?: false
+    }
+
+    suspend fun setProxyAuthEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[Keys.PROXY_AUTH_ENABLED] = enabled
+        }
+    }
+
+    val proxyAuthUsername: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.PROXY_AUTH_USERNAME] ?: ""
+    }
+
+    suspend fun setProxyAuthUsername(username: String) {
+        dataStore.edit { prefs ->
+            prefs[Keys.PROXY_AUTH_USERNAME] = username
+        }
+    }
+
+    val proxyAuthPassword: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.PROXY_AUTH_PASSWORD] ?: ""
+    }
+
+    suspend fun setProxyAuthPassword(password: String) {
+        dataStore.edit { prefs ->
+            prefs[Keys.PROXY_AUTH_PASSWORD] = password
+        }
+    }
+
     /**
-     * Sets the default proxy listen port on first launch.
-     * No-op if a port has already been persisted.
+     * Initializes proxy settings on first launch:
+     * - Assigns the default proxy listen port
+     * - Generates random auth credentials and enables auth by default
+     *
+     * No-op for settings that have already been persisted (safe to call on every app start).
      */
     suspend fun ensureProxyPortInitialized() {
         dataStore.edit { prefs ->
             if (prefs[Keys.PROXY_LISTEN_PORT] == null) {
                 prefs[Keys.PROXY_LISTEN_PORT] = DEFAULT_PROXY_PORT
+            }
+            if (prefs[Keys.PROXY_AUTH_USERNAME] == null) {
+                val random = java.security.SecureRandom()
+                val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+                prefs[Keys.PROXY_AUTH_USERNAME] = (1..8).map { chars[random.nextInt(chars.length)] }.joinToString("")
+                prefs[Keys.PROXY_AUTH_PASSWORD] = (1..12).map { chars[random.nextInt(chars.length)] }.joinToString("")
+                prefs[Keys.PROXY_AUTH_ENABLED] = false
             }
         }
     }
@@ -726,7 +771,7 @@ class PreferencesDataStore @Inject constructor(
     }
 
     val scannerE2eConcurrency: Flow<String> = dataStore.data.map { prefs ->
-        prefs[Keys.SCANNER_E2E_CONCURRENCY] ?: "3"
+        prefs[Keys.SCANNER_E2E_CONCURRENCY] ?: "6"
     }
 
     val scannerTestUrl: Flow<String> = dataStore.data.map { prefs ->
@@ -762,7 +807,7 @@ class PreferencesDataStore @Inject constructor(
         concurrency: String,
         e2eTimeoutMs: String,
         testUrl: String,
-        e2eConcurrency: String = "3",
+        e2eConcurrency: String = "6",
         prismTimeoutMs: String = "2000",
         prismProbeCount: String = "5",
         prismPassThreshold: String = "2",
@@ -851,6 +896,9 @@ class PreferencesDataStore @Inject constructor(
             val connectionTime = prefs[Keys.TOTAL_CONNECTION_TIME]
             val skippedUpdate = prefs[Keys.SKIPPED_UPDATE_VERSION]
             val lastUpdateCheck = prefs[Keys.LAST_UPDATE_CHECK_TIME]
+            val proxyAuthEnabled = prefs[Keys.PROXY_AUTH_ENABLED]
+            val proxyAuthUsername = prefs[Keys.PROXY_AUTH_USERNAME]
+            val proxyAuthPassword = prefs[Keys.PROXY_AUTH_PASSWORD]
 
             prefs.clear()
 
@@ -863,6 +911,9 @@ class PreferencesDataStore @Inject constructor(
             connectionTime?.let { prefs[Keys.TOTAL_CONNECTION_TIME] = it }
             skippedUpdate?.let { prefs[Keys.SKIPPED_UPDATE_VERSION] = it }
             lastUpdateCheck?.let { prefs[Keys.LAST_UPDATE_CHECK_TIME] = it }
+            proxyAuthEnabled?.let { prefs[Keys.PROXY_AUTH_ENABLED] = it }
+            proxyAuthUsername?.let { prefs[Keys.PROXY_AUTH_USERNAME] = it }
+            proxyAuthPassword?.let { prefs[Keys.PROXY_AUTH_PASSWORD] = it }
         }
     }
 

@@ -58,7 +58,9 @@ object DnsttBridge {
         maxPayload: Int = 0,
         socksProxyAddr: String? = null,
         socksProxyUser: String? = null,
-        socksProxyPass: String? = null
+        socksProxyPass: String? = null,
+        resolverMode: String = "fanout",
+        rrSpreadCount: Int = 3
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting DNSTT client")
@@ -70,6 +72,8 @@ object DnsttBridge {
         Log.i(TAG, "  NoizMode: $noizMode")
         Log.i(TAG, "  StealthMode: $stealthMode")
         Log.i(TAG, "  SOCKS5 Proxy: ${socksProxyAddr ?: "none"}")
+        Log.i(TAG, "  Resolver Mode: $resolverMode")
+        Log.i(TAG, "  RR Spread Count: $rrSpreadCount")
         Log.i(TAG, "========================================")
 
         // Validate inputs
@@ -138,6 +142,8 @@ object DnsttBridge {
             if (!socksProxyAddr.isNullOrEmpty()) {
                 newClient.setSOCKS5Proxy(socksProxyAddr, socksProxyUser ?: "", socksProxyPass ?: "")
             }
+            newClient.setResolverMode(resolverMode)
+            newClient.setRRSpreadCount(rrSpreadCount.toLong())
             client = newClient
             currentPort = actualPort
 

@@ -7,6 +7,7 @@ import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.ResolverMode
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
 import javax.inject.Inject
@@ -82,7 +83,19 @@ class ProfileMapper @Inject constructor(
             vaydnsUdpTimeout = entity.vaydnsUdpTimeout,
             vaydnsMaxNumLabels = entity.vaydnsMaxNumLabels,
             vaydnsClientIdSize = entity.vaydnsClientIdSize,
-            isPinned = entity.isPinned
+            isPinned = entity.isPinned,
+            sshTlsEnabled = entity.sshTlsEnabled,
+            sshTlsSni = entity.sshTlsSni,
+            sshHttpProxyHost = entity.sshHttpProxyHost,
+            sshHttpProxyPort = entity.sshHttpProxyPort,
+            sshHttpProxyCustomHost = entity.sshHttpProxyCustomHost,
+            sshWsEnabled = entity.sshWsEnabled,
+            sshWsPath = entity.sshWsPath,
+            sshWsUseTls = entity.sshWsUseTls,
+            sshWsCustomHost = entity.sshWsCustomHost,
+            sshPayload = entity.sshPayload,
+            resolverMode = ResolverMode.fromValue(entity.resolverMode),
+            rrSpreadCount = entity.rrSpreadCount
         )
     }
 
@@ -145,7 +158,19 @@ class ProfileMapper @Inject constructor(
             vaydnsUdpTimeout = profile.vaydnsUdpTimeout,
             vaydnsMaxNumLabels = profile.vaydnsMaxNumLabels,
             vaydnsClientIdSize = profile.vaydnsClientIdSize,
-            isPinned = profile.isPinned
+            isPinned = profile.isPinned,
+            sshTlsEnabled = profile.sshTlsEnabled,
+            sshTlsSni = profile.sshTlsSni,
+            sshHttpProxyHost = profile.sshHttpProxyHost,
+            sshHttpProxyPort = profile.sshHttpProxyPort,
+            sshHttpProxyCustomHost = profile.sshHttpProxyCustomHost,
+            sshWsEnabled = profile.sshWsEnabled,
+            sshWsPath = profile.sshWsPath,
+            sshWsUseTls = profile.sshWsUseTls,
+            sshWsCustomHost = profile.sshWsCustomHost,
+            sshPayload = profile.sshPayload,
+            resolverMode = profile.resolverMode.value,
+            rrSpreadCount = profile.rrSpreadCount
         )
     }
 

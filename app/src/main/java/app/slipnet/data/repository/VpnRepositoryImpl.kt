@@ -52,17 +52,129 @@ class VpnRepositoryImpl @Inject constructor(
          * hostnames internally, so we must do it on the JVM side before
          * passing addresses to the Go bridge.
          * Returns the original [host] if it's already a numeric IP.
+         *
+         * @param customDnsServer If non-null, use this DNS server IP for resolution
+         *   instead of the system resolver. Useful when the ISP's DNS is filtered.
          */
-        fun resolveHost(host: String): String {
+        private val PUBLIC_DNS_SERVERS = listOf("8.8.8.8", "1.1.1.1", "9.9.9.9")
+
+        fun resolveHost(host: String, customDnsServer: String? = null): String {
             if (host.isBlank()) return host
             // Already numeric IPv4/IPv6 — pass through
             if (app.slipnet.tunnel.DomainRouter.isIpAddress(host)) return host
+
+            // Try custom DNS server first (bypasses ISP DNS filtering)
+            if (!customDnsServer.isNullOrBlank()) {
+                try {
+                    val resolved = resolveViaUdp(host, customDnsServer)
+                    if (resolved != null) {
+                        Log.i(TAG, "Resolved '$host' → $resolved via custom DNS $customDnsServer")
+                        return resolved
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Custom DNS resolution failed for '$host' via $customDnsServer", e)
+                }
+            }
+
+            // Try well-known public DNS servers (bypasses censored ISP DNS)
+            for (dns in PUBLIC_DNS_SERVERS) {
+                if (dns == customDnsServer) continue
+                try {
+                    val resolved = resolveViaUdp(host, dns)
+                    if (resolved != null) {
+                        Log.i(TAG, "Resolved '$host' → $resolved via public DNS $dns")
+                        return resolved
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Public DNS resolution failed for '$host' via $dns", e)
+                }
+            }
+
+            // Fall back to system resolver
             return try {
                 java.net.InetAddress.getByName(host).hostAddress ?: host
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to resolve '$host' to IP, passing through", e)
                 host
             }
+        }
+
+        /**
+         * Resolve a hostname by sending a UDP DNS query directly to [dnsServer].
+         * Returns the first A record IP, or null on failure.
+         */
+        private fun resolveViaUdp(hostname: String, dnsServer: String, timeoutMs: Int = 5000): String? {
+            val id = (Math.random() * 65535).toInt().toShort()
+            val query = buildDnsQuery(id, hostname)
+            val serverAddr = java.net.InetAddress.getByName(dnsServer)
+            val socket = java.net.DatagramSocket()
+            try {
+                socket.soTimeout = timeoutMs
+                val request = java.net.DatagramPacket(query, query.size, serverAddr, 53)
+                socket.send(request)
+                val responseBuf = ByteArray(512)
+                val response = java.net.DatagramPacket(responseBuf, responseBuf.size)
+                socket.receive(response)
+                return parseDnsResponse(responseBuf, response.length)
+            } finally {
+                socket.close()
+            }
+        }
+
+        /** Build a minimal DNS A-record query packet. */
+        private fun buildDnsQuery(id: Short, hostname: String): ByteArray {
+            val buf = java.io.ByteArrayOutputStream()
+            // Header: ID, flags (standard query, RD=1), QDCOUNT=1
+            buf.write(id.toInt() shr 8 and 0xFF)
+            buf.write(id.toInt() and 0xFF)
+            buf.write(0x01); buf.write(0x00) // flags: RD=1
+            buf.write(0x00); buf.write(0x01) // QDCOUNT=1
+            buf.write(0x00); buf.write(0x00) // ANCOUNT=0
+            buf.write(0x00); buf.write(0x00) // NSCOUNT=0
+            buf.write(0x00); buf.write(0x00) // ARCOUNT=0
+            // QNAME
+            for (label in hostname.split(".")) {
+                buf.write(label.length)
+                buf.write(label.toByteArray(Charsets.US_ASCII))
+            }
+            buf.write(0x00) // root label
+            // QTYPE=A (1), QCLASS=IN (1)
+            buf.write(0x00); buf.write(0x01)
+            buf.write(0x00); buf.write(0x01)
+            return buf.toByteArray()
+        }
+
+        /** Parse a DNS response and return the first A record IP, or null. */
+        private fun parseDnsResponse(data: ByteArray, length: Int): String? {
+            if (length < 12) return null
+            val anCount = (data[6].toInt() and 0xFF shl 8) or (data[7].toInt() and 0xFF)
+            if (anCount == 0) return null
+            // Skip header (12 bytes) and question section
+            var offset = 12
+            // Skip QNAME
+            while (offset < length && data[offset].toInt() != 0) {
+                if (data[offset].toInt() and 0xC0 == 0xC0) { offset += 2; break }
+                offset += (data[offset].toInt() and 0xFF) + 1
+            }
+            if (offset < length && data[offset].toInt() == 0) offset++ // null terminator
+            offset += 4 // skip QTYPE + QCLASS
+            // Parse answer records
+            for (i in 0 until anCount) {
+                if (offset >= length) break
+                // Skip NAME (may be pointer)
+                if (data[offset].toInt() and 0xC0 == 0xC0) offset += 2
+                else { while (offset < length && data[offset].toInt() != 0) offset += (data[offset].toInt() and 0xFF) + 1; offset++ }
+                if (offset + 10 > length) break
+                val rType = (data[offset].toInt() and 0xFF shl 8) or (data[offset + 1].toInt() and 0xFF)
+                val rdLength = (data[offset + 8].toInt() and 0xFF shl 8) or (data[offset + 9].toInt() and 0xFF)
+                offset += 10
+                if (rType == 1 && rdLength == 4 && offset + 4 <= length) {
+                    // A record
+                    return "${data[offset].toInt() and 0xFF}.${data[offset+1].toInt() and 0xFF}.${data[offset+2].toInt() and 0xFF}.${data[offset+3].toInt() and 0xFF}"
+                }
+                offset += rdLength
+            }
+            return null
         }
     }
 
@@ -177,7 +289,9 @@ class VpnRepositoryImpl @Inject constructor(
             maxPayload = profile.dnsPayloadSize,
             socksProxyAddr = socksProxyAddr,
             socksProxyUser = socksProxyUser,
-            socksProxyPass = socksProxyPass
+            socksProxyPass = socksProxyPass,
+            resolverMode = profile.resolverMode.value,
+            rrSpreadCount = profile.rrSpreadCount
         )
 
         if (result.isSuccess) {
@@ -226,7 +340,9 @@ class VpnRepositoryImpl @Inject constructor(
             maxPayload = profile.dnsPayloadSize,
             socksProxyAddr = socksProxyAddr,
             socksProxyUser = socksProxyUser,
-            socksProxyPass = socksProxyPass
+            socksProxyPass = socksProxyPass,
+            resolverMode = profile.resolverMode.value,
+            rrSpreadCount = profile.rrSpreadCount
         )
 
         if (result.isSuccess) {
@@ -274,7 +390,9 @@ class VpnRepositoryImpl @Inject constructor(
             keepalive = profile.vaydnsKeepalive,
             udpTimeout = profile.vaydnsUdpTimeout,
             maxNumLabels = profile.vaydnsMaxNumLabels,
-            clientIdSize = profile.vaydnsClientIdSize
+            clientIdSize = profile.vaydnsClientIdSize,
+            resolverMode = profile.resolverMode.value,
+            rrSpreadCount = profile.rrSpreadCount
         )
 
         if (result.isSuccess) {
@@ -312,8 +430,12 @@ class VpnRepositoryImpl @Inject constructor(
                     .ifBlank { "tcp://8.8.8.8:53" }
             }
             DnsTransport.DOT -> {
-                resolvers.joinToString(",") { "tls://${resolveHost(it.host)}:${it.port}" }
-                    .ifBlank { "tls://8.8.8.8:853" }
+                // DoT uses port 853, not 53. When global resolver override provides
+                // only an IP (defaulting to port 53), use 853 instead.
+                resolvers.joinToString(",") {
+                    val port = if (it.port == 53) 853 else it.port
+                    "tls://${resolveHost(it.host)}:$port"
+                }.ifBlank { "tls://8.8.8.8:853" }
             }
         }
     }
@@ -323,11 +445,15 @@ class VpnRepositoryImpl @Inject constructor(
 
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        val localAuthUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+        val localAuthPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
 
         val result = DohBridge.start(
             dohUrl = profile.dohUrl,
             listenPort = proxyPort,
-            listenHost = proxyHost
+            listenHost = proxyHost,
+            localAuthUsername = localAuthUser,
+            localAuthPassword = localAuthPass
         )
 
         if (result.isSuccess) {
@@ -356,6 +482,8 @@ class VpnRepositoryImpl @Inject constructor(
         dnsServer: String? = null,
         dnsFallback: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        val localAuthUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+        val localAuthPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
         val result = SlipstreamSocksBridge.start(
             slipstreamPort = slipstreamPort,
             slipstreamHost = slipstreamHost,
@@ -364,7 +492,9 @@ class VpnRepositoryImpl @Inject constructor(
             socksUsername = socksUsername,
             socksPassword = socksPassword,
             dnsServer = dnsServer,
-            dnsFallback = dnsFallback
+            dnsFallback = dnsFallback,
+            localAuthUsername = localAuthUser,
+            localAuthPassword = localAuthPass
         )
         if (result.isSuccess) {
             Log.i(TAG, "SlipstreamSocksBridge started on $bridgeHost:$bridgePort -> $slipstreamHost:$slipstreamPort")
@@ -388,6 +518,8 @@ class VpnRepositoryImpl @Inject constructor(
         dnsServer: String? = null,
         dnsFallback: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        val localAuthUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+        val localAuthPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
         val result = DnsttSocksBridge.start(
             dnsttPort = dnsttPort,
             dnsttHost = dnsttHost,
@@ -396,7 +528,9 @@ class VpnRepositoryImpl @Inject constructor(
             socksUsername = socksUsername,
             socksPassword = socksPassword,
             dnsServer = dnsServer,
-            dnsFallback = dnsFallback
+            dnsFallback = dnsFallback,
+            localAuthUsername = localAuthUser,
+            localAuthPassword = localAuthPass
         )
         if (result.isSuccess) {
             Log.i(TAG, "DnsttSocksBridge started on $bridgeHost:$bridgePort -> $dnsttHost:$dnsttPort")
@@ -418,13 +552,17 @@ class VpnRepositoryImpl @Inject constructor(
         dnsServer: String? = null,
         dnsFallback: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        val localAuthUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+        val localAuthPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
         val result = NaiveSocksBridge.start(
             naivePort = naivePort,
             naiveHost = naiveHost,
             listenPort = bridgePort,
             listenHost = bridgeHost,
             dnsServer = dnsServer,
-            dnsFallback = dnsFallback
+            dnsFallback = dnsFallback,
+            localAuthUsername = localAuthUser,
+            localAuthPassword = localAuthPass
         )
         if (result.isSuccess) {
             Log.i(TAG, "NaiveSocksBridge started on $bridgeHost:$bridgePort -> $naiveHost:$naivePort")
@@ -469,11 +607,15 @@ class VpnRepositoryImpl @Inject constructor(
 
         // Step 2: Start TorSocksBridge
         // Tor SOCKS5 is always local — use 127.0.0.1 for upstream, proxyHost for listen
+        val localAuthUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+        val localAuthPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
         val bridgeResult = TorSocksBridge.start(
             torSocksPort = torSocksPort,
             torHost = "127.0.0.1",
             listenPort = bridgePort,
-            listenHost = proxyHost
+            listenHost = proxyHost,
+            localAuthUsername = localAuthUser,
+            localAuthPassword = localAuthPass
         )
 
         if (bridgeResult.isFailure) {
@@ -504,15 +646,11 @@ class VpnRepositoryImpl @Inject constructor(
 
         val socksPort = socksPortOverride ?: preferencesDataStore.proxyListenPort.first()
         val disableQuic = preferencesDataStore.disableQuic.first()
-        // All tunnel types use local bridges that handle Dante auth:
-        // DNSTT: DnsttSocksBridge handles auth
-        // SSH/DNSTT_SSH/SLIPSTREAM_SSH: SSH handles auth, local SOCKS5 is no-auth
-        // SLIPSTREAM: SlipstreamSocksBridge handles auth
-        // DOH: DohBridge is no-auth
-        val useAuth = false
+        // Local proxy auth: hev-socks5-tunnel authenticates with the bridge
+        val proxyAuthEnabled = preferencesDataStore.proxyAuthEnabled.first()
         val enableUdpTunneling = true
-        val socksUsername = if (useAuth) profile.socksUsername else null
-        val socksPassword = if (useAuth) profile.socksPassword else null
+        val socksUsername = if (proxyAuthEnabled) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+        val socksPassword = if (proxyAuthEnabled) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
 
         val mtu = try { preferencesDataStore.vpnMtu.first() } catch (_: Exception) { PreferencesDataStore.DEFAULT_MTU }
 
@@ -698,8 +836,12 @@ class VpnRepositoryImpl @Inject constructor(
 
                 Log.i(TAG, "========================================")
                 Log.i(TAG, "Starting hev-socks5-tunnel")
+                val localAuthEnabled = runBlocking { preferencesDataStore.proxyAuthEnabled.first() }
+                val localAuthUser = if (localAuthEnabled) runBlocking { preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } } else null
+                val localAuthPass = if (localAuthEnabled) runBlocking { preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } } else null
+
                 Log.i(TAG, "  SOCKS5 proxy: 127.0.0.1:$proxyPort")
-                Log.i(TAG, "  SOCKS auth: ${if (!profile.socksUsername.isNullOrBlank()) "enabled" else "disabled"}")
+                Log.i(TAG, "  SOCKS auth: ${if (localAuthEnabled) "enabled" else "disabled"}")
                 Log.i(TAG, "  MTU: $mtu2")
                 Log.i(TAG, "========================================")
 
@@ -707,8 +849,8 @@ class VpnRepositoryImpl @Inject constructor(
                     tunFd = pfd,
                     socksAddress = "127.0.0.1",
                     socksPort = proxyPort,
-                    socksUsername = profile.socksUsername,
-                    socksPassword = profile.socksPassword,
+                    socksUsername = localAuthUser,
+                    socksPassword = localAuthPass,
                     mtu = mtu2,
                     ipv4Address = "10.255.255.1",
                     ipv6Address = "fd00::1"
@@ -816,6 +958,7 @@ class VpnRepositoryImpl @Inject constructor(
         prevBytesSent = 0L
         prevBytesReceived = 0L
         prevTimestamp = 0L
+        _trafficStats.value = TrafficStats.EMPTY
     }
 
     fun refreshTrafficStats() {

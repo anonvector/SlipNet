@@ -1,3 +1,0 @@
-[submodule "vendor/picoquic"]
-	path = vendor/picoquic
-	url = https://github.com/Mygod/slipstream-picoquic

@@ -228,8 +228,9 @@ func relay(a, b net.Conn) {
 		defer wg.Done()
 		io.Copy(dst, src)
 		// Signal write-half close if possible
-		if tc, ok := dst.(*net.TCPConn); ok {
-			tc.CloseWrite()
+		type closeWriter interface{ CloseWrite() error }
+		if cw, ok := dst.(closeWriter); ok {
+			cw.CloseWrite()
 		}
 	}
 	go cp(a, b)

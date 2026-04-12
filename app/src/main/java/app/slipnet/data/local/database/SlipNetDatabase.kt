@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class, ChainEntity::class],
-    version = 29,
+    version = 32,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -356,6 +356,53 @@ abstract class SlipNetDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE server_profiles ADD COLUMN vaydns_udp_timeout INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE server_profiles ADD COLUMN vaydns_max_num_labels INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE server_profiles ADD COLUMN vaydns_clientid_size INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_29_30 = object : Migration(29, 30) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN resolver_mode TEXT NOT NULL DEFAULT 'fanout'")
+            }
+        }
+
+        val MIGRATION_30_31 = object : Migration(30, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Some users already have these columns (added to Entity at v30 without
+                // a migration in earlier beta builds). Check before adding to avoid crash.
+                val existing = mutableSetOf<String>()
+                val cursor = db.query("PRAGMA table_info(server_profiles)")
+                while (cursor.moveToNext()) {
+                    val nameIdx = cursor.getColumnIndex("name")
+                    if (nameIdx >= 0) existing.add(cursor.getString(nameIdx))
+                }
+                cursor.close()
+
+                fun addIfMissing(col: String, def: String) {
+                    if (col !in existing) {
+                        db.execSQL("ALTER TABLE server_profiles ADD COLUMN $col $def")
+                    }
+                }
+
+                // SSH over TLS
+                addIfMissing("ssh_tls_enabled", "INTEGER NOT NULL DEFAULT 0")
+                addIfMissing("ssh_tls_sni", "TEXT NOT NULL DEFAULT ''")
+                // SSH over HTTP CONNECT proxy
+                addIfMissing("ssh_http_proxy_host", "TEXT NOT NULL DEFAULT ''")
+                addIfMissing("ssh_http_proxy_port", "INTEGER NOT NULL DEFAULT 8080")
+                addIfMissing("ssh_http_proxy_custom_host", "TEXT NOT NULL DEFAULT ''")
+                // SSH over WebSocket
+                addIfMissing("ssh_ws_enabled", "INTEGER NOT NULL DEFAULT 0")
+                addIfMissing("ssh_ws_path", "TEXT NOT NULL DEFAULT '/'")
+                addIfMissing("ssh_ws_use_tls", "INTEGER NOT NULL DEFAULT 1")
+                addIfMissing("ssh_ws_custom_host", "TEXT NOT NULL DEFAULT ''")
+                // Raw payload before SSH handshake
+                addIfMissing("ssh_payload", "TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        val MIGRATION_31_32 = object : Migration(31, 32) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN rr_spread_count INTEGER NOT NULL DEFAULT 3")
             }
         }
 

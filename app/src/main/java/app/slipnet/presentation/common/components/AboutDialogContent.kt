@@ -119,6 +119,36 @@ fun AboutDialogContent() {
                 )
             }
         }
+        val xmrAddress = ""
+        Text(
+            text = "Monero (XMR)",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = xmrAddress,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            IconButton(
+                onClick = {
+                    clipboardManager.setText(AnnotatedString(xmrAddress))
+                },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Default.ContentCopy,
+                    contentDescription = "Copy address",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
 
     }
 }

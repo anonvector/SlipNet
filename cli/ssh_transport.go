@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -228,36 +229,7 @@ func sendPayload(conn net.Conn, payload string, host string, port int) error {
 func generateWSKey() string {
 	b := make([]byte, 16)
 	rand.Read(b)
-	return wsBase64Encode(b)
-}
-
-// base64Encode for WebSocket key (standard base64, not base32).
-func wsBase64Encode(data []byte) string {
-	const table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	var sb strings.Builder
-	for i := 0; i < len(data); i += 3 {
-		var b0, b1, b2 byte
-		b0 = data[i]
-		if i+1 < len(data) {
-			b1 = data[i+1]
-		}
-		if i+2 < len(data) {
-			b2 = data[i+2]
-		}
-		sb.WriteByte(table[b0>>2])
-		sb.WriteByte(table[((b0&0x03)<<4)|(b1>>4)])
-		if i+1 < len(data) {
-			sb.WriteByte(table[((b1&0x0F)<<2)|(b2>>6)])
-		} else {
-			sb.WriteByte('=')
-		}
-		if i+2 < len(data) {
-			sb.WriteByte(table[b2&0x3F])
-		} else {
-			sb.WriteByte('=')
-		}
-	}
-	return sb.String()
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 // ── WebSocket net.Conn wrapper (RFC 6455) ─────────────────────────

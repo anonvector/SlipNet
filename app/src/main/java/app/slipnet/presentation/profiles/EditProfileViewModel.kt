@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
+import app.slipnet.domain.model.ResolverMode
 import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.SshAuthType
@@ -65,6 +66,13 @@ enum class TorBridgeType(val displayName: String) {
     MEEK_AZURE("Meek"),
     SMART("Smart Connect"),
     CUSTOM("Custom")
+}
+
+/** SSH transport mode — mutually exclusive. Only shown for SSH-only tunnel type. */
+enum class SshTransport(val displayName: String) {
+    DIRECT("Direct"),
+    HTTP_PROXY("HTTP Proxy"),
+    WEBSOCKET("WebSocket");
 }
 
 data class EditProfileUiState(
@@ -168,6 +176,26 @@ data class EditProfileUiState(
     val vaydnsMaxNumLabels: String = "0",
     val vaydnsClientIdSize: String = "0",
     val vaydnsAdvancedExpanded: Boolean = false,
+    // SSH transport mode (mutually exclusive)
+    val sshTransport: SshTransport = SshTransport.DIRECT,
+    // Shared TLS SNI (used by Direct+TLS, HTTP Proxy+TLS, and WebSocket wss://)
+    val sshTlsSni: String = "",
+    // Direct mode options
+    val sshTlsEnabled: Boolean = false,
+    val sshPayload: String = "",
+    // HTTP CONNECT proxy options
+    val sshHttpProxyHost: String = "",
+    val sshHttpProxyPort: String = "8080",
+    val sshHttpProxyPortError: String? = null,
+    val sshHttpProxyCustomHost: String = "",
+    // WebSocket options
+    val sshWsPath: String = "/",
+    val sshWsUseTls: Boolean = true,
+    val sshWsCustomHost: String = "",
+    // Multi-resolver mode
+    val resolverMode: ResolverMode = ResolverMode.ROUND_ROBIN,
+    // Round-robin spread count (how many resolvers to send to in fast mode)
+    val rrSpreadCount: Int = 3,
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.VAYDNS_SSH
@@ -344,6 +372,22 @@ class EditProfileViewModel @Inject constructor(
                     boundDeviceId = profile.boundDeviceId,
                     resolversHidden = profile.resolversHidden,
                     socks5ServerPort = profile.socks5ServerPort.toString(),
+                    sshTransport = when {
+                        profile.sshWsEnabled -> SshTransport.WEBSOCKET
+                        profile.sshHttpProxyHost.isNotBlank() -> SshTransport.HTTP_PROXY
+                        else -> SshTransport.DIRECT
+                    },
+                    sshTlsEnabled = profile.sshTlsEnabled,
+                    sshTlsSni = profile.sshTlsSni,
+                    sshHttpProxyHost = profile.sshHttpProxyHost,
+                    sshHttpProxyPort = profile.sshHttpProxyPort.toString(),
+                    sshHttpProxyCustomHost = profile.sshHttpProxyCustomHost,
+                    sshWsPath = profile.sshWsPath,
+                    sshWsUseTls = profile.sshWsUseTls,
+                    sshWsCustomHost = profile.sshWsCustomHost,
+                    sshPayload = profile.sshPayload,
+                    resolverMode = profile.resolverMode,
+                    rrSpreadCount = profile.rrSpreadCount,
                     isLoading = false
                 )
             } else {
@@ -551,6 +595,54 @@ class EditProfileViewModel @Inject constructor(
 
     fun updateSshKeyPassphrase(passphrase: String) {
         _uiState.value = _uiState.value.copy(sshKeyPassphrase = passphrase)
+    }
+
+    fun updateSshTransport(transport: SshTransport) {
+        _uiState.value = _uiState.value.copy(sshTransport = transport)
+    }
+
+    fun updateSshTlsEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(sshTlsEnabled = enabled)
+    }
+
+    fun updateSshTlsSni(sni: String) {
+        _uiState.value = _uiState.value.copy(sshTlsSni = sni)
+    }
+
+    fun updateSshHttpProxyHost(host: String) {
+        _uiState.value = _uiState.value.copy(sshHttpProxyHost = host)
+    }
+
+    fun updateSshHttpProxyPort(port: String) {
+        _uiState.value = _uiState.value.copy(sshHttpProxyPort = port, sshHttpProxyPortError = null)
+    }
+
+    fun updateSshHttpProxyCustomHost(host: String) {
+        _uiState.value = _uiState.value.copy(sshHttpProxyCustomHost = host)
+    }
+
+    fun updateSshWsPath(path: String) {
+        _uiState.value = _uiState.value.copy(sshWsPath = path)
+    }
+
+    fun updateSshWsUseTls(useTls: Boolean) {
+        _uiState.value = _uiState.value.copy(sshWsUseTls = useTls)
+    }
+
+    fun updateSshWsCustomHost(host: String) {
+        _uiState.value = _uiState.value.copy(sshWsCustomHost = host)
+    }
+
+    fun updateSshPayload(payload: String) {
+        _uiState.value = _uiState.value.copy(sshPayload = payload)
+    }
+
+    fun updateResolverMode(mode: ResolverMode) {
+        _uiState.value = _uiState.value.copy(resolverMode = mode)
+    }
+
+    fun updateRrSpreadCount(count: Int) {
+        _uiState.value = _uiState.value.copy(rrSpreadCount = count.coerceIn(1, 5))
     }
 
     fun updateTorBridgeLines(lines: String) {
@@ -1220,6 +1312,15 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
+        // HTTP proxy port validation (SSH-only with HTTP proxy transport)
+        if (state.isSshOnly && state.sshTransport == SshTransport.HTTP_PROXY) {
+            val httpProxyPort = state.sshHttpProxyPort.toIntOrNull()
+            if (httpProxyPort == null || httpProxyPort !in 1..65535) {
+                _uiState.value = _uiState.value.copy(sshHttpProxyPortError = "Port must be between 1 and 65535")
+                hasError = true
+            }
+        }
+
         return !hasError
     }
 
@@ -1289,7 +1390,19 @@ class EditProfileViewModel @Inject constructor(
                     vaydnsKeepalive = if (state.isVaydnsBased) (state.vaydnsKeepalive.toIntOrNull() ?: 0) else 0,
                     vaydnsUdpTimeout = if (state.isVaydnsBased) (state.vaydnsUdpTimeout.toIntOrNull() ?: 0) else 0,
                     vaydnsMaxNumLabels = if (state.isVaydnsBased) (state.vaydnsMaxNumLabels.toIntOrNull() ?: 0) else 0,
-                    vaydnsClientIdSize = if (state.isVaydnsBased) (state.vaydnsClientIdSize.toIntOrNull() ?: 0) else 0
+                    vaydnsClientIdSize = if (state.isVaydnsBased) (state.vaydnsClientIdSize.toIntOrNull() ?: 0) else 0,
+                    sshTlsEnabled = if (state.isSshOnly && state.sshTransport == SshTransport.DIRECT) state.sshTlsEnabled else false,
+                    sshTlsSni = if (state.isSshOnly) state.sshTlsSni.trim() else "",
+                    sshHttpProxyHost = if (state.isSshOnly && state.sshTransport == SshTransport.HTTP_PROXY) state.sshHttpProxyHost.trim() else "",
+                    sshHttpProxyPort = if (state.isSshOnly && state.sshTransport == SshTransport.HTTP_PROXY) (state.sshHttpProxyPort.toIntOrNull() ?: 8080) else 8080,
+                    sshHttpProxyCustomHost = if (state.isSshOnly && state.sshTransport == SshTransport.HTTP_PROXY) state.sshHttpProxyCustomHost.trim() else "",
+                    sshWsEnabled = state.isSshOnly && state.sshTransport == SshTransport.WEBSOCKET,
+                    sshWsPath = if (state.isSshOnly && state.sshTransport == SshTransport.WEBSOCKET) state.sshWsPath.ifBlank { "/" } else "/",
+                    sshWsUseTls = if (state.isSshOnly && state.sshTransport == SshTransport.WEBSOCKET) state.sshWsUseTls else true,
+                    sshWsCustomHost = if (state.isSshOnly && state.sshTransport == SshTransport.WEBSOCKET) state.sshWsCustomHost.trim() else "",
+                    sshPayload = if (state.isSshOnly && state.sshTransport == SshTransport.DIRECT) state.sshPayload else "",
+                    resolverMode = state.resolverMode,
+                    rrSpreadCount = state.rrSpreadCount
                 )
 
                 val savedId = saveProfileUseCase(profile)

@@ -23,8 +23,11 @@ data class SettingsUiState(
     val debugLogging: Boolean = false,
     val isLoading: Boolean = true,
     // Proxy Settings
-    val proxyListenAddress: String = "0.0.0.0",
+    val proxyListenAddress: String = "127.0.0.1",
     val proxyListenPort: Int = PreferencesDataStore.DEFAULT_PROXY_PORT,
+    val proxyAuthEnabled: Boolean = false,
+    val proxyAuthUsername: String = "",
+    val proxyAuthPassword: String = "",
     val proxyOnlyMode: Boolean = false,
     val killSwitch: Boolean = false,
     val autoReconnect: Boolean = false,
@@ -122,6 +125,15 @@ class SettingsViewModel @Inject constructor(
                 preferencesDataStore.splitTunnelingApps
             ) { enabled, mode, apps ->
                 Triple(enabled, mode, apps)
+            }
+
+            data class ProxyAuthSettings(val enabled: Boolean, val username: String, val password: String)
+            val proxyAuthFlow = combine(
+                preferencesDataStore.proxyAuthEnabled,
+                preferencesDataStore.proxyAuthUsername,
+                preferencesDataStore.proxyAuthPassword
+            ) { enabled, username, password ->
+                ProxyAuthSettings(enabled, username, password)
             }
 
             data class ProxyOnlySettings(val proxyOnly: Boolean, val killSwitch: Boolean, val sleepTimer: Int, val autoReconnect: Boolean, val showNotificationTraffic: Boolean)
@@ -235,6 +247,12 @@ class SettingsViewModel @Inject constructor(
                     uploadLimitKbps = bandwidth.first,
                     downloadLimitKbps = bandwidth.second
                 )
+            }.combine(proxyAuthFlow) { state, proxyAuth ->
+                state.copy(
+                    proxyAuthEnabled = proxyAuth.enabled,
+                    proxyAuthUsername = proxyAuth.username,
+                    proxyAuthPassword = proxyAuth.password
+                )
             }.collect { newState ->
                 // Preserve update check state across DataStore re-emissions
                 _uiState.value = newState.copy(updateCheckResult = _uiState.value.updateCheckResult)
@@ -342,8 +360,28 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setProxyListenPort(port: Int) {
+        if (port == _uiState.value.httpProxyPort) return
         viewModelScope.launch {
             preferencesDataStore.setProxyListenPort(port)
+        }
+    }
+
+    // Proxy Auth
+    fun setProxyAuthEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setProxyAuthEnabled(enabled)
+        }
+    }
+
+    fun setProxyAuthUsername(username: String) {
+        viewModelScope.launch {
+            preferencesDataStore.setProxyAuthUsername(username)
+        }
+    }
+
+    fun setProxyAuthPassword(password: String) {
+        viewModelScope.launch {
+            preferencesDataStore.setProxyAuthPassword(password)
         }
     }
 
@@ -399,6 +437,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setHttpProxyPort(port: Int) {
+        if (port == _uiState.value.proxyListenPort) return
         viewModelScope.launch {
             preferencesDataStore.setHttpProxyPort(port)
         }

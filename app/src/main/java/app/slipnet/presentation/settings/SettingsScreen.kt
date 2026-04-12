@@ -320,23 +320,76 @@ fun SettingsScreen(
                 AddressSettingItem(
                     value = uiState.proxyListenAddress,
                     options = addressOptions,
-                    onValueChange = { viewModel.setProxyListenAddress(it) }
+                    onValueChange = {
+                        viewModel.setProxyListenAddress(it)
+                        // Auto-enable auth when binding to all interfaces
+                        if (it == "0.0.0.0" && !uiState.proxyAuthEnabled) {
+                            viewModel.setProxyAuthEnabled(true)
+                        }
+                    }
                 )
 
                 SettingsDivider()
+
+                val portsConflict = proxyPort.toIntOrNull() == httpProxyPort.toIntOrNull() && proxyPort.isNotBlank()
 
                 TextFieldSettingItem(
                     icon = Icons.Default.Numbers,
                     title = "Listen Port",
                     value = proxyPort,
                     placeholder = "10880",
-                    supportingText = "Local SOCKS5 proxy port",
+                    supportingText = if (portsConflict) "Must differ from HTTP proxy port" else "Local SOCKS5 proxy port",
+                    isError = portsConflict,
                     keyboardType = KeyboardType.Number,
                     onValueChange = { text ->
                         proxyPort = text
                         text.toIntOrNull()?.let { viewModel.setProxyListenPort(it) }
                     }
                 )
+
+                SettingsDivider()
+
+                SwitchSettingItem(
+                    icon = Icons.Default.Lock,
+                    title = "Proxy Authentication",
+                    description = if (uiState.proxyAuthEnabled) "Username/password required to use the proxy"
+                        else "Any app can use the local proxy without credentials",
+                    checked = uiState.proxyAuthEnabled,
+                    onCheckedChange = { viewModel.setProxyAuthEnabled(it) }
+                )
+
+                if (uiState.proxyAuthEnabled) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = uiState.proxyAuthUsername,
+                            onValueChange = { viewModel.setProxyAuthUsername(it) },
+                            label = { Text("Username") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = uiState.proxyAuthPassword,
+                            onValueChange = { viewModel.setProxyAuthPassword(it) },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "Keeping authentication enabled is recommended for security.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                }
 
                 SettingsDivider()
 
@@ -356,7 +409,8 @@ fun SettingsScreen(
                         title = "HTTP Proxy Port",
                         value = httpProxyPort,
                         placeholder = "8080",
-                        supportingText = "Local HTTP proxy port",
+                        supportingText = if (portsConflict) "Must differ from SOCKS5 listen port" else "Local HTTP proxy port",
+                        isError = portsConflict,
                         keyboardType = KeyboardType.Number,
                         onValueChange = { text ->
                             httpProxyPort = text
@@ -1152,7 +1206,7 @@ fun SettingsScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Enter DNS resolver IPs, one per line or comma-separated (max 8). These override the resolvers in all DNS tunnel profiles.",
+                        "Enter DNS resolver IPs, one per line or comma-separated (max 8). These override the resolvers in all DNS tunnel profiles and are used to resolve SSH hostnames.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     OutlinedTextField(
@@ -1830,8 +1884,8 @@ private fun StepperSettingItem(
  */
 private fun getAddressOptions(): List<Pair<String, String>> {
     return listOf(
-        "All interfaces" to "0.0.0.0",
-        "Localhost" to "127.0.0.1"
+        "Localhost" to "127.0.0.1",
+        "All interfaces" to "0.0.0.0"
     )
 }
 
@@ -2141,6 +2195,7 @@ private fun TextFieldSettingItem(
     placeholder: String,
     supportingText: String,
     keyboardType: KeyboardType = KeyboardType.Text,
+    isError: Boolean = false,
     onValueChange: (String) -> Unit
 ) {
     Column(
@@ -2170,6 +2225,7 @@ private fun TextFieldSettingItem(
             onValueChange = onValueChange,
             placeholder = { Text(placeholder) },
             supportingText = { Text(supportingText) },
+            isError = isError,
             keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
             singleLine = true,
             modifier = Modifier
@@ -2275,12 +2331,35 @@ private fun DonateCard() {
                         }
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    val uriHandler = LocalUriHandler.current
-                    TextButton(
-                        onClick = { uriHandler.openUri("") },
-                        modifier = Modifier.fillMaxWidth()
+                    val xmrAddress = ""
+                    Text(
+                        text = "Monero (XMR)",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Buy Me a Coffee")
+                        Text(
+                            text = xmrAddress,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        IconButton(
+                            onClick = {
+                                clipboardManager.setText(AnnotatedString(xmrAddress))
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.ContentCopy,
+                                contentDescription = "Copy address",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                     Text(
                         text = "Even a small amount makes a difference. Thank you.",

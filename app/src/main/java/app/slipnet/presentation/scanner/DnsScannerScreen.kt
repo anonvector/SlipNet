@@ -148,8 +148,8 @@ fun DnsScannerScreen(
         }
     }
 
-    LaunchedEffect(uiState.scannerState.isScanning) {
-        if (uiState.scannerState.isScanning) {
+    LaunchedEffect(uiState.scannerState.isScanning, uiState.simpleModeE2eState.isRunning) {
+        if (uiState.scannerState.isScanning || uiState.simpleModeE2eState.isRunning) {
             onNavigateToResults()
         }
     }
@@ -158,7 +158,12 @@ fun DnsScannerScreen(
     if (uiState.showResumeDialog) {
         val ss = uiState.scannerState
         val isSimple = uiState.scanMode == ScanMode.SIMPLE
-        val dialogText = if (isSimple) {
+        val isE2eOnly = uiState.scanMode == ScanMode.E2E
+        val dialogText = if (isE2eOnly) {
+            val e2e = uiState.simpleModeE2eState
+            "E2E tested ${e2e.testedCount} of ${e2e.queuedCount} resolvers, ${e2e.passedCount} passed." +
+                " Continue from where you left off?"
+        } else if (isSimple) {
             val e2e = uiState.simpleModeE2eState
             buildString {
                 append("You scanned ${ss.scannedCount} of ${ss.totalCount}${if (ss.focusRangeCount > 0) " + ${ss.focusRangeCount} neighbors" else ""} resolvers")
@@ -275,10 +280,10 @@ fun DnsScannerScreen(
 
             // Start Scan + View Results
             ActionSection(
-                canStartScan = uiState.resolverList.isNotEmpty() && !uiState.scannerState.isScanning,
+                canStartScan = uiState.resolverList.isNotEmpty() && !uiState.scannerState.isScanning && !uiState.simpleModeE2eState.isRunning,
                 hasResults = uiState.scannerState.results.isNotEmpty(),
                 workingCount = when (uiState.scanMode) {
-                    ScanMode.SIMPLE -> uiState.scannerState.results.count { it.e2eTestResult?.success == true }
+                    ScanMode.SIMPLE, ScanMode.E2E -> uiState.scannerState.results.count { it.e2eTestResult?.success == true }
                     ScanMode.PRISM -> uiState.scannerState.results.count { it.prismVerified == true }
                     else -> uiState.scannerState.results.count {
                         it.status == ResolverStatus.WORKING &&
@@ -304,7 +309,7 @@ fun DnsScannerScreen(
                 testUrl = uiState.testUrl,
                 e2eTimeoutMs = uiState.e2eTimeoutMs,
                 e2eConcurrency = uiState.e2eConcurrency,
-                showTestUrl = uiState.profileId != null && uiState.scanMode != ScanMode.PRISM,
+                showTestUrl = uiState.profileId != null && uiState.scanMode != ScanMode.PRISM && uiState.scanMode != ScanMode.E2E,
                 e2eFullVerification = uiState.e2eFullVerification,
                 scanMode = uiState.scanMode,
                 prismTimeoutMs = uiState.prismTimeoutMs,
@@ -349,7 +354,7 @@ fun DnsScannerScreen(
                 selectedTotalIps = uiState.selectedTotalIps,
                 customRangeInput = uiState.customRangeInput,
                 customRangePreviewCount = uiState.customRangePreviewCount,
-                canStartScan = uiState.resolverList.isNotEmpty() && !uiState.scannerState.isScanning,
+                canStartScan = uiState.resolverList.isNotEmpty() && !uiState.scannerState.isScanning && !uiState.simpleModeE2eState.isRunning,
                 onStartScan = { viewModel.startScan() },
                 onLoadDefault = { viewModel.loadDefaultList() },
                 onImportFile = { filePickerLauncher.launch("text/*") },
@@ -449,9 +454,13 @@ private fun ActionSection(
     onStartScan: () -> Unit,
     onViewResults: () -> Unit
 ) {
-    val buttonLabel = if (scanMode == ScanMode.SIMPLE) "Start Simple Scan" else "Start Scan"
+    val buttonLabel = when (scanMode) {
+        ScanMode.SIMPLE -> "Start Simple Scan"
+        ScanMode.E2E -> "Start E2E Scan"
+        else -> "Start Scan"
+    }
     val resultsLabel = when (scanMode) {
-        ScanMode.SIMPLE -> "View Results ($workingCount passed)"
+        ScanMode.SIMPLE, ScanMode.E2E -> "View Results ($workingCount passed)"
         ScanMode.PRISM -> "View Results ($workingCount verified)"
         else -> "View Results ($workingCount working)"
     }
@@ -551,6 +560,22 @@ private fun ScanModeToggle(
                     selectedLeadingIconColor = MaterialTheme.colorScheme.primary
                 )
             )
+            if (canUseSimpleMode) {
+                FilterChip(
+                    selected = scanMode == ScanMode.E2E,
+                    onClick = { onModeChange(ScanMode.E2E) },
+                    enabled = enabled,
+                    label = { Text("E2E") },
+                    leadingIcon = if (scanMode == ScanMode.E2E) {
+                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    } else null,
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.primary,
+                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary
+                    )
+                )
+            }
             if (canUsePrismMode) {
                 FilterChip(
                     selected = scanMode == ScanMode.PRISM,
@@ -599,6 +624,7 @@ private fun ScanModeToggle(
             Text(
                 text = when (scanMode) {
                     ScanMode.SIMPLE -> "Scans DNS resolvers and automatically tests each one through the tunnel. Only resolvers that pass the tunnel test are shown."
+                    ScanMode.E2E -> "Tests each resolver directly through the tunnel, skipping DNS compatibility checks. Slower but tests real connectivity."
                     else -> "Scan DNS resolvers first, then optionally run tunnel test separately."
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -620,7 +646,7 @@ private fun ConfigurationSection(
     expandNeighbors: Boolean = true,
     testUrl: String = "",
     e2eTimeoutMs: String = "15000",
-    e2eConcurrency: String = "3",
+    e2eConcurrency: String = "6",
     showTestUrl: Boolean = false,
     e2eFullVerification: Boolean = false,
     scanMode: ScanMode = ScanMode.ADVANCED,
@@ -665,8 +691,8 @@ private fun ConfigurationSection(
                 title = "Configuration"
             )
 
-            // Prism always uses the profile's tunnel domain — hide the editable field.
-            if (scanMode != ScanMode.PRISM) {
+            // Prism/E2E modes use the profile's tunnel domain — hide the editable field.
+            if (scanMode != ScanMode.PRISM && scanMode != ScanMode.E2E) {
                 OutlinedTextField(
                     value = testDomain,
                     onValueChange = onTestDomainChange,
@@ -693,26 +719,39 @@ private fun ConfigurationSection(
                 )
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            if (scanMode == ScanMode.E2E) {
+                // E2E mode: only port, E2E timeout, E2E concurrency
                 OutlinedTextField(
                     value = scanPort,
                     onValueChange = onScanPortChange,
-                    label = { Text("Port") },
+                    label = { Text("Resolver Port") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
-                    modifier = Modifier.weight(0.7f),
+                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
                 )
 
-                if (scanMode != ScanMode.PRISM) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     OutlinedTextField(
-                        value = timeoutMs,
-                        onValueChange = onTimeoutChange,
-                        label = { Text("Timeout") },
+                        value = e2eTimeoutMs,
+                        onValueChange = { onE2eTimeoutChange(it.filter { c -> c.isDigit() }) },
+                        label = { Text("E2E Timeout") },
                         suffix = { Text("ms") },
+                        supportingText = { Text("Timeout per resolver") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    OutlinedTextField(
+                        value = e2eConcurrency,
+                        onValueChange = { onE2eConcurrencyChange(it.filter { c -> c.isDigit() }.take(2)) },
+                        label = { Text("Workers") },
+                        supportingText = { Text("1-10, Slip. max 1") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         modifier = Modifier.weight(1f),
@@ -720,15 +759,84 @@ private fun ConfigurationSection(
                     )
                 }
 
-                OutlinedTextField(
-                    value = concurrency,
-                    onValueChange = onConcurrencyChange,
-                    label = { Text("Workers") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.weight(0.8f),
-                    shape = RoundedCornerShape(12.dp)
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "HTTP/SSH verification",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "Verify HTTP connectivity through the tunnel (adds ~1-5s per resolver).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = e2eFullVerification,
+                        onCheckedChange = onE2eFullVerificationChange
+                    )
+                }
+                if (e2eFullVerification) {
+                    OutlinedTextField(
+                        value = testUrl,
+                        onValueChange = onTestUrlChange,
+                        label = { Text("Test URL (E2E)") },
+                        placeholder = { Text("http://www.gstatic.com/generate_204") },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.NetworkCheck,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        },
+                        supportingText = { Text("URL for tunnel connectivity test") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedTextField(
+                        value = scanPort,
+                        onValueChange = onScanPortChange,
+                        label = { Text("Port") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(0.7f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    if (scanMode != ScanMode.PRISM) {
+                        OutlinedTextField(
+                            value = timeoutMs,
+                            onValueChange = onTimeoutChange,
+                            label = { Text("Timeout") },
+                            suffix = { Text("ms") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = concurrency,
+                        onValueChange = onConcurrencyChange,
+                        label = { Text("Workers") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(0.8f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
             }
 
             if (scanMode == ScanMode.PRISM) {
@@ -850,53 +958,27 @@ private fun ConfigurationSection(
                 }
             }
 
-            if (dnsTransport == DnsTransport.TCP) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Default.Dns,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "Scanning over TCP",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+            // DNS-specific options — hidden in E2E mode since there's no DNS scan phase
+            if (scanMode != ScanMode.E2E) {
+                if (dnsTransport == DnsTransport.TCP) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Dns,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Scanning over TCP",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
-            }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Default.Shuffle,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "Shuffle IP list",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-                Switch(
-                    checked = shuffleList,
-                    onCheckedChange = onShuffleListChange
-                )
-            }
-
-            // Expand neighbors toggle
-            Column {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -907,26 +989,55 @@ private fun ConfigurationSection(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            Icons.Default.ShareLocation,
+                            Icons.Default.Shuffle,
                             contentDescription = null,
                             modifier = Modifier.size(20.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Test nearby IPs (/24 subnet)",
+                            text = "Shuffle IP list",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
                     Switch(
-                        checked = expandNeighbors,
-                        onCheckedChange = onExpandNeighborsChange
+                        checked = shuffleList,
+                        onCheckedChange = onShuffleListChange
                     )
                 }
-                Text(
-                    text = "When a working IP is found, also tests all 256 IPs in its /24 subnet. Only applies to country and custom range scans.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+
+                // Expand neighbors toggle
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.ShareLocation,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "Test nearby IPs (/24 subnet)",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        Switch(
+                            checked = expandNeighbors,
+                            onCheckedChange = onExpandNeighborsChange
+                        )
+                    }
+                    Text(
+                        text = "When a working IP is found, also tests all 256 IPs in its /24 subnet. Only applies to country and custom range scans.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
             if (showTestUrl) {
@@ -995,7 +1106,7 @@ private fun ConfigurationSection(
                     value = e2eConcurrency,
                     onValueChange = { onE2eConcurrencyChange(it.filter { c -> c.isDigit() }.take(2)) },
                     label = { Text("E2E Concurrency") },
-                    placeholder = { Text("3") },
+                    placeholder = { Text("6") },
                     leadingIcon = {
                         Icon(
                             Icons.Default.Speed,
@@ -1003,7 +1114,7 @@ private fun ConfigurationSection(
                             modifier = Modifier.size(20.dp)
                         )
                     },
-                    supportingText = { Text("Parallel tunnel tests (1-3, Slipstream max 1)") },
+                    supportingText = { Text("Parallel tunnel tests (1-10, Slipstream max 1)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)

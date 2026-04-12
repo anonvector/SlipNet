@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ConnectionState
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +21,9 @@ class QuickSettingsTile : TileService() {
 
     @Inject
     lateinit var connectionManager: VpnConnectionManager
+
+    @Inject
+    lateinit var preferencesDataStore: PreferencesDataStore
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var stateObserverJob: Job? = null
@@ -49,35 +53,35 @@ class QuickSettingsTile : TileService() {
             when (state) {
                 is ConnectionState.Disconnected -> {
                     tile.state = Tile.STATE_INACTIVE
-                    tile.label = "Slipstream"
+                    tile.label = "SlipNet"
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         tile.subtitle = "Disconnected"
                     }
                 }
                 is ConnectionState.Connecting -> {
                     tile.state = Tile.STATE_ACTIVE
-                    tile.label = "Slipstream"
+                    tile.label = "SlipNet"
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         tile.subtitle = "Connecting..."
                     }
                 }
                 is ConnectionState.Connected -> {
                     tile.state = Tile.STATE_ACTIVE
-                    tile.label = "Slipstream"
+                    tile.label = "SlipNet"
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         tile.subtitle = state.profile.name
                     }
                 }
                 is ConnectionState.Disconnecting -> {
                     tile.state = Tile.STATE_INACTIVE
-                    tile.label = "Slipstream"
+                    tile.label = "SlipNet"
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         tile.subtitle = "Disconnecting..."
                     }
                 }
                 is ConnectionState.Error -> {
                     tile.state = Tile.STATE_INACTIVE
-                    tile.label = "Slipstream"
+                    tile.label = "SlipNet"
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         tile.subtitle = "Error"
                     }
@@ -105,12 +109,15 @@ class QuickSettingsTile : TileService() {
                         ?: connectionManager.getLastConnectedProfile()
 
                     if (profile != null) {
-                        // Check VPN permission
-                        val vpnIntent = android.net.VpnService.prepare(this@QuickSettingsTile)
-                        if (vpnIntent != null) {
-                            // Need to request VPN permission - can't do from tile
-                            // User needs to open the app
-                            return@launch
+                        // In proxy-only mode, skip VPN permission — no TUN interface is used
+                        val isProxyOnly = preferencesDataStore.proxyOnlyMode.first()
+                        if (!isProxyOnly) {
+                            val vpnIntent = android.net.VpnService.prepare(this@QuickSettingsTile)
+                            if (vpnIntent != null) {
+                                // Need to request VPN permission - can't do from tile
+                                // User needs to open the app
+                                return@launch
+                            }
                         }
 
                         connectionManager.connect(profile)

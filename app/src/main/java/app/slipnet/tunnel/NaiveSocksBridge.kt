@@ -53,6 +53,8 @@ object NaiveSocksBridge {
 
     private var naiveHost: String = "127.0.0.1"
     private var naivePort: Int = 0
+    private var localAuthUsername: String? = null
+    private var localAuthPassword: String? = null
     private var serverSocket: ServerSocket? = null
     private var acceptorThread: Thread? = null
     private val running = AtomicBoolean(false)
@@ -82,18 +84,23 @@ object NaiveSocksBridge {
         listenPort: Int,
         listenHost: String = "127.0.0.1",
         dnsServer: String? = null,
-        dnsFallback: String? = null
+        dnsFallback: String? = null,
+        localAuthUsername: String? = null,
+        localAuthPassword: String? = null
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting NaiveProxy SOCKS5 bridge")
         Log.i(TAG, "  NaiveProxy: $naiveHost:$naivePort")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  Local auth: ${if (!localAuthUsername.isNullOrEmpty()) "enabled" else "disabled"}")
         Log.i(TAG, "  DNS: ${dnsServer ?: PRIMARY_DNS_HOST} (fallback: ${dnsFallback ?: FALLBACK_DNS_HOST})")
         Log.i(TAG, "========================================")
 
         stop()
         this.naiveHost = naiveHost
         this.naivePort = naivePort
+        this.localAuthUsername = localAuthUsername
+        this.localAuthPassword = localAuthPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
         this.dnsFallbackHost = dnsFallback ?: FALLBACK_DNS_HOST
 
@@ -450,9 +457,10 @@ object NaiveSocksBridge {
                     val methods = ByteArray(nMethods)
                     input.readFully(methods)
 
-                    // Respond: no authentication required
-                    output.write(byteArrayOf(0x05, 0x00))
-                    output.flush()
+                    // Authenticate local client
+                    if (!LocalProxyAuth.handleGreeting(methods, input, output, localAuthUsername, localAuthPassword)) {
+                        return@Thread
+                    }
 
                     // SOCKS5 request
                     val ver = input.read()
@@ -1025,12 +1033,15 @@ object NaiveSocksBridge {
     private fun copyStream(input: InputStream, output: OutputStream, limiter: RateLimiter? = null) {
         val buffered = BufferedOutputStream(output, BUFFER_SIZE)
         val buffer = ByteArray(BUFFER_SIZE)
+        val maxRead = if (limiter != null && limiter.bytesPerSecond > 0) {
+            (limiter.bytesPerSecond / 4).toInt().coerceIn(1024, BUFFER_SIZE)
+        } else BUFFER_SIZE
         while (!Thread.currentThread().isInterrupted) {
-            val bytesRead = input.read(buffer)
+            val bytesRead = input.read(buffer, 0, maxRead)
             if (bytesRead == -1) break
             limiter?.acquire(bytesRead)
             buffered.write(buffer, 0, bytesRead)
-            if (bytesRead < BUFFER_SIZE || input.available() == 0) {
+            if (bytesRead < maxRead || input.available() == 0) {
                 buffered.flush()
             }
         }
