@@ -60,7 +60,7 @@ jobs:
           go-version-file: cli/go.mod
 
       - name: Install garble
-        run: go install mvdan.cc/garble@latest
+        run: go install mvdan.cc/garble@v0.14.0
 
       - name: Copy resolver list for embedding
         run: cp app/src/main/res/raw/resolvers.txt cli/resolvers.txt
