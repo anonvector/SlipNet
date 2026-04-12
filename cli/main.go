@@ -387,6 +387,7 @@ func main() {
 	var querySize int
 	var maxQnameLen int
 	var resolverModeOverride string
+	var spreadCountOverride int
 	var vaydnsOpts vaydnsCLIOverrides
 	var uriParts []string
 
@@ -519,6 +520,17 @@ func main() {
 			} else {
 				log.Fatal("--resolver-mode requires a value: fast or reliable")
 			}
+		case "--spread-count":
+			if i+1 < len(os.Args) {
+				v, err := strconv.Atoi(os.Args[i+1])
+				if err != nil || v < 1 || v > 5 {
+					log.Fatal("--spread-count requires a value between 1 and 5")
+				}
+				spreadCountOverride = v
+				i++
+			} else {
+				log.Fatal("--spread-count requires a value (1-5)")
+			}
 		case "--direct", "-direct":
 			forceDirectMode = true
 		case "--version", "-version", "-v":
@@ -540,11 +552,11 @@ func main() {
 
 	// Join all non-flag args in case terminal line-wrapping split the URI
 	uri := strings.TrimSpace(strings.Join(uriParts, ""))
-	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize, maxQnameLen, resolverModeOverride, vaydnsOpts)
+	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize, maxQnameLen, resolverModeOverride, spreadCountOverride, vaydnsOpts)
 }
 
 // connectWithParams runs the tunnel connection with the given parameters.
-func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool, querySize int, maxQnameLen int, resolverMode string, vOpts vaydnsCLIOverrides) {
+func connectWithParams(uri string, portOverride int, hostOverride string, dnsOverride string, utlsOverride string, forceDirectMode bool, querySize int, maxQnameLen int, resolverMode string, spreadCount int, vOpts vaydnsCLIOverrides) {
 	profile, err := parseURI(uri)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Error: Failed to parse URI: %v\n", err)
@@ -828,8 +840,12 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 			if rMode != "" {
 				c.SetResolverMode(rMode)
 			}
-			if profile.RRSpreadCount > 0 {
-				c.SetRRSpreadCount(int64(profile.RRSpreadCount))
+			sc := profile.RRSpreadCount
+			if spreadCount > 0 {
+				sc = spreadCount
+			}
+			if sc > 0 {
+				c.SetRRSpreadCount(int64(sc))
 			}
 			return c, nil
 		}
@@ -871,8 +887,12 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		if rMode != "" {
 			c.SetResolverMode(rMode)
 		}
-		if profile.RRSpreadCount > 0 {
-			c.SetRRSpreadCount(int64(profile.RRSpreadCount))
+		sc := profile.RRSpreadCount
+		if spreadCount > 0 {
+			sc = spreadCount
+		}
+		if sc > 0 {
+			c.SetRRSpreadCount(int64(sc))
 		}
 		return c, nil
 	}
@@ -1287,6 +1307,8 @@ Options (connect):
                       Multi-resolver query distribution: fast (round-robin) or reliable (fanout)
                       fast: sends each query to one resolver in rotation (bandwidth aggregation)
                       reliable: sends each query to all resolvers (default from config)
+  --spread-count N    How many resolvers each query is sent to in fast mode (1-5, default: 3)
+                      1 = no duplicates, higher = more redundancy
 
 VayDNS options (override config values):
   --vaydns-record-type TYPE   DNS record type: txt, cname, a, aaaa, mx, ns, srv, null, caa (default: txt)
