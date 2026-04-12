@@ -322,10 +322,6 @@ fun SettingsScreen(
                     options = addressOptions,
                     onValueChange = {
                         viewModel.setProxyListenAddress(it)
-                        // Auto-enable auth when binding to all interfaces
-                        if (it == "0.0.0.0" && !uiState.proxyAuthEnabled) {
-                            viewModel.setProxyAuthEnabled(true)
-                        }
                     }
                 )
 
