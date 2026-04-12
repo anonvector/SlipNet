@@ -12,13 +12,6 @@ A fast, modern VPN client featuring DNS tunneling with support for multiple prot
 
 > **This is a legitimate source-available anti-censorship tool** designed to help users in countries with internet censorship access the free internet. It is comparable to [Tor](https://www.torproject.org/), [Psiphon](https://psiphon.ca/), [Outline VPN](https://getoutline.org/) (Google Jigsaw), and [dnstt](https://www.bamsoftware.com/software/dnstt/). This project does not target, exploit, or attack any systems — it is a client-side privacy tool used voluntarily by end users.
 
-## Donate
-
-If you want to support development:
-
-- **BEP-20 / ERC-20 / Arbitrum**: ``
-- **Monero (XMR)**: ``
-
 ## Community
 
 Join our Telegram channel for updates, support, and discussions:
