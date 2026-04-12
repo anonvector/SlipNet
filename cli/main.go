@@ -109,6 +109,9 @@ type Profile struct {
 	// Multi-resolver mode (config position 60): "fanout" or "roundrobin"
 	ResolverMode string
 
+	// Round-robin spread count (config position 61): how many resolvers per query in fast mode
+	RRSpreadCount int
+
 	// Locked profile (config position 31)
 	IsLocked bool
 }
@@ -284,6 +287,13 @@ func parseURI(uri string) (*Profile, error) {
 	// Resolver mode (position 60)
 	if len(fields) > 60 && fields[60] != "" {
 		p.ResolverMode = fields[60]
+	}
+
+	// RR spread count (position 61)
+	if len(fields) > 61 {
+		if v, err := strconv.Atoi(fields[61]); err == nil && v >= 1 {
+			p.RRSpreadCount = v
+		}
 	}
 
 	return p, nil
@@ -818,6 +828,9 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 			if rMode != "" {
 				c.SetResolverMode(rMode)
 			}
+			if profile.RRSpreadCount > 0 {
+				c.SetRRSpreadCount(int64(profile.RRSpreadCount))
+			}
 			return c, nil
 		}
 
@@ -857,6 +870,9 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		}
 		if rMode != "" {
 			c.SetResolverMode(rMode)
+		}
+		if profile.RRSpreadCount > 0 {
+			c.SetRRSpreadCount(int64(profile.RRSpreadCount))
 		}
 		return c, nil
 	}
