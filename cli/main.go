@@ -108,6 +108,9 @@ type Profile struct {
 
 	// Multi-resolver mode (config position 60): "fanout" or "roundrobin"
 	ResolverMode string
+
+	// Locked profile (config position 31)
+	IsLocked bool
 }
 
 func parseURI(uri string) (*Profile, error) {
@@ -211,6 +214,11 @@ func parseURI(uri string) (*Profile, error) {
 	// DNS transport (field 22)
 	if len(fields) > 22 && fields[22] != "" {
 		p.DNSTransport = fields[22]
+	}
+
+	// Locked profile (position 31)
+	if len(fields) > 31 {
+		p.IsLocked = fields[31] == "1"
 	}
 
 	// NoizDNS stealth + DNS payload size (positions 38-39)
@@ -604,18 +612,24 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 			directMode = true
 			authMode = true
 		}
-		fmt.Printf("  Using custom DNS: %s\n", dnsAddr)
+		if !profile.IsLocked {
+			fmt.Printf("  Using custom DNS: %s\n", dnsAddr)
+		}
 	} else if forceDirectMode {
 		directMode = true
 		authMode = true
 	}
 
 	if dnsOverride == "" {
-		fmt.Printf("  Checking DNS for %s...\n", profile.Domain)
+		if !profile.IsLocked {
+			fmt.Printf("  Checking DNS for %s...\n", profile.Domain)
+		} else {
+			fmt.Println("  Checking DNS...")
+		}
 		if forceDirectMode {
 			serverIP := findAuthoritativeServer(profile.Domain)
 			if serverIP != "" {
-				fmt.Printf("  Found server at %s, using direct mode\n", serverIP)
+				fmt.Printf("  Found server, using direct mode\n")
 				dnsAddr = serverIP + ":53"
 			} else {
 				fmt.Printf("  Warning: could not auto-detect server IP, trying profile resolver\n")
@@ -626,7 +640,7 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 				fmt.Printf("  DNS delegation not available via public DNS\n")
 				serverIP := findServerFallback(profile.Domain)
 				if serverIP != "" {
-					fmt.Printf("  Found server at %s, using direct mode\n", serverIP)
+					fmt.Printf("  Found server, using direct mode\n")
 					dnsAddr = serverIP + ":53"
 					authMode = true
 					directMode = true
@@ -648,8 +662,21 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	fmt.Println()
 	fmt.Printf("  Profile:    %s\n", profile.Name)
 	fmt.Printf("  Type:       %s\n", profile.TunnelType)
-	fmt.Printf("  Domain:     %s\n", profile.Domain)
-	fmt.Printf("  DNS:        %s\n", dnsAddr)
+	if profile.IsLocked {
+		fmt.Println("  Domain:     [hidden]")
+		user := profile.SSHUser
+		if user == "" {
+			user = profile.SOCKSUser
+		}
+		if user != "" {
+			fmt.Printf("  User:       %s\n", user)
+		}
+	} else {
+		fmt.Printf("  Domain:     %s\n", profile.Domain)
+	}
+	if !profile.IsLocked {
+		fmt.Printf("  DNS:        %s\n", dnsAddr)
+	}
 	if directMode {
 		fmt.Println("              (direct to server, auto-detected)")
 	}
