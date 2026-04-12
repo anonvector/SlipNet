@@ -188,6 +188,8 @@ object DohBridge {
     }
 
     private var dohUrl: String = ""
+    private var localAuthUsername: String? = null
+    private var localAuthPassword: String? = null
     private var serverSocket: ServerSocket? = null
     private var acceptorThread: Thread? = null
     private val running = AtomicBoolean(false)
@@ -244,15 +246,18 @@ object DohBridge {
      * @param listenHost Local host for the SOCKS5 proxy
      * @return Result indicating success or failure
      */
-    fun start(dohUrl: String, listenPort: Int, listenHost: String = "127.0.0.1"): Result<Unit> {
+    fun start(dohUrl: String, listenPort: Int, listenHost: String = "127.0.0.1", localAuthUsername: String? = null, localAuthPassword: String? = null): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting DoH bridge")
         Log.i(TAG, "  DoH URL: $dohUrl")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  Local auth: ${if (!localAuthUsername.isNullOrEmpty()) "enabled" else "disabled"}")
         Log.i(TAG, "========================================")
 
         stop()
         this.dohUrl = dohUrl
+        this.localAuthUsername = localAuthUsername
+        this.localAuthPassword = localAuthPassword
         httpClient = createHttpClient()
 
         return try {
@@ -368,9 +373,10 @@ object DohBridge {
                     val methods = ByteArray(nMethods)
                     input.readFully(methods)
 
-                    // Respond: no authentication required
-                    output.write(byteArrayOf(0x05, 0x00))
-                    output.flush()
+                    // Authenticate local client
+                    if (!LocalProxyAuth.handleGreeting(methods, input, output, localAuthUsername, localAuthPassword)) {
+                        return@Thread
+                    }
 
                     // SOCKS5 request
                     val ver = input.read()
@@ -905,12 +911,15 @@ object DohBridge {
     private fun copyStream(input: InputStream, output: OutputStream, limiter: RateLimiter? = null) {
         val buffered = BufferedOutputStream(output, BUFFER_SIZE)
         val buffer = ByteArray(BUFFER_SIZE)
+        val maxRead = if (limiter != null && limiter.bytesPerSecond > 0) {
+            (limiter.bytesPerSecond / 4).toInt().coerceIn(1024, BUFFER_SIZE)
+        } else BUFFER_SIZE
         while (!Thread.currentThread().isInterrupted) {
-            val bytesRead = input.read(buffer)
+            val bytesRead = input.read(buffer, 0, maxRead)
             if (bytesRead == -1) break
             limiter?.acquire(bytesRead)
             buffered.write(buffer, 0, bytesRead)
-            if (bytesRead < BUFFER_SIZE || input.available() == 0) {
+            if (bytesRead < maxRead || input.available() == 0) {
                 buffered.flush()
             }
         }

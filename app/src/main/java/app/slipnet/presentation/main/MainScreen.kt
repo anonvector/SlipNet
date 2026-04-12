@@ -797,7 +797,7 @@ fun MainScreen(
                     AddMenuOption(
                         icon = Icons.Default.VisibilityOff,
                         title = "NoizDNS",
-                        description = "DPI-evasion DNS tunnel",
+                        description = "Stealth DNS tunnel",
                         onClick = {
                             showAddMenu = false
                             onNavigateToAddProfile(TunnelType.NOIZDNS.value)

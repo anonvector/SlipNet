@@ -30,6 +30,14 @@ object SshTunnelBridge {
         get() = defaultInstance.downloadLimiter
         set(value) { defaultInstance.downloadLimiter = value }
 
+    var localAuthUsername: String?
+        get() = defaultInstance.localAuthUsername
+        set(value) { defaultInstance.localAuthUsername = value }
+
+    var localAuthPassword: String?
+        get() = defaultInstance.localAuthPassword
+        set(value) { defaultInstance.localAuthPassword = value }
+
     fun configure(cipher: String?, compression: Boolean, maxChannels: Int) =
         defaultInstance.configure(cipher, compression, maxChannels)
 
@@ -45,10 +53,66 @@ object SshTunnelBridge {
         sshPrivateKey: String = "",
         sshKeyPassphrase: String = "",
         remoteDnsHost: String = "8.8.8.8",
-        remoteDnsFallback: String = "1.1.1.1"
+        remoteDnsFallback: String = "1.1.1.1",
+        tlsEnabled: Boolean = false,
+        tlsSni: String = "",
+        sshPayload: String = ""
     ): Result<Unit> = defaultInstance.startDirect(
         tunnelHost, tunnelPort, sshUsername, sshPassword,
         listenPort, listenHost, forwardDnsThroughSsh,
+        sshAuthType, sshPrivateKey, sshKeyPassphrase,
+        remoteDnsHost, remoteDnsFallback,
+        tlsEnabled, tlsSni, sshPayload
+    )
+
+    fun startOverHttpProxy(
+        sshHost: String,
+        sshPort: Int,
+        sshUsername: String,
+        sshPassword: String,
+        proxyHost: String,
+        proxyPort: Int,
+        customHostHeader: String = "",
+        listenPort: Int,
+        listenHost: String = "127.0.0.1",
+        blockDirectDns: Boolean = true,
+        sshAuthType: SshAuthType = SshAuthType.PASSWORD,
+        sshPrivateKey: String = "",
+        sshKeyPassphrase: String = "",
+        remoteDnsHost: String = "8.8.8.8",
+        remoteDnsFallback: String = "1.1.1.1",
+        tlsEnabled: Boolean = false,
+        tlsSni: String = ""
+    ): Result<Unit> = defaultInstance.startOverHttpProxy(
+        sshHost, sshPort, sshUsername, sshPassword,
+        proxyHost, proxyPort, customHostHeader,
+        listenPort, listenHost, blockDirectDns,
+        sshAuthType, sshPrivateKey, sshKeyPassphrase,
+        remoteDnsHost, remoteDnsFallback,
+        tlsEnabled, tlsSni
+    )
+
+    fun startOverWebSocket(
+        sshHost: String,
+        sshPort: Int,
+        sshUsername: String,
+        sshPassword: String,
+        wsPath: String = "/",
+        wsUseTls: Boolean = true,
+        wsCustomHost: String = "",
+        wsTlsSni: String = "",
+        listenPort: Int,
+        listenHost: String = "127.0.0.1",
+        blockDirectDns: Boolean = true,
+        sshAuthType: SshAuthType = SshAuthType.PASSWORD,
+        sshPrivateKey: String = "",
+        sshKeyPassphrase: String = "",
+        remoteDnsHost: String = "8.8.8.8",
+        remoteDnsFallback: String = "1.1.1.1"
+    ): Result<Unit> = defaultInstance.startOverWebSocket(
+        sshHost, sshPort, sshUsername, sshPassword,
+        wsPath, wsUseTls, wsCustomHost, wsTlsSni,
+        listenPort, listenHost, blockDirectDns,
         sshAuthType, sshPrivateKey, sshKeyPassphrase,
         remoteDnsHost, remoteDnsFallback
     )

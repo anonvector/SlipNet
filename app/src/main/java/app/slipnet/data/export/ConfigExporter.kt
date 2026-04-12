@@ -14,8 +14,8 @@ import javax.inject.Singleton
  * Single profile format: slipnet://[base64-encoded-profile]
  * Multiple profiles: one URI per line
  *
- * Encoded profile format v20 (pipe-delimited):
- * v20|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId|resolversHidden|hiddenResolvers|noizdnsStealth|dnsPayloadSize|socks5ServerPort|vaydnsDnsttCompat|vaydnsRecordType|vaydnsMaxQnameLen|vaydnsRps|vaydnsIdleTimeout|vaydnsKeepalive|vaydnsUdpTimeout|vaydnsMaxNumLabels|vaydnsClientIdSize
+ * Encoded profile format v24 (pipe-delimited):
+ * v24|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId|resolversHidden|hiddenResolvers|noizdnsStealth|dnsPayloadSize|socks5ServerPort|vaydnsDnsttCompat|vaydnsRecordType|vaydnsMaxQnameLen|vaydnsRps|vaydnsIdleTimeout|vaydnsKeepalive|vaydnsUdpTimeout|vaydnsMaxNumLabels|vaydnsClientIdSize|sshTlsEnabled|sshTlsSni|sshHttpProxyHost|sshHttpProxyPort|sshHttpProxyCustomHost|sshWsEnabled|sshWsPath|sshWsUseTls|sshWsCustomHost|sshPayload(b64)|resolverMode|rrSpreadCount
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -25,7 +25,7 @@ class ConfigExporter @Inject constructor() {
     companion object {
         const val SCHEME = "slipnet://"
         const val ENCRYPTED_SCHEME = "slipnet-enc://"
-        const val VERSION = "20"
+        const val VERSION = "24"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -172,7 +172,24 @@ class ConfigExporter @Inject constructor() {
             profile.vaydnsKeepalive.toString(),
             profile.vaydnsUdpTimeout.toString(),
             profile.vaydnsMaxNumLabels.toString(),
-            profile.vaydnsClientIdSize.toString()
+            profile.vaydnsClientIdSize.toString(),
+            // v21: SSH over TLS + HTTP CONNECT proxy
+            if (profile.sshTlsEnabled) "1" else "0",
+            sanitize(profile.sshTlsSni),
+            sanitize(profile.sshHttpProxyHost),
+            profile.sshHttpProxyPort.toString(),
+            sanitize(profile.sshHttpProxyCustomHost),
+            // v21: SSH over WebSocket
+            if (profile.sshWsEnabled) "1" else "0",
+            sanitize(profile.sshWsPath),
+            if (profile.sshWsUseTls) "1" else "0",
+            sanitize(profile.sshWsCustomHost),
+            // v22: SSH payload (raw prefix for DPI bypass)
+            Base64.encodeToString(profile.sshPayload.toByteArray(Charsets.UTF_8), Base64.NO_WRAP),
+            // v23: Multi-resolver mode
+            profile.resolverMode.value,
+            // v24: Round-robin spread count
+            profile.rrSpreadCount.toString()
         ).joinToString(FIELD_DELIMITER)
     }
 

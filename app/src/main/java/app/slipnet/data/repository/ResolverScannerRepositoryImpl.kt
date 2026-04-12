@@ -1054,7 +1054,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
 
     override fun maxE2eConcurrency(profile: ServerProfile): Int = when (profile.tunnelType) {
         TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH -> 1
-        else -> 3
+        else -> 10
     }
 
     /** Format resolver address for DNSTT/NoizDNS based on DNS transport. Returns null for DoH.

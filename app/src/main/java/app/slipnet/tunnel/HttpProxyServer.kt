@@ -35,6 +35,8 @@ object HttpProxyServer {
 
     private var socksHost: String = "127.0.0.1"
     private var socksPort: Int = 1080
+    private var socksAuthUsername: String? = null
+    private var socksAuthPassword: String? = null
     private var serverSocket: ServerSocket? = null
     private var acceptorThread: Thread? = null
     private val running = AtomicBoolean(false)
@@ -43,18 +45,23 @@ object HttpProxyServer {
     fun start(
         socksHost: String,
         socksPort: Int,
-        listenHost: String = "0.0.0.0",
-        listenPort: Int = 8080
+        listenHost: String = "127.0.0.1",
+        listenPort: Int = 8080,
+        socksAuthUsername: String? = null,
+        socksAuthPassword: String? = null
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting HTTP proxy")
         Log.i(TAG, "  Upstream SOCKS5: $socksHost:$socksPort")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  SOCKS5 auth: ${if (!socksAuthUsername.isNullOrEmpty()) "enabled" else "disabled"}")
         Log.i(TAG, "========================================")
 
         stop()
         this.socksHost = socksHost
         this.socksPort = socksPort
+        this.socksAuthUsername = socksAuthUsername
+        this.socksAuthPassword = socksAuthPassword
 
         return try {
             val ss = bindServerSocket(listenHost, listenPort)
@@ -440,16 +447,53 @@ object HttpProxyServer {
         val out = socket.getOutputStream()
         val inp = socket.getInputStream()
 
-        // SOCKS5 greeting: version 5, 1 auth method (no auth)
-        out.write(byteArrayOf(0x05, 0x01, 0x00))
+        val hasAuth = !socksAuthUsername.isNullOrEmpty() && !socksAuthPassword.isNullOrEmpty()
+        if (hasAuth) {
+            // SOCKS5 greeting: version 5, 2 auth methods (no auth + username/password)
+            out.write(byteArrayOf(0x05, 0x02, 0x00, 0x02))
+        } else {
+            // SOCKS5 greeting: version 5, 1 auth method (no auth)
+            out.write(byteArrayOf(0x05, 0x01, 0x00))
+        }
         out.flush()
 
         // Server's auth method choice
         val authResp = ByteArray(2)
         readExactly(inp, authResp)
-        if (authResp[0] != 0x05.toByte() || authResp[1] != 0x00.toByte()) {
+        if (authResp[0] != 0x05.toByte()) {
             socket.close()
-            throw IOException("SOCKS5 auth negotiation failed (method=${authResp[1]})")
+            throw IOException("SOCKS5 auth negotiation failed (ver=${authResp[0]})")
+        }
+        when (authResp[1].toInt() and 0xFF) {
+            0x00 -> { /* No auth — proceed */ }
+            0x02 -> {
+                // RFC 1929 username/password subnegotiation
+                val user = socksAuthUsername!!.toByteArray(Charsets.UTF_8)
+                val pass = socksAuthPassword!!.toByteArray(Charsets.UTF_8)
+                val authReq = ByteArray(1 + 1 + user.size + 1 + pass.size)
+                authReq[0] = 0x01 // subnegotiation version
+                authReq[1] = user.size.toByte()
+                System.arraycopy(user, 0, authReq, 2, user.size)
+                authReq[2 + user.size] = pass.size.toByte()
+                System.arraycopy(pass, 0, authReq, 3 + user.size, pass.size)
+                out.write(authReq)
+                out.flush()
+
+                val authResult = ByteArray(2)
+                readExactly(inp, authResult)
+                if (authResult[1] != 0x00.toByte()) {
+                    socket.close()
+                    throw IOException("SOCKS5 username/password auth failed")
+                }
+            }
+            0xFF -> {
+                socket.close()
+                throw IOException("SOCKS5 no acceptable auth methods")
+            }
+            else -> {
+                socket.close()
+                throw IOException("SOCKS5 unexpected auth method=${authResp[1]}")
+            }
         }
 
         // CONNECT request with DOMAINNAME address type
@@ -505,12 +549,14 @@ object HttpProxyServer {
 
     private fun copyStream(input: InputStream, output: OutputStream, limiter: RateLimiter? = null) {
         val buffer = ByteArray(BUFFER_SIZE)
+        val maxRead = if (limiter != null && limiter.bytesPerSecond > 0) {
+            (limiter.bytesPerSecond / 4).toInt().coerceIn(1024, BUFFER_SIZE)
+        } else BUFFER_SIZE
         while (!Thread.currentThread().isInterrupted) {
-            val bytesRead = input.read(buffer)
+            val bytesRead = input.read(buffer, 0, maxRead)
             if (bytesRead == -1) break
             limiter?.acquire(bytesRead)
             output.write(buffer, 0, bytesRead)
-            // Flush when no more data is immediately available (matches SOCKS5 bridges)
             if (input.available() == 0) {
                 output.flush()
             }

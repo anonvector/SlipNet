@@ -54,6 +54,8 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
     private var remoteUsername: String? = null
     private var remotePassword: String? = null
     private var dnsHost: String = "8.8.8.8"
+    private var localAuthUsername: String? = null
+    private var localAuthPassword: String? = null
     private var serverSocket: ServerSocket? = null
     private var acceptorThread: Thread? = null
     private val running = AtomicBoolean(false)
@@ -75,13 +77,16 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
         remotePassword: String?,
         listenPort: Int,
         listenHost: String = "127.0.0.1",
-        dnsHost: String = "8.8.8.8"
+        dnsHost: String = "8.8.8.8",
+        localAuthUsername: String? = null,
+        localAuthPassword: String? = null
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting SOCKS5 proxy bridge")
         Log.i(TAG, "  Remote SOCKS5: $remoteHost:$remotePort")
         Log.i(TAG, "  Auth: ${if (remoteUsername != null) "username/password" else "none"}")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  Local auth: ${if (!localAuthUsername.isNullOrEmpty()) "enabled" else "disabled"}")
         Log.i(TAG, "  DNS: $dnsHost")
         Log.i(TAG, "========================================")
 
@@ -91,6 +96,8 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
         this.remoteUsername = remoteUsername
         this.remotePassword = remotePassword
         this.dnsHost = dnsHost
+        this.localAuthUsername = localAuthUsername
+        this.localAuthPassword = localAuthPassword
 
         return try {
             val ss = bindServerSocket(listenHost, listenPort)
@@ -130,8 +137,14 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
 
-        acceptorThread?.interrupt()
+        // Wait for acceptor thread to fully exit so the port is released
+        // before a new start() tries to bind the same port.
+        val oldAcceptor = acceptorThread
         acceptorThread = null
+        oldAcceptor?.interrupt()
+        try { oldAcceptor?.join(2000) } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
 
         for (thread in connectionThreads) {
             thread.interrupt()
@@ -210,9 +223,10 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
                     val methods = ByteArray(nMethods)
                     input.readFully(methods)
 
-                    // Respond: no authentication required
-                    output.write(byteArrayOf(0x05, 0x00))
-                    output.flush()
+                    // Authenticate local client
+                    if (!LocalProxyAuth.handleGreeting(methods, input, output, localAuthUsername, localAuthPassword)) {
+                        return@Thread
+                    }
 
                     // SOCKS5 request
                     val ver = input.read()
@@ -869,13 +883,16 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
     private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null, limiter: RateLimiter? = null) {
         val buffered = BufferedOutputStream(output, BUFFER_SIZE)
         val buffer = ByteArray(BUFFER_SIZE)
+        val maxRead = if (limiter != null && limiter.bytesPerSecond > 0) {
+            (limiter.bytesPerSecond / 4).toInt().coerceIn(1024, BUFFER_SIZE)
+        } else BUFFER_SIZE
         while (!Thread.currentThread().isInterrupted) {
-            val bytesRead = input.read(buffer)
+            val bytesRead = input.read(buffer, 0, maxRead)
             if (bytesRead == -1) break
             limiter?.acquire(bytesRead)
             buffered.write(buffer, 0, bytesRead)
             counter?.addAndGet(bytesRead.toLong())
-            if (bytesRead < BUFFER_SIZE || input.available() == 0) {
+            if (bytesRead < maxRead || input.available() == 0) {
                 buffered.flush()
             }
         }

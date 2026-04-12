@@ -66,6 +66,8 @@ object SlipstreamSocksBridge {
     private var slipstreamPort: Int = 0
     private var socksUsername: String? = null
     private var socksPassword: String? = null
+    private var localAuthUsername: String? = null
+    private var localAuthPassword: String? = null
     private var serverSocket: ServerSocket? = null
     private var acceptorThread: Thread? = null
     private val running = AtomicBoolean(false)
@@ -179,12 +181,15 @@ object SlipstreamSocksBridge {
         socksUsername: String? = null,
         socksPassword: String? = null,
         dnsServer: String? = null,
-        dnsFallback: String? = null
+        dnsFallback: String? = null,
+        localAuthUsername: String? = null,
+        localAuthPassword: String? = null
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting Slipstream SOCKS5 bridge")
         Log.i(TAG, "  Slipstream: $slipstreamHost:$slipstreamPort")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  Local auth: ${if (!localAuthUsername.isNullOrEmpty()) "enabled" else "disabled"}")
         Log.i(TAG, "  DNS: ${dnsServer ?: PRIMARY_DNS_HOST} (fallback: ${dnsFallback ?: FALLBACK_DNS_HOST})")
         Log.i(TAG, "========================================")
 
@@ -193,6 +198,8 @@ object SlipstreamSocksBridge {
         this.slipstreamPort = slipstreamPort
         this.socksUsername = socksUsername
         this.socksPassword = socksPassword
+        this.localAuthUsername = localAuthUsername
+        this.localAuthPassword = localAuthPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
         this.dnsFallbackHost = dnsFallback ?: FALLBACK_DNS_HOST
         // Reset circuit breakers and capacity tracking
@@ -249,8 +256,14 @@ object SlipstreamSocksBridge {
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
 
-        acceptorThread?.interrupt()
+        // Wait for acceptor thread to fully exit so the port is released
+        // before a new start() tries to bind the same port.
+        val oldAcceptor = acceptorThread
         acceptorThread = null
+        oldAcceptor?.interrupt()
+        try { oldAcceptor?.join(2000) } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
 
         // Stop DNS keepalive
         dnsKeepaliveThread?.interrupt()
@@ -279,6 +292,19 @@ object SlipstreamSocksBridge {
         activeConnections.set(0)
         carriedTxBytes.addAndGet(tunnelTxBytes.getAndSet(0))
         carriedRxBytes.addAndGet(tunnelRxBytes.getAndSet(0))
+
+        // Reset credentials and circuit breakers to prevent stale state on reconnect
+        socksUsername = null
+        socksPassword = null
+        slipstreamHost = "127.0.0.1"
+        slipstreamPort = 0
+        dnsTargetHost = PRIMARY_DNS_HOST
+        dnsFallbackHost = FALLBACK_DNS_HOST
+        dnsRoundRobin.set(0)
+        consecutiveFailures.set(0)
+        circuitOpenUntil = 0
+        connectFailures.set(0)
+        connectCircuitOpenUntil = 0
 
         logd("Bridge stopped")
     }
@@ -671,9 +697,10 @@ object SlipstreamSocksBridge {
                     val methods = ByteArray(nMethods)
                     input.readFully(methods)
 
-                    // Respond: no authentication required
-                    output.write(byteArrayOf(0x05, 0x00))
-                    output.flush()
+                    // Authenticate local client
+                    if (!LocalProxyAuth.handleGreeting(methods, input, output, localAuthUsername, localAuthPassword)) {
+                        return@Thread
+                    }
 
                     // SOCKS5 request
                     val ver = input.read()
@@ -1412,8 +1439,11 @@ object SlipstreamSocksBridge {
 
     private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null, limiter: RateLimiter? = null) {
         val buffer = ByteArray(BUFFER_SIZE)
+        val maxRead = if (limiter != null && limiter.bytesPerSecond > 0) {
+            (limiter.bytesPerSecond / 4).toInt().coerceIn(1024, BUFFER_SIZE)
+        } else BUFFER_SIZE
         while (!Thread.currentThread().isInterrupted) {
-            val bytesRead = input.read(buffer)
+            val bytesRead = input.read(buffer, 0, maxRead)
             if (bytesRead == -1) break
             limiter?.acquire(bytesRead)
             output.write(buffer, 0, bytesRead)

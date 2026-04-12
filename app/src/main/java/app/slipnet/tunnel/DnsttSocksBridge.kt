@@ -72,6 +72,8 @@ object DnsttSocksBridge {
     private var dnsttPort: Int = 0
     private var socksUsername: String? = null
     private var socksPassword: String? = null
+    private var localAuthUsername: String? = null
+    private var localAuthPassword: String? = null
     private var serverSocket: ServerSocket? = null
     private var acceptorThread: Thread? = null
     private val running = AtomicBoolean(false)
@@ -248,12 +250,15 @@ object DnsttSocksBridge {
         socksUsername: String? = null,
         socksPassword: String? = null,
         dnsServer: String? = null,
-        dnsFallback: String? = null
+        dnsFallback: String? = null,
+        localAuthUsername: String? = null,
+        localAuthPassword: String? = null
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting DNSTT SOCKS5 bridge")
         Log.i(TAG, "  DNSTT: $dnsttHost:$dnsttPort")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  Local auth: ${if (!localAuthUsername.isNullOrEmpty()) "enabled" else "disabled"}")
         Log.i(TAG, "  DNS: ${dnsServer ?: PRIMARY_DNS_HOST} (fallback: ${dnsFallback ?: FALLBACK_DNS_HOST})")
         Log.i(TAG, "========================================")
 
@@ -262,6 +267,8 @@ object DnsttSocksBridge {
         this.dnsttPort = dnsttPort
         this.socksUsername = socksUsername
         this.socksPassword = socksPassword
+        this.localAuthUsername = localAuthUsername
+        this.localAuthPassword = localAuthPassword
         this.dnsTargetHost = dnsServer ?: PRIMARY_DNS_HOST
         this.dnsFallbackHost = dnsFallback ?: FALLBACK_DNS_HOST
         // Reset circuit breakers, rate-limit counters, and capacity tracking
@@ -297,9 +304,9 @@ object DnsttSocksBridge {
                 logd("Acceptor thread exited")
             }, "dnstt-bridge-acceptor").also { it.isDaemon = true; it.start() }
 
-            // Pre-warm DNS worker pool in background (skip in proxy-only mode
-            // or per-query mode where workers are unused)
-            if (!proxyOnlyMode && dnsPoolSize > 0) {
+            // Pre-warm DNS worker pool in background (skip in per-query mode
+            // where workers are unused)
+            if (dnsPoolSize > 0) {
                 prewarmDnsWorkers()
             }
 
@@ -322,8 +329,14 @@ object DnsttSocksBridge {
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
 
-        acceptorThread?.interrupt()
+        // Wait for acceptor thread to fully exit so the port is released
+        // before a new start() tries to bind the same port.
+        val oldAcceptor = acceptorThread
         acceptorThread = null
+        oldAcceptor?.interrupt()
+        try { oldAcceptor?.join(2000) } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
 
         // Stop DNS keepalive
         dnsKeepaliveThread?.interrupt()
@@ -353,6 +366,23 @@ object DnsttSocksBridge {
         carriedRxBytes.addAndGet(tunnelRxBytes.getAndSet(0))
         proxyOnlyMode = false
         dnsWorkerPoolSize = 0
+        authoritativeMode = false
+
+        // Reset credentials and circuit breakers to prevent stale state on reconnect
+        socksUsername = null
+        socksPassword = null
+        dnsttHost = "127.0.0.1"
+        dnsttPort = 0
+        dnsTargetHost = PRIMARY_DNS_HOST
+        dnsFallbackHost = FALLBACK_DNS_HOST
+        dnsRoundRobin.set(0)
+        consecutiveFailures.set(0)
+        circuitOpenUntil = 0
+        connectFailures.set(0)
+        connectCircuitOpenUntil = 0
+        poolDeadSince = 0
+        onDnsPoolDead = null
+        upstreamRunningCheck = { DnsttBridge.isRunning() }
 
         logd("Bridge stopped")
     }
@@ -378,6 +408,7 @@ object DnsttSocksBridge {
     /** Returns true when all DNS workers in the pool are dead. */
     fun isDnsPoolDead(): Boolean {
         if (!running.get()) return false
+        if (dnsPoolSize <= 0) return false // per-query mode — no pool to monitor
         return (0 until dnsPoolSize).none { dnsWorkers.getOrNull(it)?.isAlive == true }
     }
 
@@ -792,9 +823,10 @@ object DnsttSocksBridge {
                     val methods = ByteArray(nMethods)
                     input.readFully(methods)
 
-                    // Respond: no authentication required
-                    output.write(byteArrayOf(0x05, 0x00))
-                    output.flush()
+                    // Authenticate local client
+                    if (!LocalProxyAuth.handleGreeting(methods, input, output, localAuthUsername, localAuthPassword)) {
+                        return@Thread
+                    }
 
                     // SOCKS5 request
                     val ver = input.read()
@@ -1348,8 +1380,11 @@ object DnsttSocksBridge {
 
     private fun copyStream(input: InputStream, output: OutputStream, counter: AtomicLong? = null, limiter: RateLimiter? = null) {
         val buffer = ByteArray(BUFFER_SIZE)
+        val maxRead = if (limiter != null && limiter.bytesPerSecond > 0) {
+            (limiter.bytesPerSecond / 4).toInt().coerceIn(1024, BUFFER_SIZE)
+        } else BUFFER_SIZE
         while (!Thread.currentThread().isInterrupted) {
-            val bytesRead = input.read(buffer)
+            val bytesRead = input.read(buffer, 0, maxRead)
             if (bytesRead == -1) break
             limiter?.acquire(bytesRead)
             output.write(buffer, 0, bytesRead)

@@ -1,6 +1,7 @@
 package app.slipnet.presentation.profiles
 
 import android.net.Uri
+import kotlin.math.roundToInt
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -29,6 +30,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.FileUpload
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.animation.AnimatedVisibility
@@ -73,6 +76,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Slider
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -97,6 +101,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsTransport
+import app.slipnet.domain.model.ResolverMode
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.tunnel.DohServer
@@ -480,10 +485,48 @@ fun EditProfileScreen(
                                         }
                                     }
                                 }
+                                // Multi-resolver mode (only shown when 2+ resolvers)
+                                // Check both visible resolvers and hidden defaults
+                                val hasMultipleResolvers = uiState.resolvers.contains(",") ||
+                                    (!uiState.useCustomResolver && uiState.defaultResolversList.size >= 2)
+                                if (hasMultipleResolvers && !uiState.isSlipstreamBased) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Resolver Mode",
+                                                style = MaterialTheme.typography.bodyLarge
+                                            )
+                                            Text(
+                                                text = if (uiState.resolverMode == ResolverMode.FANOUT)
+                                                    "Sends to all resolvers"
+                                                else
+                                                    "Distributes load across resolvers",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Row {
+                                            ResolverMode.entries.forEach { mode ->
+                                                FilterChip(
+                                                    selected = uiState.resolverMode == mode,
+                                                    onClick = { viewModel.updateResolverMode(mode) },
+                                                    label = { Text(mode.displayName) },
+                                                    modifier = Modifier.padding(start = 4.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
-                            // DNS Query Size (locked profiles)
-                            if (uiState.isDnsttOrNoizOrVaydnsBased) {
+                            // DNS Query Size (locked profiles, not for VayDNS — it uses QNAME length instead)
+                            if (uiState.isDnsttOrNoizOrVaydnsBased && !uiState.isVaydnsBased) {
                                 var showMtuDialogLocked by remember { mutableStateOf(false) }
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                 Row(
@@ -634,7 +677,7 @@ fun EditProfileScreen(
                                             style = MaterialTheme.typography.bodyLarge
                                         )
                                         Text(
-                                            text = "Slower speed, harder to detect by DPI",
+                                            text = "Slower speed, harder to detect",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -651,6 +694,148 @@ fun EditProfileScreen(
                                         color = MaterialTheme.colorScheme.error
                                     )
                                 }
+                            }
+
+                            // VayDNS settings (locked profiles)
+                            if (uiState.isVaydnsBased) {
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                                // QNAME Length
+                                var showQnameDialogLocked by remember { mutableStateOf(false) }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { showQnameDialogLocked = true }
+                                        .padding(vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Query Length",
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+                                        Text(
+                                            text = "${uiState.vaydnsMaxQnameLen} bytes" + when {
+                                                uiState.vaydnsMaxQnameLen <= 80 -> " — stealthy"
+                                                uiState.vaydnsMaxQnameLen <= 120 -> " — balanced"
+                                                uiState.vaydnsMaxQnameLen <= 180 -> " — fast"
+                                                else -> " — maximum"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Icon(
+                                        Icons.Default.KeyboardArrowRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (showQnameDialogLocked) {
+                                    val minQname = 60
+                                    val maxQname = 253
+                                    val midQname = 101
+                                    fun toSlider(qname: Int): Float {
+                                        val clamped = qname.coerceIn(minQname, maxQname)
+                                        return if (clamped <= midQname) {
+                                            (clamped - minQname).toFloat() / (midQname - minQname) * 0.5f
+                                        } else {
+                                            0.5f + (clamped - midQname).toFloat() / (maxQname - midQname) * 0.5f
+                                        }
+                                    }
+                                    fun fromSlider(value: Float): Int = if (value <= 0.5f) {
+                                        (minQname + (value / 0.5f) * (midQname - minQname)).roundToInt()
+                                    } else {
+                                        (midQname + ((value - 0.5f) / 0.5f) * (maxQname - midQname)).roundToInt()
+                                    }
+                                    var sliderValue by remember { mutableStateOf(toSlider(uiState.vaydnsMaxQnameLen)) }
+                                    val displayValue = fromSlider(sliderValue)
+                                    var customText by remember { mutableStateOf("") }
+                                    var customError by remember { mutableStateOf(false) }
+                                    AlertDialog(
+                                        onDismissRequest = { showQnameDialogLocked = false },
+                                        title = { Text("Query Length") },
+                                        text = {
+                                            Column {
+                                                Text(
+                                                    text = "$displayValue bytes",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    textAlign = TextAlign.Center
+                                                )
+                                                Slider(
+                                                    value = sliderValue,
+                                                    onValueChange = { sliderValue = it; customText = ""; customError = false },
+                                                    valueRange = 0f..1f,
+                                                    steps = 19,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Text("60\nStealthy", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                                                    Text("101\nDefault", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                                                    Text("253\nFastest", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                                                }
+                                                Spacer(modifier = Modifier.height(12.dp))
+                                                OutlinedTextField(
+                                                    value = customText,
+                                                    onValueChange = { text ->
+                                                        customText = text
+                                                        val v = text.toIntOrNull()
+                                                        if (v != null && v in minQname..maxQname) {
+                                                            sliderValue = toSlider(v)
+                                                            customError = false
+                                                        } else {
+                                                            customError = text.isNotEmpty()
+                                                        }
+                                                    },
+                                                    label = { Text("Custom value") },
+                                                    placeholder = { Text("$minQname–$maxQname") },
+                                                    isError = customError,
+                                                    supportingText = if (customError) {{ Text("Must be $minQname–$maxQname") }} else null,
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                    singleLine = true,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                            }
+                                        },
+                                        confirmButton = {
+                                            TextButton(onClick = {
+                                                val custom = customText.toIntOrNull()
+                                                val finalValue = if (custom != null && custom in minQname..maxQname) custom else displayValue
+                                                viewModel.updateVaydnsMaxQnameLen(finalValue)
+                                                showQnameDialogLocked = false
+                                            }) { Text("Apply") }
+                                        },
+                                        dismissButton = {
+                                            Row {
+                                                if (displayValue != midQname) {
+                                                    TextButton(onClick = {
+                                                        sliderValue = 0.5f; customText = ""; customError = false
+                                                        viewModel.updateVaydnsMaxQnameLen(midQname)
+                                                        showQnameDialogLocked = false
+                                                    }) { Text("Reset") }
+                                                }
+                                                TextButton(onClick = { showQnameDialogLocked = false }) { Text("Cancel") }
+                                            }
+                                        }
+                                    )
+                                }
+
+                                // Rate limit
+                                OutlinedTextField(
+                                    value = uiState.vaydnsRps,
+                                    onValueChange = { viewModel.updateVaydnsRps(it.filter { c -> c.isDigit() || c == '.' }.take(6)) },
+                                    label = { Text("Query Rate Limit (q/s)") },
+                                    supportingText = { Text("Max DNS queries per second. 0 = unlimited.") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                    singleLine = true
+                                )
                             }
                         }
                     }
@@ -1099,6 +1284,15 @@ fun EditProfileScreen(
                             }
                         }
                     }
+                    // Multi-resolver mode (only shown when 2+ resolvers, not for slipstream which uses QUIC multipath)
+                    if (uiState.resolvers.contains(",") && !uiState.isSlipstreamBased) {
+                        MultiResolverSettings(
+                            resolverMode = uiState.resolverMode,
+                            rrSpreadCount = uiState.rrSpreadCount,
+                            onResolverModeChange = { viewModel.updateResolverMode(it) },
+                            onSpreadCountChange = { viewModel.updateRrSpreadCount(it) }
+                        )
+                    }
                 }
 
                 // Authoritative Mode toggle (DNSTT/NoizDNS only — VayDNS has no authoritative mode)
@@ -1156,7 +1350,7 @@ fun EditProfileScreen(
                             .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        listOf("txt", "cname", "a", "aaaa", "mx", "ns", "srv").forEach { type ->
+                        listOf("txt", "cname", "a", "aaaa", "mx", "ns", "srv", "null", "caa").forEach { type ->
                             if (uiState.vaydnsRecordType == type) {
                                 Button(onClick = { }) {
                                     Text(type.uppercase())
@@ -1208,9 +1402,25 @@ fun EditProfileScreen(
                     if (showQnameDialog) {
                         val minQname = 60
                         val maxQname = 253
-                        var sliderValue by remember {
-                            mutableStateOf(uiState.vaydnsMaxQnameLen.toFloat().coerceIn(minQname.toFloat(), maxQname.toFloat()))
+                        val midQname = 101
+                        // Non-linear slider: 0..1 with midQname (101) at center (0.5)
+                        fun toSlider(qname: Int): Float {
+                            val clamped = qname.coerceIn(minQname, maxQname)
+                            return if (clamped <= midQname) {
+                                (clamped - minQname).toFloat() / (midQname - minQname) * 0.5f
+                            } else {
+                                0.5f + (clamped - midQname).toFloat() / (maxQname - midQname) * 0.5f
+                            }
                         }
+                        fun fromSlider(value: Float): Int = if (value <= 0.5f) {
+                            (minQname + (value / 0.5f) * (midQname - minQname)).roundToInt()
+                        } else {
+                            (midQname + ((value - 0.5f) / 0.5f) * (maxQname - midQname)).roundToInt()
+                        }
+                        var sliderValue by remember { mutableStateOf(toSlider(uiState.vaydnsMaxQnameLen)) }
+                        val displayValue = fromSlider(sliderValue)
+                        var customText by remember { mutableStateOf("") }
+                        var customError by remember { mutableStateOf(false) }
                         AlertDialog(
                             onDismissRequest = { showQnameDialog = false },
                             title = { Text("Query Length") },
@@ -1223,7 +1433,7 @@ fun EditProfileScreen(
                                         modifier = Modifier.padding(bottom = 12.dp)
                                     )
                                     Text(
-                                        text = "${sliderValue.toInt()} bytes",
+                                        text = "$displayValue bytes",
                                         style = MaterialTheme.typography.titleMedium,
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -1232,9 +1442,13 @@ fun EditProfileScreen(
                                     )
                                     Slider(
                                         value = sliderValue,
-                                        onValueChange = { sliderValue = it },
-                                        valueRange = minQname.toFloat()..maxQname.toFloat(),
-                                        steps = (maxQname - minQname) / 10 - 1,
+                                        onValueChange = {
+                                            sliderValue = it
+                                            customText = ""
+                                            customError = false
+                                        },
+                                        valueRange = 0f..1f,
+                                        steps = 19,
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                     Row(
@@ -1245,12 +1459,35 @@ fun EditProfileScreen(
                                         Text("101\nDefault", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
                                         Text("253\nFastest", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
                                     }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    OutlinedTextField(
+                                        value = customText,
+                                        onValueChange = { text ->
+                                            customText = text
+                                            val v = text.toIntOrNull()
+                                            if (v != null && v in minQname..maxQname) {
+                                                sliderValue = toSlider(v)
+                                                customError = false
+                                            } else {
+                                                customError = text.isNotEmpty()
+                                            }
+                                        },
+                                        label = { Text("Custom value") },
+                                        placeholder = { Text("$minQname–$maxQname") },
+                                        isError = customError,
+                                        supportingText = if (customError) {{ Text("Must be $minQname–$maxQname") }} else null,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
                                 }
                             },
                             confirmButton = {
                                 TextButton(
                                     onClick = {
-                                        viewModel.updateVaydnsMaxQnameLen(sliderValue.toInt())
+                                        val custom = customText.toIntOrNull()
+                                        val finalValue = if (custom != null && custom in minQname..maxQname) custom else displayValue
+                                        viewModel.updateVaydnsMaxQnameLen(finalValue)
                                         showQnameDialog = false
                                     }
                                 ) {
@@ -1259,10 +1496,12 @@ fun EditProfileScreen(
                             },
                             dismissButton = {
                                 Row {
-                                    if (sliderValue.toInt() != 101) {
+                                    if (displayValue != midQname) {
                                         TextButton(onClick = {
-                                            sliderValue = 101f
-                                            viewModel.updateVaydnsMaxQnameLen(101)
+                                            sliderValue = 0.5f
+                                            customText = ""
+                                            customError = false
+                                            viewModel.updateVaydnsMaxQnameLen(midQname)
                                             showQnameDialog = false
                                         }) {
                                             Text("Reset")
@@ -1524,7 +1763,7 @@ fun EditProfileScreen(
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Text(
-                                text = "Slower speed, harder to detect by DPI",
+                                text = "Slower speed, harder to detect",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -2091,6 +2330,173 @@ fun EditProfileScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
+
+                    // SSH Transport settings — only for SSH-only tunnel type
+                    if (uiState.isSshOnly) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "SSH Transport",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                        // Transport selector (mutually exclusive)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            SshTransport.entries.forEach { transport ->
+                                FilterChip(
+                                    selected = uiState.sshTransport == transport,
+                                    onClick = { viewModel.updateSshTransport(transport) },
+                                    label = { Text(transport.displayName) }
+                                )
+                            }
+                        }
+
+                        // === Direct mode options ===
+                        if (uiState.sshTransport == SshTransport.DIRECT) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Wrap in TLS (Stunnel)", style = MaterialTheme.typography.bodyMedium)
+                                Switch(
+                                    checked = uiState.sshTlsEnabled,
+                                    onCheckedChange = { viewModel.updateSshTlsEnabled(it) }
+                                )
+                            }
+                            if (uiState.sshTlsEnabled) {
+                                OutlinedTextField(
+                                    value = uiState.sshTlsSni,
+                                    onValueChange = { viewModel.updateSshTlsSni(it) },
+                                    label = { Text("TLS SNI (optional)") },
+                                    placeholder = { Text("example.com") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = uiState.sshPayload,
+                                onValueChange = { viewModel.updateSshPayload(it) },
+                                label = { Text("SSH Payload (optional)") },
+                                placeholder = { Text("GET / HTTP/1.1[crlf]Host: [host][crlf][crlf]") },
+                                singleLine = false,
+                                minLines = 2,
+                                maxLines = 4,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                text = "Raw bytes sent before the SSH handshake for firewall bypass. Supports [host], [port], [crlf], [cr], [lf] placeholders.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // === HTTP CONNECT Proxy options ===
+                        if (uiState.sshTransport == SshTransport.HTTP_PROXY) {
+                            OutlinedTextField(
+                                value = uiState.sshHttpProxyHost,
+                                onValueChange = { viewModel.updateSshHttpProxyHost(it) },
+                                label = { Text("Proxy Host") },
+                                placeholder = { Text("proxy.example.com") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = uiState.sshHttpProxyPort,
+                                onValueChange = { viewModel.updateSshHttpProxyPort(it) },
+                                label = { Text("Proxy Port") },
+                                placeholder = { Text("8080") },
+                                isError = uiState.sshHttpProxyPortError != null,
+                                supportingText = uiState.sshHttpProxyPortError?.let { { Text(it) } },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = uiState.sshHttpProxyCustomHost,
+                                onValueChange = { viewModel.updateSshHttpProxyCustomHost(it) },
+                                label = { Text("Custom Host Header (optional)") },
+                                placeholder = { Text("cdn.example.com") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("TLS after CONNECT", style = MaterialTheme.typography.bodyMedium)
+                                Switch(
+                                    checked = uiState.sshTlsEnabled,
+                                    onCheckedChange = { viewModel.updateSshTlsEnabled(it) }
+                                )
+                            }
+                            if (uiState.sshTlsEnabled) {
+                                OutlinedTextField(
+                                    value = uiState.sshTlsSni,
+                                    onValueChange = { viewModel.updateSshTlsSni(it) },
+                                    label = { Text("TLS SNI (optional)") },
+                                    placeholder = { Text("example.com") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            Text(
+                                text = "Tunnel SSH through an HTTP CONNECT proxy. Use Custom Host for CDN facades or header-based routing.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // === WebSocket options ===
+                        if (uiState.sshTransport == SshTransport.WEBSOCKET) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Use TLS (wss://)", style = MaterialTheme.typography.bodyMedium)
+                                Switch(
+                                    checked = uiState.sshWsUseTls,
+                                    onCheckedChange = { viewModel.updateSshWsUseTls(it) }
+                                )
+                            }
+                            OutlinedTextField(
+                                value = uiState.sshWsPath,
+                                onValueChange = { viewModel.updateSshWsPath(it) },
+                                label = { Text("WebSocket Path") },
+                                placeholder = { Text("/") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = uiState.sshWsCustomHost,
+                                onValueChange = { viewModel.updateSshWsCustomHost(it) },
+                                label = { Text("Custom Host Header (optional)") },
+                                placeholder = { Text("cdn.example.com") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (uiState.sshWsUseTls) {
+                                OutlinedTextField(
+                                    value = uiState.sshTlsSni,
+                                    onValueChange = { viewModel.updateSshTlsSni(it) },
+                                    label = { Text("TLS SNI (optional)") },
+                                    placeholder = { Text("example.com") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            Text(
+                                text = "Tunnel SSH through a WebSocket connection. Works with CDN proxies (Cloudflare), xray, v2ray, and similar WebSocket-to-TCP bridges.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
 
                 // Server setup guide
@@ -2487,6 +2893,92 @@ private fun LockedInfoRow(
             fontWeight = FontWeight.Medium,
             color = valueColor
         )
+    }
+}
+
+@Composable
+private fun MultiResolverSettings(
+    resolverMode: ResolverMode,
+    rrSpreadCount: Int,
+    onResolverModeChange: (ResolverMode) -> Unit,
+    onSpreadCountChange: (Int) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Resolver Mode",
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = if (resolverMode == ResolverMode.FANOUT)
+                    "Sends to all resolvers"
+                else
+                    "Distributes load across resolvers",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Row {
+            ResolverMode.entries.forEach { mode ->
+                FilterChip(
+                    selected = resolverMode == mode,
+                    onClick = { onResolverModeChange(mode) },
+                    label = { Text(mode.displayName) },
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
+        }
+    }
+    if (resolverMode == ResolverMode.ROUND_ROBIN) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Spread Count",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Text(
+                    text = if (rrSpreadCount == 1)
+                        "No duplicates (pure round-robin)"
+                    else
+                        "Send each query to $rrSpreadCount resolvers",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { onSpreadCountChange(rrSpreadCount - 1) },
+                    enabled = rrSpreadCount > 1
+                ) {
+                    Icon(Icons.Default.Remove, contentDescription = "Decrease")
+                }
+                Text(
+                    text = "$rrSpreadCount",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+                IconButton(
+                    onClick = { onSpreadCountChange(rrSpreadCount + 1) },
+                    enabled = rrSpreadCount < 5
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Increase")
+                }
+            }
+        }
     }
 }
 

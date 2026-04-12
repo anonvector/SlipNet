@@ -104,8 +104,21 @@ object AppLog {
         "SlipstreamBridge",
         "DnsttBridge",
         "NaiveBridge",
-        "VpnRepositoryImpl"
+        "VpnRepositoryImpl",
+        "VaydnsBridge",
+        "DohBridge",
+        "HttpProxyServer",
+        "ProxyHttpConnect",
+        "ProxyWebSocket",
+        "TlsSocketFactory",
+        "NaiveSocksProxy",
+        "PayloadSocketFactory",
+        "DomainRouter",
+        "DnsDoHProxy"
     )
+
+    /** Tag prefixes for dynamic tags (e.g. SshTunnel[default], Socks5Proxy[0]). */
+    private val SENSITIVE_TAG_PREFIXES = arrayOf("SshTunnel[", "Socks5Proxy[")
 
     /**
      * Check if this log line should be redacted from the in-app buffer.
@@ -113,7 +126,9 @@ object AppLog {
      * (still forwarded to Android logcat which requires ADB access).
      */
     private fun shouldRedact(tag: String): Boolean {
-        return redactSensitive && tag in SENSITIVE_TAGS
+        if (!redactSensitive) return false
+        if (tag in SENSITIVE_TAGS) return true
+        return SENSITIVE_TAG_PREFIXES.any { tag.startsWith(it) }
     }
 
     fun v(tag: String, msg: String): Int {

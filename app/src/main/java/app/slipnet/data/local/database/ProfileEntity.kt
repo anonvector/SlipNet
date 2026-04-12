@@ -172,5 +172,47 @@ data class ProfileEntity(
     val vaydnsClientIdSize: Int = 0,
 
     @ColumnInfo(name = "is_pinned", defaultValue = "0")
-    val isPinned: Boolean = false
+    val isPinned: Boolean = false,
+
+    // SSH over TLS (stunnel-style wrapping)
+    @ColumnInfo(name = "ssh_tls_enabled", defaultValue = "0")
+    val sshTlsEnabled: Boolean = false,
+
+    @ColumnInfo(name = "ssh_tls_sni", defaultValue = "")
+    val sshTlsSni: String = "",
+
+    // SSH over HTTP CONNECT proxy
+    @ColumnInfo(name = "ssh_http_proxy_host", defaultValue = "")
+    val sshHttpProxyHost: String = "",
+
+    @ColumnInfo(name = "ssh_http_proxy_port", defaultValue = "8080")
+    val sshHttpProxyPort: Int = 8080,
+
+    @ColumnInfo(name = "ssh_http_proxy_custom_host", defaultValue = "")
+    val sshHttpProxyCustomHost: String = "",
+
+    // SSH over WebSocket
+    @ColumnInfo(name = "ssh_ws_enabled", defaultValue = "0")
+    val sshWsEnabled: Boolean = false,
+
+    @ColumnInfo(name = "ssh_ws_path", defaultValue = "/")
+    val sshWsPath: String = "/",
+
+    @ColumnInfo(name = "ssh_ws_use_tls", defaultValue = "1")
+    val sshWsUseTls: Boolean = true,
+
+    @ColumnInfo(name = "ssh_ws_custom_host", defaultValue = "")
+    val sshWsCustomHost: String = "",
+
+    // Raw payload sent before SSH handshake (DPI bypass)
+    @ColumnInfo(name = "ssh_payload", defaultValue = "")
+    val sshPayload: String = "",
+
+    // Multi-resolver mode: "fanout" or "roundrobin"
+    @ColumnInfo(name = "resolver_mode", defaultValue = "fanout")
+    val resolverMode: String = "fanout",
+
+    // Round-robin spread count: how many resolvers each query is sent to in fast mode
+    @ColumnInfo(name = "rr_spread_count", defaultValue = "3")
+    val rrSpreadCount: Int = 3
 )

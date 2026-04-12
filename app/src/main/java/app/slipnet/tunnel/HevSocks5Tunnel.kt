@@ -185,6 +185,7 @@ object HevSocks5Tunnel {
         sb.appendLine("tunnel:")
         sb.appendLine("  mtu: $mtu")
         sb.appendLine("  ipv4: $ipv4Address")
+        sb.appendLine("  ipv6: $ipv6Address")
         sb.appendLine()
 
         sb.appendLine("socks5:")
@@ -197,8 +198,11 @@ object HevSocks5Tunnel {
         }
 
         if (!socksUsername.isNullOrBlank() && !socksPassword.isNullOrBlank()) {
-            sb.appendLine("  username: '$socksUsername'")
-            sb.appendLine("  password: '$socksPassword'")
+            // Escape single quotes for YAML single-quoted scalars (RFC: ' → '')
+            val escapedUser = socksUsername.replace("'", "''")
+            val escapedPass = socksPassword.replace("'", "''")
+            sb.appendLine("  username: '$escapedUser'")
+            sb.appendLine("  password: '$escapedPass'")
         }
 
         sb.appendLine()

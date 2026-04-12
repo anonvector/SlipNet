@@ -35,10 +35,12 @@ object Socks5ProxyBridge {
         remotePassword: String?,
         listenPort: Int,
         listenHost: String = "127.0.0.1",
-        dnsHost: String = "8.8.8.8"
+        dnsHost: String = "8.8.8.8",
+        localAuthUsername: String? = null,
+        localAuthPassword: String? = null
     ): Result<Unit> = defaultInstance.start(
         remoteHost, remotePort, remoteUsername, remotePassword,
-        listenPort, listenHost, dnsHost
+        listenPort, listenHost, dnsHost, localAuthUsername, localAuthPassword
     )
 
     fun stop() = defaultInstance.stop()

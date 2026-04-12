@@ -4,6 +4,7 @@ import android.util.Base64
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
+import app.slipnet.domain.model.ResolverMode
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
@@ -126,7 +127,7 @@ class ConfigImporter @Inject constructor() {
         private const val V16_FIELD_COUNT = 36
         private const val V17_FIELD_COUNT = 38
         private const val V18_FIELD_COUNT = 41
-        private const val CURRENT_MAX_VERSION = 18
+        private const val CURRENT_MAX_VERSION = 24
     }
 
     fun parseAndImport(input: String, localDeviceId: String = ""): ImportResult {
@@ -256,12 +257,16 @@ class ConfigImporter @Inject constructor() {
             "18" -> parseProfileV18(fields, lineNum)
             "19" -> parseProfileV19(fields, lineNum)
             "20" -> parseProfileV20(fields, lineNum)
+            "21" -> parseProfileV21(fields, lineNum)
+            "22" -> parseProfileV22(fields, lineNum)
+            "23" -> parseProfileV23(fields, lineNum)
+            "24" -> parseProfileV24(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 20) {
-                    parseProfileV20(fields, lineNum)
+                if (versionNum != null && versionNum > 24) {
+                    parseProfileV24(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -376,7 +381,7 @@ class ConfigImporter @Inject constructor() {
 
         // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -465,7 +470,7 @@ class ConfigImporter @Inject constructor() {
 
         // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -558,7 +563,7 @@ class ConfigImporter @Inject constructor() {
 
         // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -653,7 +658,7 @@ class ConfigImporter @Inject constructor() {
 
         // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -759,7 +764,7 @@ class ConfigImporter @Inject constructor() {
 
         // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -863,7 +868,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -966,7 +971,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SNOWFLAKE) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SNOWFLAKE && tunnelType != TunnelType.SOCKS5) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -1082,7 +1087,7 @@ class ConfigImporter @Inject constructor() {
         val resolvers = parseResolvers(resolversStr)
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
-                tunnelType == TunnelType.SNOWFLAKE ||
+                tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1223,7 +1228,7 @@ class ConfigImporter @Inject constructor() {
         val resolvers = parseResolvers(resolversStr)
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
-                tunnelType == TunnelType.SNOWFLAKE ||
+                tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1364,7 +1369,7 @@ class ConfigImporter @Inject constructor() {
         val resolvers = parseResolvers(resolversStr)
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
-                tunnelType == TunnelType.SNOWFLAKE ||
+                tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1508,7 +1513,7 @@ class ConfigImporter @Inject constructor() {
         val resolvers = parseResolvers(resolversStr)
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
-                tunnelType == TunnelType.SNOWFLAKE ||
+                tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1658,8 +1663,8 @@ class ConfigImporter @Inject constructor() {
         val resolvers = parseResolvers(resolversStr)
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
-                tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.NAIVE_SSH ||
-                tunnelType == TunnelType.NAIVE ||
+                tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
+                tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NAIVE ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1820,8 +1825,8 @@ class ConfigImporter @Inject constructor() {
         val resolvers = parseResolvers(resolversStr)
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
-                tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.NAIVE_SSH ||
-                tunnelType == TunnelType.NAIVE ||
+                tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
+                tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NAIVE ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -2020,6 +2025,92 @@ class ConfigImporter @Inject constructor() {
             vaydnsUdpTimeout = vaydnsUdpTimeout,
             vaydnsMaxNumLabels = vaydnsMaxNumLabels,
             vaydnsClientIdSize = vaydnsClientIdSize
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV21(fields: List<String>, lineNum: Int): ProfileParseResult {
+        // v21 extends v20 with SSH over TLS, HTTP CONNECT proxy, and WebSocket fields
+        val baseResult = parseProfileV20(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // TLS + HTTP proxy fields (positions 50-54)
+        val sshTlsEnabled = if (fields.size > 50) fields[50] == "1" else false
+        val sshTlsSni = if (fields.size > 51) fields[51] else ""
+        val sshHttpProxyHost = if (fields.size > 52) fields[52] else ""
+        val sshHttpProxyPort = if (fields.size > 53) fields[53].toIntOrNull() ?: 8080 else 8080
+        val sshHttpProxyCustomHost = if (fields.size > 54) fields[54] else ""
+
+        // WebSocket fields (positions 55-58)
+        val sshWsEnabled = if (fields.size > 55) fields[55] == "1" else false
+        val sshWsPath = if (fields.size > 56) fields[56].ifBlank { "/" } else "/"
+        val sshWsUseTls = if (fields.size > 57) fields[57] == "1" else true
+        val sshWsCustomHost = if (fields.size > 58) fields[58] else ""
+
+        val profile = baseResult.profile.copy(
+            sshTlsEnabled = sshTlsEnabled,
+            sshTlsSni = sshTlsSni,
+            sshHttpProxyHost = sshHttpProxyHost,
+            sshHttpProxyPort = sshHttpProxyPort,
+            sshHttpProxyCustomHost = sshHttpProxyCustomHost,
+            sshWsEnabled = sshWsEnabled,
+            sshWsPath = sshWsPath,
+            sshWsUseTls = sshWsUseTls,
+            sshWsCustomHost = sshWsCustomHost
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV22(fields: List<String>, lineNum: Int): ProfileParseResult {
+        // v22 extends v21 with SSH payload (raw prefix for DPI bypass)
+        val baseResult = parseProfileV21(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // SSH payload (position 59, base64-encoded)
+        val sshPayload = if (fields.size > 59) {
+            try {
+                String(android.util.Base64.decode(fields[59], android.util.Base64.NO_WRAP), Charsets.UTF_8)
+            } catch (_: Exception) { "" }
+        } else ""
+
+        val profile = baseResult.profile.copy(
+            sshPayload = sshPayload
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV23(fields: List<String>, lineNum: Int): ProfileParseResult {
+        // v23 extends v22 with resolver mode (fanout/roundrobin)
+        val baseResult = parseProfileV22(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // Resolver mode (position 60)
+        val resolverMode = if (fields.size > 60) {
+            ResolverMode.fromValue(fields[60])
+        } else ResolverMode.FANOUT
+
+        val profile = baseResult.profile.copy(
+            resolverMode = resolverMode
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    private fun parseProfileV24(fields: List<String>, lineNum: Int): ProfileParseResult {
+        // v24 extends v23 with round-robin spread count
+        val baseResult = parseProfileV23(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // RR spread count (position 61)
+        val rrSpreadCount = if (fields.size > 61) {
+            fields[61].toIntOrNull()?.coerceIn(1, 5) ?: 3
+        } else 3
+
+        val profile = baseResult.profile.copy(
+            rrSpreadCount = rrSpreadCount
         )
 
         return ProfileParseResult.Success(profile)

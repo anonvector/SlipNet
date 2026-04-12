@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 )
@@ -48,7 +47,7 @@ func runInteractive() {
 		fmt.Printf("║          SlipNet CLI  %-25s  ║\n", version)
 		fmt.Println("╠══════════════════════════════════════════════════╣")
 		fmt.Println("║                                                  ║")
-		fmt.Println("║  1) Connect (DNSTT / NoizDNS)                     ║")
+		fmt.Println("║  1) Connect (DNSTT / NoizDNS / VayDNS)           ║")
 		fmt.Println("║  2) DNS Scanner                                  ║")
 		fmt.Println("║  3) DNS Scanner + E2E Test                       ║")
 		fmt.Println("║  4) Quick Scan (single IP)                       ║")
@@ -120,13 +119,16 @@ func interactiveConnectWithURI(uri string) {
 	fmt.Printf("  Profile:  %s\n", profile.Name)
 	fmt.Printf("  Type:     %s\n", profile.TunnelType)
 	fmt.Printf("  Domain:   %s\n", profile.Domain)
+	if profile.Resolvers != "" {
+		fmt.Printf("  Resolver: %s\n", formatResolverDisplay(profile.Resolvers))
+	}
 	fmt.Println()
 
 	// Check for unsupported tunnel types before prompting for overrides
 	switch profile.TunnelType {
-	case "ss", "slipstream_ssh", "doh", "snowflake", "naive":
+	case "ss", "slipstream_ssh", "snowflake", "naive":
 		fmt.Printf("  This config uses tunnel type %q which is not supported by the CLI.\n", profile.TunnelType)
-		fmt.Println("  SlipNet CLI supports DNSTT, NoizDNS, SSH, and SOCKS5 tunnel types.")
+		fmt.Println("  SlipNet CLI supports DNSTT, NoizDNS, VayDNS, SSH, SOCKS5, and DoH tunnel types.")
 		fmt.Println("  Use the SlipNet app for other tunnel types.")
 		waitExit()
 		return
@@ -146,49 +148,36 @@ func interactiveConnectWithURI(uri string) {
 		profile.Port = v
 	}
 
-	dnsOverride := promptDefault("  DNS override (blank = auto)", "")
-	utlsOverride := promptDefault("  uTLS fingerprint (blank = random)", "")
-	directStr := promptDefault("  Direct mode? (y/N)", "n")
+	dnsHint := "blank = auto"
+	if profile.Resolvers != "" {
+		dnsHint = "blank = " + formatResolverDisplay(profile.Resolvers)
+	}
+	dnsOverride := promptDefault("  DNS override ("+dnsHint+")", "")
+	var utlsOverride string
+	if profile.DNSTransport == "https" || profile.DNSTransport == "doh" || profile.DNSTransport == "tls" || profile.DNSTransport == "dot" {
+		utlsOverride = promptDefault("  uTLS fingerprint (blank = random)", "")
+	}
+	directStr := promptDefault("  Authoritative mode? (y/N)", "n")
 	forceDirectMode := strings.HasPrefix(strings.ToLower(directStr), "y")
 
 	var querySize int
-	// Query size applies to DNSTT/NoizDNS tunnel types
-	if profile.TunnelType == "dnstt" || profile.TunnelType == "dnstt_ssh" || profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" || profile.TunnelType == "" {
-		fmt.Println()
-		fmt.Println("  DNS query size (smaller = stealthier, slower):")
-		fmt.Println("    0) Full capacity (fastest, default)")
-		fmt.Println("    1) 100 bytes — large, good balance")
-		fmt.Println("    2) 80 bytes  — medium, less conspicuous")
-		fmt.Println("    3) 60 bytes  — small, stealthier")
-		fmt.Println("    4) 50 bytes  — minimum, most stealthy")
-		fmt.Println("    5) Custom")
-		fmt.Println()
-		qsChoice := promptDefault("  Select", "0")
-		switch qsChoice {
-		case "0", "":
-			// full capacity
-		case "1":
-			querySize = 100
-		case "2":
-			querySize = 80
-		case "3":
-			querySize = 60
-		case "4":
-			querySize = 50
-		case "5":
-			custom := prompt("  Enter size in bytes (>= 50): ")
-			if v, err := strconv.Atoi(custom); err == nil && v >= 50 {
-				querySize = v
-			} else {
-				fmt.Println("  Invalid value, using full capacity.")
-			}
-		default:
-			// Try parsing as a direct number
-			if v, err := strconv.Atoi(qsChoice); err == nil && v >= 50 {
-				querySize = v
-			}
-		}
+	var maxQnameLen int
 
+	isVaydns := profile.TunnelType == "vaydns" || profile.TunnelType == "vaydns_ssh"
+	isDnstt := profile.TunnelType == "dnstt" || profile.TunnelType == "dnstt_ssh" || profile.TunnelType == "sayedns" || profile.TunnelType == "sayedns_ssh" || profile.TunnelType == ""
+
+	if isDnstt && !isVaydns {
+		qs := promptDefault("  DNS query size in bytes, 0 = full capacity (default: 0)", "0")
+		if v, err := strconv.Atoi(qs); err == nil && v >= 50 {
+			querySize = v
+		}
+	}
+
+	if isVaydns {
+		qn := promptDefault("  Max QNAME length 60–253, shorter = stealthier (default: 101)", "101")
+		if v, err := strconv.Atoi(qn); err == nil && v >= 60 && v <= 253 && v != 101 {
+			maxQnameLen = v
+		}
 	}
 
 	// Build args and invoke the existing connect logic
@@ -204,6 +193,9 @@ func interactiveConnectWithURI(uri string) {
 	}
 	if querySize > 0 {
 		args = append(args, "--max-query-size", strconv.Itoa(querySize))
+	}
+	if maxQnameLen > 0 {
+		args = append(args, "--max-qname-len", strconv.Itoa(maxQnameLen))
 	}
 	args = append(args, "--port", strconv.Itoa(profile.Port))
 	args = append(args, uri)
@@ -265,9 +257,12 @@ func interactiveScan(withE2E bool) {
 			}
 			args = append(args, "--e2e", "--pubkey", pubkey)
 
-			noizdns := promptDefault("  NoizDNS mode? (y/N)", "n")
-			if strings.HasPrefix(strings.ToLower(noizdns), "y") {
+			tunnelMode := promptDefault("  Tunnel mode (dnstt/noizdns/vaydns)", "dnstt")
+			switch strings.ToLower(strings.TrimSpace(tunnelMode)) {
+			case "noizdns", "noiz":
 				args = append(args, "--noizdns")
+			case "vaydns", "vay":
+				args = append(args, "--vaydns")
 			}
 		}
 	} else {
@@ -370,6 +365,10 @@ func interactiveScan(withE2E bool) {
 		e2eURL := promptDefault("  E2E test URL (blank = default, 'none' = tunnel-only)", "")
 		if e2eURL != "" {
 			args = append(args, "--e2e-url", e2eURL)
+		}
+		e2eOnly := promptDefault("  Show only E2E passed results? (y/N)", "n")
+		if strings.HasPrefix(strings.ToLower(e2eOnly), "y") {
+			args = append(args, "--e2e-results-only")
 		}
 	}
 
@@ -595,9 +594,12 @@ func interactiveE2EOnly() {
 		}
 		args = append(args, "--domain", domain, "--pubkey", pubkey, "--e2e-only")
 
-		noizdns := promptDefault("  NoizDNS mode? (y/N)", "n")
-		if strings.HasPrefix(strings.ToLower(noizdns), "y") {
+		tunnelMode := promptDefault("  Tunnel mode (dnstt/noizdns/vaydns)", "dnstt")
+		switch strings.ToLower(strings.TrimSpace(tunnelMode)) {
+		case "noizdns", "noiz":
 			args = append(args, "--noizdns")
+		case "vaydns", "vay":
+			args = append(args, "--vaydns")
 		}
 	}
 
@@ -700,6 +702,8 @@ func runConnectFromArgs(args []string) {
 	var utlsOverride string
 	var forceDirectMode bool
 	var querySize int
+	var maxQnameLen int
+	var vOpts vaydnsCLIOverrides
 	var uriParts []string
 
 	for i := 0; i < len(args); i++ {
@@ -735,6 +739,70 @@ func runConnectFromArgs(args []string) {
 				}
 				i++
 			}
+		case "--max-qname-len":
+			if i+1 < len(args) {
+				v, err := strconv.Atoi(args[i+1])
+				if err == nil && v >= 10 {
+					maxQnameLen = v
+				}
+				i++
+			}
+		case "--vaydns-record-type":
+			if i+1 < len(args) {
+				vOpts.recordType = args[i+1]
+				i++
+			}
+		case "--vaydns-rps":
+			if i+1 < len(args) {
+				if v, err := strconv.ParseFloat(args[i+1], 64); err == nil {
+					vOpts.rps = v
+					vOpts.rpsSet = true
+				}
+				i++
+			}
+		case "--vaydns-dnstt-compat":
+			vOpts.dnsttCompat = true
+			vOpts.dnsttCompatSet = true
+		case "--vaydns-idle-timeout":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil {
+					vOpts.idleTimeout = v
+					vOpts.idleTimeoutSet = true
+				}
+				i++
+			}
+		case "--vaydns-keepalive":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil {
+					vOpts.keepalive = v
+					vOpts.keepaliveSet = true
+				}
+				i++
+			}
+		case "--vaydns-udp-timeout":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil {
+					vOpts.udpTimeout = v
+					vOpts.udpTimeoutSet = true
+				}
+				i++
+			}
+		case "--vaydns-max-labels":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil {
+					vOpts.maxNumLabels = v
+					vOpts.maxNumLabelsSet = true
+				}
+				i++
+			}
+		case "--vaydns-client-id-size":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil {
+					vOpts.clientIdSize = v
+					vOpts.clientIdSizeSet = true
+				}
+				i++
+			}
 		case "--direct", "-direct":
 			forceDirectMode = true
 		default:
@@ -748,18 +816,34 @@ func runConnectFromArgs(args []string) {
 	}
 
 	uri := strings.TrimSpace(strings.Join(uriParts, ""))
-	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize)
+	connectWithParams(uri, portOverride, hostOverride, dnsOverride, utlsOverride, forceDirectMode, querySize, maxQnameLen, "", vOpts)
 }
 
 func clearScreen() {
-	if runtime.GOOS == "windows" {
-		// Windows: use ANSI escape (works on Win10+ and Windows Terminal)
-		fmt.Print("\033[2J\033[H")
-	} else {
-		fmt.Print("\033[2J\033[H")
-	}
+	fmt.Print("\033[2J\033[H")
 }
 
 func isSlipnetURI(s string) bool {
 	return strings.HasPrefix(s, "slipnet://") || strings.HasPrefix(s, "slipnet-enc://")
+}
+
+// formatResolverDisplay formats resolver strings for display.
+// Input: "8.8.8.8:53:0,1.1.1.1:53:0" → "8.8.8.8:53, 1.1.1.1:53"
+func formatResolverDisplay(resolvers string) string {
+	parts := strings.Split(resolvers, ",")
+	var out []string
+	for _, r := range parts {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		// Strip the trailing ":0"/":1" (authoritative flag)
+		fields := strings.Split(r, ":")
+		if len(fields) >= 2 {
+			out = append(out, fields[0]+":"+fields[1])
+		} else {
+			out = append(out, r)
+		}
+	}
+	return strings.Join(out, ", ")
 }

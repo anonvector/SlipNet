@@ -71,7 +71,7 @@ data class ServerProfile(
     val socks5ServerPort: Int = 1080,
     // VayDNS: enable dnstt wire-format compatibility (8-byte ClientID, padding prefixes)
     val vaydnsDnsttCompat: Boolean = false,
-    // VayDNS: DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)
+    // VayDNS: DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv, null, caa)
     val vaydnsRecordType: String = "txt",
     // VayDNS: maximum QNAME wire length (controls query size on the wire, default 101)
     val vaydnsMaxQnameLen: Int = 101,
@@ -88,7 +88,31 @@ data class ServerProfile(
     // VayDNS advanced: ClientID size in bytes (0 = default 2, ignored when dnsttCompat is true)
     val vaydnsClientIdSize: Int = 0,
     // Pinned to top of profile list
-    val isPinned: Boolean = false
+    val isPinned: Boolean = false,
+    // SSH over TLS (stunnel): wrap SSH connection in TLS for firewall bypass / domain fronting
+    val sshTlsEnabled: Boolean = false,
+    // Custom SNI hostname for TLS ClientHello (empty = use server hostname)
+    val sshTlsSni: String = "",
+    // SSH over HTTP CONNECT proxy: proxy address, port, and custom Host header
+    val sshHttpProxyHost: String = "",
+    val sshHttpProxyPort: Int = 8080,
+    // Custom Host header for HTTP CONNECT request (empty = use SSH server host:port)
+    val sshHttpProxyCustomHost: String = "",
+    // SSH over WebSocket: tunnel SSH through a WebSocket connection (for CDN facades, xray, etc.)
+    val sshWsEnabled: Boolean = false,
+    // WebSocket endpoint path (default "/")
+    val sshWsPath: String = "/",
+    // Use TLS for WebSocket (wss:// vs ws://)
+    val sshWsUseTls: Boolean = true,
+    // Custom Host header for WebSocket upgrade request (empty = use server hostname)
+    val sshWsCustomHost: String = "",
+    // Raw payload sent on the TCP socket before the SSH handshake (for DPI bypass).
+    // Supports escape sequences (\r, \n) and placeholders ([host], [port]).
+    val sshPayload: String = "",
+    // Multi-resolver mode: "fanout" (reliable, send to all) or "roundrobin" (fast, bandwidth aggregation)
+    val resolverMode: ResolverMode = ResolverMode.ROUND_ROBIN,
+    // Round-robin spread count: how many resolvers each query is sent to in fast mode (1=no duplicates, default 3)
+    val rrSpreadCount: Int = 3
 ) {
     val isExpired: Boolean get() = expirationDate > 0 && System.currentTimeMillis() > expirationDate
 }
@@ -146,6 +170,17 @@ enum class SshAuthType(val value: String) {
     companion object {
         fun fromValue(value: String): SshAuthType {
             return entries.find { it.value == value } ?: PASSWORD
+        }
+    }
+}
+
+enum class ResolverMode(val value: String, val displayName: String) {
+    FANOUT("fanout", "Reliable"),
+    ROUND_ROBIN("roundrobin", "Fast");
+
+    companion object {
+        fun fromValue(value: String): ResolverMode {
+            return entries.find { it.value == value } ?: FANOUT
         }
     }
 }

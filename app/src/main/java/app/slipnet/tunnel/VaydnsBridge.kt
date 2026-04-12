@@ -46,7 +46,9 @@ object VaydnsBridge {
         keepalive: Int = 0,
         udpTimeout: Int = 0,
         maxNumLabels: Int = 0,
-        clientIdSize: Int = 0
+        clientIdSize: Int = 0,
+        resolverMode: String = "fanout",
+        rrSpreadCount: Int = 3
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting VayDNS client")
@@ -63,6 +65,8 @@ object VaydnsBridge {
         Log.i(TAG, "  UDP Timeout: ${if (udpTimeout > 0) "${udpTimeout}ms" else "default"}")
         Log.i(TAG, "  Max Labels: ${if (maxNumLabels > 0) maxNumLabels.toString() else "unlimited"}")
         Log.i(TAG, "  Client ID Size: ${if (clientIdSize > 0) "${clientIdSize}B" else "default"}")
+        Log.i(TAG, "  Resolver Mode: $resolverMode")
+        Log.i(TAG, "  RR Spread Count: $rrSpreadCount")
         Log.i(TAG, "========================================")
 
         if (tunnelDomain.isBlank()) {
@@ -136,6 +140,8 @@ object VaydnsBridge {
             if (clientIdSize > 0) {
                 newClient.setClientIDSize(clientIdSize.toLong())
             }
+            newClient.setResolverMode(resolverMode)
+            newClient.setRRSpreadCount(rrSpreadCount.toLong())
             client = newClient
             currentPort = actualPort
 

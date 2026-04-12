@@ -1,0 +1,100 @@
+---
+title: "Fast (Round-Robin) DNS Tunnel — Query Distribution"
+---
+
+flowchart TB
+    subgraph APP["Android App (Kotlin)"]
+        profile["ServerProfile<br/>resolverMode = ROUND_ROBIN<br/>rrSpreadCount = 3"]
+        bridge["DnsttBridge / VaydnsBridge<br/>setResolverMode('roundrobin')<br/>setRRSpreadCount(3)"]
+        profile --> bridge
+    end
+
+    subgraph GO["Go Layer — multi.go"]
+        subgraph CONN["SmartUDPConn / SmartMultiPacketConn"]
+            writeTo["WriteTo(query)"]
+        end
+
+        subgraph TRACKER["resolverTracker"]
+            pickSpread["pickSpread(maxTargets=3)"]
+            healthLoop["healthLoop()<br/>every 3s"]
+
+            subgraph CURSORS["Round-Robin Cursors"]
+                rrIndex["rrIndex (primary cursor)"]
+            end
+
+            subgraph STATES["Resolver States"]
+                s0["R0: alive=✅"]
+                s1["R1: alive=✅"]
+                s2["R2: alive=❌"]
+                s3["R3: alive=✅"]
+                s4["R4: alive=✅"]
+            end
+        end
+
+        writeTo -->|"mode == roundrobin"| pickSpread
+        healthLoop -->|"checks every 3s"| STATES
+    end
+
+    subgraph PICK["pickSpread Algorithm"]
+        direction TB
+        step1["1. Start from rrIndex cursor"]
+        step2["2. Walk resolvers, collect up to<br/>maxTargets alive ones"]
+        step3["3. Advance cursor past first target"]
+        step4{"< 2 alive<br/>found?"}
+        step5["4a. Include a dead resolver<br/>due for probing (8s gap)"]
+        step6["4b. Done — return targets"]
+        step7{"0 targets<br/>found?"}
+        step8["Fallback: use cursor position anyway"]
+
+        step1 --> step2 --> step3 --> step4
+        step4 -->|Yes| step5 --> step6
+        step4 -->|No| step7
+        step7 -->|Yes| step8
+        step7 -->|No| step6
+    end
+
+    subgraph SEND["Query Dispatch"]
+        direction TB
+        primary["targets[0] — PRIMARY<br/>error returned to caller"]
+        secondary["targets[1..N] — REDUNDANT<br/>best-effort, errors ignored"]
+        primary --> R_primary["DNS Resolver (primary)"]
+        secondary --> R_secondary["DNS Resolver(s) (backup)"]
+    end
+
+    pickSpread --> SEND
+
+    subgraph HEALTH["Health State Machine"]
+        direction LR
+        alive["ALIVE<br/>(accepting queries)"]
+        dead["DEAD<br/>(skipped in rotation)"]
+
+        alive -->|"no response for 12s<br/>(was responsive)"| dead
+        alive -->|"never responded<br/>after 6s"| dead
+        dead -->|"response received<br/>during probe"| alive
+        dead -->|"probed every 8s<br/>via pickSpread"| dead
+    end
+
+    subgraph EXAMPLE["Example: 5 Resolvers, spreadCount=3"]
+        direction TB
+        q1["Query 1 → cursor=0<br/>picks: R0★ R1 R2"]
+        q2["Query 2 → cursor=1<br/>picks: R1★ R2 R3"]
+        q3["Query 3 → cursor=2<br/>picks: R2★ R3 R4"]
+        q4["Query 4 → cursor=3<br/>picks: R3★ R4 R0"]
+        q5["Query 5 → cursor=4<br/>picks: R4★ R0 R1"]
+        note["★ = primary (rotates each query)<br/>Load distributed evenly across all 5"]
+
+        q1 --> q2 --> q3 --> q4 --> q5
+    end
+
+    bridge --> CONN
+
+    style APP fill:#1a1a2e,stroke:#e94560,color:#eee
+    style GO fill:#0f3460,stroke:#16213e,color:#eee
+    style TRACKER fill:#16213e,stroke:#e94560,color:#eee
+    style PICK fill:#1a1a2e,stroke:#53a8b6,color:#eee
+    style SEND fill:#1a1a2e,stroke:#53a8b6,color:#eee
+    style HEALTH fill:#1a1a2e,stroke:#e94560,color:#eee
+    style EXAMPLE fill:#0f3460,stroke:#53a8b6,color:#eee
+    style CONN fill:#16213e,stroke:#53a8b6,color:#eee
+    style CURSORS fill:#0f3460,stroke:#e94560,color:#eee
+    style STATES fill:#0f3460,stroke:#e94560,color:#eee

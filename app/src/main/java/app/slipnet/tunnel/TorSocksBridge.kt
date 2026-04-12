@@ -45,6 +45,8 @@ object TorSocksBridge {
 
     private var torHost: String = "127.0.0.1"
     private var torSocksPort: Int = 0
+    private var localAuthUsername: String? = null
+    private var localAuthPassword: String? = null
     private var serverSocket: ServerSocket? = null
     private var acceptorThread: Thread? = null
     private val running = AtomicBoolean(false)
@@ -59,17 +61,22 @@ object TorSocksBridge {
         torSocksPort: Int,
         torHost: String = "127.0.0.1",
         listenPort: Int,
-        listenHost: String = "127.0.0.1"
+        listenHost: String = "127.0.0.1",
+        localAuthUsername: String? = null,
+        localAuthPassword: String? = null
     ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting Tor SOCKS5 bridge")
         Log.i(TAG, "  Tor SOCKS5: $torHost:$torSocksPort")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
+        Log.i(TAG, "  Local auth: ${if (!localAuthUsername.isNullOrEmpty()) "enabled" else "disabled"}")
         Log.i(TAG, "========================================")
 
         stop()
         this.torHost = torHost
         this.torSocksPort = torSocksPort
+        this.localAuthUsername = localAuthUsername
+        this.localAuthPassword = localAuthPassword
 
         return try {
             val ss = bindServerSocket(listenHost, listenPort)
@@ -176,9 +183,10 @@ object TorSocksBridge {
                     val methods = ByteArray(nMethods)
                     input.readFully(methods)
 
-                    // Respond: no authentication required
-                    output.write(byteArrayOf(0x05, 0x00))
-                    output.flush()
+                    // Authenticate local client
+                    if (!LocalProxyAuth.handleGreeting(methods, input, output, localAuthUsername, localAuthPassword)) {
+                        return@Thread
+                    }
 
                     // SOCKS5 request
                     val ver = input.read()

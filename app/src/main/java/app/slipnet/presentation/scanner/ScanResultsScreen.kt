@@ -32,7 +32,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -70,10 +69,10 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.rememberSwipeToDismissBoxState
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Icon
@@ -181,7 +180,7 @@ fun ScanResultsScreen(
             prefs.getInt("prism_min_probes", 0)
         )
     }
-    var showAllWorking by remember { mutableStateOf(uiState.scanMode != ScanMode.SIMPLE) }
+    var showAllWorking by remember { mutableStateOf(uiState.scanMode != ScanMode.SIMPLE && uiState.scanMode != ScanMode.E2E) }
     var searchQuery by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
     // null = no dialog, "copy" or "export" = pending action
@@ -338,7 +337,7 @@ fun ScanResultsScreen(
                 },
                 actions = {
                     val isIdle = !uiState.scannerState.isScanning &&
-                        (uiState.scanMode != ScanMode.SIMPLE || !uiState.simpleModeE2eState.isRunning)
+                        (uiState.scanMode !in listOf(ScanMode.SIMPLE, ScanMode.E2E) || !uiState.simpleModeE2eState.isRunning)
                     if (uiState.scannerState.results.isNotEmpty()) {
                         IconButton(
                             onClick = {
@@ -408,14 +407,17 @@ fun ScanResultsScreen(
             val isPrismMode = uiState.scanMode == ScanMode.PRISM
 
             // Progress
-            if (uiState.scanMode == ScanMode.SIMPLE) {
+            if (uiState.scanMode == ScanMode.SIMPLE || uiState.scanMode == ScanMode.E2E) {
                 val showProgress = uiState.scannerState.isScanning ||
                     uiState.simpleModeE2eState.isRunning ||
+                    uiState.simpleModeE2eState.testedCount > 0 ||
                     uiState.scannerState.scannedCount > 0
                 if (showProgress) {
                     SimpleModeProgressSection(
                         scannerState = uiState.scannerState,
                         simpleModeE2eState = uiState.simpleModeE2eState,
+                        isE2eOnlyMode = uiState.scanMode == ScanMode.E2E,
+                        e2eConcurrency = uiState.e2eConcurrency.toIntOrNull()?.coerceIn(1, 10) ?: 6,
                         onStopScan = { viewModel.stopScan() },
                         onResumeScan = { viewModel.resumeScan() }
                     )
@@ -457,7 +459,7 @@ fun ScanResultsScreen(
                     enter = expandVertically() + fadeIn(),
                     exit = shrinkVertically() + fadeOut()
                 ) {
-                    E2eProgressSection(e2eScannerState = uiState.e2eScannerState)
+                    E2eProgressSection(e2eScannerState = uiState.e2eScannerState, e2eConcurrency = uiState.e2eConcurrency.toIntOrNull()?.coerceIn(1, 10) ?: 6)
                 }
             }
 
@@ -591,9 +593,16 @@ fun ScanResultsScreen(
 
             // Results
             val isSimpleMode = uiState.scanMode == ScanMode.SIMPLE
-            val displayResults = remember(throttledResults, scoreFilter, sortOption, isSimpleMode, isPrismMode, showAllWorking, searchQuery, hasE2eResults, prismMinProbes) {
+            val isE2eOnlyMode = uiState.scanMode == ScanMode.E2E
+            val displayResults = remember(throttledResults, scoreFilter, sortOption, isSimpleMode, isE2eOnlyMode, isPrismMode, showAllWorking, searchQuery, hasE2eResults, prismMinProbes) {
                 val query = searchQuery.trim()
-                val filtered = if (isPrismMode && !showAllWorking && hasE2eResults) {
+                val filtered = if (isE2eOnlyMode) {
+                    // E2E mode only has E2E-passed results
+                    throttledResults.filter {
+                        it.e2eTestResult?.success == true &&
+                            (query.isEmpty() || it.host.contains(query))
+                    }
+                } else if (isPrismMode && !showAllWorking && hasE2eResults) {
                     throttledResults.filter {
                         it.prismVerified == true &&
                             (it.prismPassedProbes ?: 0) >= prismMinProbes &&
@@ -889,8 +898,8 @@ fun ScanResultsScreen(
                             }
                         }
 
-                        // Toggle E2E-passed-only vs all working
-                        if (uiState.scanMode == ScanMode.SIMPLE || hasE2eResults) {
+                        // Toggle E2E-passed-only vs all working (not shown for E2E-only since all results are E2E-passed)
+                        if ((uiState.scanMode == ScanMode.SIMPLE || hasE2eResults) && uiState.scanMode != ScanMode.E2E) {
                             FilterChip(
                                 selected = showAllWorking,
                                 onClick = { showAllWorking = !showAllWorking },
@@ -1149,7 +1158,7 @@ private fun ResultsStatChip(
 }
 
 @Composable
-private fun E2eProgressSection(e2eScannerState: E2eScannerState) {
+private fun E2eProgressSection(e2eScannerState: E2eScannerState, e2eConcurrency: Int = 6) {
     val progress = if (e2eScannerState.totalCount > 0) {
         e2eScannerState.testedCount.toFloat() / e2eScannerState.totalCount
     } else 0f
@@ -1196,7 +1205,7 @@ private fun E2eProgressSection(e2eScannerState: E2eScannerState) {
             }
 
             if (e2eScannerState.isRunning) {
-                ActiveResolversList(e2eScannerState.activeResolvers)
+                ActiveResolversList(e2eScannerState.activeResolvers, maxSlots = e2eConcurrency)
             }
 
             LinearProgressIndicator(
@@ -1216,6 +1225,8 @@ private fun E2eProgressSection(e2eScannerState: E2eScannerState) {
 private fun SimpleModeProgressSection(
     scannerState: app.slipnet.domain.model.ScannerState,
     simpleModeE2eState: SimpleModeE2eState,
+    isE2eOnlyMode: Boolean = false,
+    e2eConcurrency: Int = 6,
     onStopScan: () -> Unit,
     onResumeScan: () -> Unit
 ) {
@@ -1226,10 +1237,15 @@ private fun SimpleModeProgressSection(
     val animatedDnsProgress by animateFloatAsState(targetValue = dnsProgress, label = "dnsProgress")
     val animatedE2eProgress by animateFloatAsState(targetValue = e2eProgress, label = "e2eProgress")
     val isRunning = scannerState.isScanning || simpleModeE2eState.isRunning
-    val hasPartialDns = scannerState.scannedCount > 0 &&
+    val hasPartialDns = !isE2eOnlyMode && scannerState.scannedCount > 0 &&
         scannerState.scannedCount < scannerState.totalCount + scannerState.focusRangeCount
-    val hasPartialE2e = remember(scannerState.results) {
+    val hasPartialE2eSimple = remember(scannerState.results) {
         scannerState.results.any { it.status == ResolverStatus.WORKING && it.e2eTestResult == null }
+    }
+    val hasPartialE2e = if (isE2eOnlyMode) {
+        simpleModeE2eState.testedCount > 0 && simpleModeE2eState.testedCount < simpleModeE2eState.queuedCount
+    } else {
+        hasPartialE2eSimple
     }
     val canResume = !isRunning && (hasPartialDns || hasPartialE2e)
 
@@ -1241,44 +1257,46 @@ private fun SimpleModeProgressSection(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // DNS scan row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            if (!isE2eOnlyMode) {
+                // DNS scan row
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    ResultsStatChip(
-                        icon = Icons.Default.Search,
-                        label = "Scanned",
-                        value = "${scannerState.scannedCount}/${scannerState.totalCount}${if (scannerState.focusRangeCount > 0) " + ${scannerState.focusRangeCount}" else ""}",
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    ResultsStatChip(
-                        icon = Icons.Default.CheckCircle,
-                        label = "Working",
-                        value = scannerState.workingCount.toString(),
-                        color = WorkingGreen
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        ResultsStatChip(
+                            icon = Icons.Default.Search,
+                            label = "Scanned",
+                            value = "${scannerState.scannedCount}/${scannerState.totalCount}${if (scannerState.focusRangeCount > 0) " + ${scannerState.focusRangeCount}" else ""}",
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        ResultsStatChip(
+                            icon = Icons.Default.CheckCircle,
+                            label = "Working",
+                            value = scannerState.workingCount.toString(),
+                            color = WorkingGreen
+                        )
+                    }
+                    ScanControlButton(
+                        isRunning = isRunning,
+                        canResume = canResume,
+                        onStop = onStopScan,
+                        onResume = onResumeScan
                     )
                 }
-                ScanControlButton(
-                    isRunning = isRunning,
-                    canResume = canResume,
-                    onStop = onStopScan,
-                    onResume = onResumeScan
+
+                LinearProgressIndicator(
+                    progress = { animatedDnsProgress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    strokeCap = StrokeCap.Round
                 )
             }
-
-            LinearProgressIndicator(
-                progress = { animatedDnsProgress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp)),
-                strokeCap = StrokeCap.Round
-            )
 
             // E2E row
             Row(
@@ -1311,10 +1329,18 @@ private fun SimpleModeProgressSection(
                         )
                     }
                 }
+                if (isE2eOnlyMode) {
+                    ScanControlButton(
+                        isRunning = isRunning,
+                        canResume = canResume,
+                        onStop = onStopScan,
+                        onResume = onResumeScan
+                    )
+                }
             }
 
             if (simpleModeE2eState.isRunning) {
-                ActiveResolversList(simpleModeE2eState.activeResolvers)
+                ActiveResolversList(simpleModeE2eState.activeResolvers, maxSlots = e2eConcurrency)
             }
 
             LinearProgressIndicator(
@@ -1396,19 +1422,31 @@ private fun ResultsSelectionControls(
 }
 
 @Composable
-private fun ActiveResolversList(activeResolvers: Map<String, String>, maxSlots: Int = 3) {
+private fun ActiveResolversList(activeResolvers: Map<String, String>, maxSlots: Int = 6) {
+    val entries = activeResolvers.entries.toList()
+    val rows = (maxSlots + 1) / 2 // 2 columns
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        val entries = activeResolvers.entries.toList()
-        for (i in 0 until maxSlots) {
-            val entry = entries.getOrNull(i)
-            Text(
-                text = if (entry != null) "${entry.key} - ${entry.value}" else "Waiting...",
-                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                color = if (entry != null) MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+        for (row in 0 until rows) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (col in 0 until 2) {
+                    val i = row * 2 + col
+                    if (i < maxSlots) {
+                        val entry = entries.getOrNull(i)
+                        Text(
+                            text = if (entry != null) "${entry.key} - ${entry.value}" else "Waiting...",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            color = if (entry != null) MaterialTheme.colorScheme.onSurfaceVariant
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
         }
     }
 }

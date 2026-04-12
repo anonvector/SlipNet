@@ -466,6 +466,18 @@ class SlipNetVpnService : VpnService() {
                 Socks5ProxyBridge.uploadLimiter = ulLimiter
                 Socks5ProxyBridge.downloadLimiter = dlLimiter
 
+                // Local proxy auth: set credentials on SSH bridge
+                val proxyAuthEnabled = preferencesDataStore.proxyAuthEnabled.first()
+                if (proxyAuthEnabled) {
+                    val authUser = preferencesDataStore.proxyAuthUsername.first().ifEmpty { null }
+                    val authPass = preferencesDataStore.proxyAuthPassword.first().ifEmpty { null }
+                    SshTunnelBridge.localAuthUsername = authUser
+                    SshTunnelBridge.localAuthPassword = authPass
+                } else {
+                    SshTunnelBridge.localAuthUsername = null
+                    SshTunnelBridge.localAuthPassword = null
+                }
+
                 // Track the tunnel type for this connection
                 currentTunnelType = profile.tunnelType
                 Log.i(TAG, "Starting VPN with tunnel type: $currentTunnelType")
@@ -486,9 +498,14 @@ class SlipNetVpnService : VpnService() {
                     } else null
                 } else null
 
+                // Extract global DNS IP for hostname resolution (bypasses ISP DNS filtering)
+                val globalDnsIp = globalResolverOverride?.firstOrNull()?.host?.takeIf {
+                    DomainRouter.isIpAddress(it)
+                }
+
                 val effectiveResolverHost = globalResolverOverride?.firstOrNull()?.host
                     ?: profile.resolvers.firstOrNull()?.host
-                val dnsServer = resolveToIp(effectiveResolverHost)
+                val dnsServer = resolveToIp(effectiveResolverHost, globalDnsIp)
                 // Remote DNS: the DNS servers used on the remote side of the tunnel
                 var remoteDns = preferencesDataStore.getEffectiveRemoteDns().first()
                 var remoteDnsFallback = preferencesDataStore.getEffectiveRemoteDnsFallback().first()
@@ -521,7 +538,7 @@ class SlipNetVpnService : VpnService() {
                     TunnelType.SLIPSTREAM_SSH -> connectSlipstreamSsh(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
                     TunnelType.DNSTT -> connectDnstt(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
                     TunnelType.NOIZDNS -> connectDnstt(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
-                    TunnelType.SSH -> connectSsh(profile, dnsServer, remoteDns, remoteDnsFallback)
+                    TunnelType.SSH -> connectSsh(profile, dnsServer, remoteDns, remoteDnsFallback, globalDnsIp)
                     TunnelType.DNSTT_SSH -> connectDnsttSsh(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
                     TunnelType.NOIZDNS_SSH -> connectDnsttSsh(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
                     TunnelType.DOH -> connectDoh(profile, dnsServer)
@@ -677,6 +694,18 @@ class SlipNetVpnService : VpnService() {
                 DohBridge.downloadLimiter = dlLimiter
                 HttpProxyServer.uploadLimiter = ulLimiter
                 HttpProxyServer.downloadLimiter = dlLimiter
+
+                // Local proxy auth: set credentials on SSH bridge
+                val proxyAuthEnabled2 = preferencesDataStore.proxyAuthEnabled.first()
+                if (proxyAuthEnabled2) {
+                    val authUser = preferencesDataStore.proxyAuthUsername.first().ifEmpty { null }
+                    val authPass = preferencesDataStore.proxyAuthPassword.first().ifEmpty { null }
+                    SshTunnelBridge.localAuthUsername = authUser
+                    SshTunnelBridge.localAuthPassword = authPass
+                } else {
+                    SshTunnelBridge.localAuthUsername = null
+                    SshTunnelBridge.localAuthPassword = null
+                }
 
                 executeChain(profiles)
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1057,7 +1086,10 @@ class SlipNetVpnService : VpnService() {
                             sshPrivateKey = profile.sshPrivateKey,
                             sshKeyPassphrase = profile.sshKeyPassphrase,
                             remoteDnsHost = remoteDns,
-                            remoteDnsFallback = remoteDnsFallback
+                            remoteDnsFallback = remoteDnsFallback,
+                            tlsEnabled = profile.sshTlsEnabled,
+                            tlsSni = profile.sshTlsSni,
+                            sshPayload = profile.sshPayload
                         )
                     }
                 }
@@ -1654,30 +1686,25 @@ class SlipNetVpnService : VpnService() {
      * SSH connects directly to the remote server (no DNS tunneling).
      * DNS queries go direct via DatagramSocket (bypasses VPN via addDisallowedApplication).
      */
-    private suspend fun connectSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String) {
+    private suspend fun connectSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String, globalDnsIp: String? = null) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
         vpnRepository.setCurrentTunnelType(TunnelType.SSH)
+
+        // Resolve SSH hostname via global DNS if set (bypasses ISP DNS filtering)
+        val resolvedProfile = if (globalDnsIp != null && !DomainRouter.isIpAddress(profile.domain)) {
+            val resolvedDomain = VpnRepositoryImpl.resolveHost(profile.domain, globalDnsIp)
+            if (resolvedDomain != profile.domain) {
+                Log.i(TAG, "Resolved SSH host ${profile.domain} → $resolvedDomain via global DNS")
+                profile.copy(domain = resolvedDomain)
+            } else profile
+        } else profile
 
         if (isProxyOnly) {
             // Proxy-only: no VPN needed, start SSH directly (sockets go direct anyway)
             configureSshBridge()
             val sshResult = withContext(Dispatchers.IO) {
-                Log.i(TAG, "Starting SSH tunnel (direct to ${profile.domain}:${profile.sshPort})")
-                SshTunnelBridge.startDirect(
-                    tunnelHost = profile.domain,
-                    tunnelPort = profile.sshPort,
-                    sshUsername = profile.sshUsername,
-                    sshPassword = profile.sshPassword,
-                    listenPort = proxyPort,
-                    listenHost = proxyHost,
-                    forwardDnsThroughSsh = true,
-                    sshAuthType = profile.sshAuthType,
-                    sshPrivateKey = profile.sshPrivateKey,
-                    sshKeyPassphrase = profile.sshKeyPassphrase,
-                    remoteDnsHost = remoteDns,
-                    remoteDnsFallback = remoteDnsFallback
-                )
+                startSshWithTransport(resolvedProfile, proxyHost, proxyPort, remoteDns, remoteDnsFallback)
             }
             if (sshResult.isFailure) {
                 connectionManager.onVpnError(sshResult.exceptionOrNull()?.message ?: "Failed to start SSH tunnel")
@@ -1714,24 +1741,10 @@ class SlipNetVpnService : VpnService() {
         // Brief delay to let VPN routing settle
         delay(200)
 
-        // Step 2: Start SSH tunnel directly to the SSH server
+        // Step 2: Start SSH tunnel using the configured transport
         configureSshBridge()
         val sshResult = withContext(Dispatchers.IO) {
-            Log.i(TAG, "Starting SSH tunnel (direct to ${profile.domain}:${profile.sshPort})")
-            SshTunnelBridge.startDirect(
-                tunnelHost = profile.domain,
-                tunnelPort = profile.sshPort,
-                sshUsername = profile.sshUsername,
-                sshPassword = profile.sshPassword,
-                listenPort = proxyPort,
-                listenHost = proxyHost,
-                forwardDnsThroughSsh = true,
-                sshAuthType = profile.sshAuthType,
-                sshPrivateKey = profile.sshPrivateKey,
-                sshKeyPassphrase = profile.sshKeyPassphrase,
-                remoteDnsHost = remoteDns,
-                remoteDnsFallback = remoteDnsFallback
-            )
+            startSshWithTransport(resolvedProfile, proxyHost, proxyPort, remoteDns, remoteDnsFallback)
         }
         if (sshResult.isFailure) {
             connectionManager.onVpnError(sshResult.exceptionOrNull()?.message ?: "Failed to start SSH tunnel")
@@ -1768,6 +1781,84 @@ class SlipNetVpnService : VpnService() {
 
         Log.d(TAG, "SSH tunnel started")
         finishConnection()
+    }
+
+    /**
+     * Start SSH tunnel using the transport configured in the profile:
+     * WebSocket, HTTP CONNECT proxy, or direct (with optional TLS and payload).
+     */
+    private fun startSshWithTransport(
+        profile: app.slipnet.domain.model.ServerProfile,
+        listenHost: String,
+        listenPort: Int,
+        remoteDns: String,
+        remoteDnsFallback: String
+    ): Result<Unit> {
+        return when {
+            profile.sshWsEnabled -> {
+                Log.i(TAG, "Starting SSH tunnel (WebSocket to ${profile.domain}:${profile.sshPort})")
+                SshTunnelBridge.startOverWebSocket(
+                    sshHost = profile.domain,
+                    sshPort = profile.sshPort,
+                    sshUsername = profile.sshUsername,
+                    sshPassword = profile.sshPassword,
+                    wsPath = profile.sshWsPath,
+                    wsUseTls = profile.sshWsUseTls,
+                    wsCustomHost = profile.sshWsCustomHost,
+                    wsTlsSni = profile.sshTlsSni,
+                    listenPort = listenPort,
+                    listenHost = listenHost,
+                    blockDirectDns = true,
+                    sshAuthType = profile.sshAuthType,
+                    sshPrivateKey = profile.sshPrivateKey,
+                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                    remoteDnsHost = remoteDns,
+                    remoteDnsFallback = remoteDnsFallback
+                )
+            }
+            profile.sshHttpProxyHost.isNotBlank() -> {
+                Log.i(TAG, "Starting SSH tunnel (HTTP proxy ${profile.sshHttpProxyHost}:${profile.sshHttpProxyPort} -> ${profile.domain}:${profile.sshPort})")
+                SshTunnelBridge.startOverHttpProxy(
+                    sshHost = profile.domain,
+                    sshPort = profile.sshPort,
+                    sshUsername = profile.sshUsername,
+                    sshPassword = profile.sshPassword,
+                    proxyHost = profile.sshHttpProxyHost,
+                    proxyPort = profile.sshHttpProxyPort,
+                    customHostHeader = profile.sshHttpProxyCustomHost,
+                    listenPort = listenPort,
+                    listenHost = listenHost,
+                    blockDirectDns = true,
+                    sshAuthType = profile.sshAuthType,
+                    sshPrivateKey = profile.sshPrivateKey,
+                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                    remoteDnsHost = remoteDns,
+                    remoteDnsFallback = remoteDnsFallback,
+                    tlsEnabled = profile.sshTlsEnabled,
+                    tlsSni = profile.sshTlsSni
+                )
+            }
+            else -> {
+                Log.i(TAG, "Starting SSH tunnel (direct to ${profile.domain}:${profile.sshPort})")
+                SshTunnelBridge.startDirect(
+                    tunnelHost = profile.domain,
+                    tunnelPort = profile.sshPort,
+                    sshUsername = profile.sshUsername,
+                    sshPassword = profile.sshPassword,
+                    listenPort = listenPort,
+                    listenHost = listenHost,
+                    forwardDnsThroughSsh = true,
+                    sshAuthType = profile.sshAuthType,
+                    sshPrivateKey = profile.sshPrivateKey,
+                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                    remoteDnsHost = remoteDns,
+                    remoteDnsFallback = remoteDnsFallback,
+                    tlsEnabled = profile.sshTlsEnabled,
+                    tlsSni = profile.sshTlsSni,
+                    sshPayload = profile.sshPayload
+                )
+            }
+        }
     }
 
     /**
@@ -2763,6 +2854,8 @@ class SlipNetVpnService : VpnService() {
     private suspend fun connectSocks5(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        val localAuthUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+        val localAuthPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
         vpnRepository.setCurrentTunnelType(TunnelType.SOCKS5)
 
         if (isProxyOnly) {
@@ -2775,7 +2868,9 @@ class SlipNetVpnService : VpnService() {
                     remotePassword = profile.socksPassword,
                     listenPort = proxyPort,
                     listenHost = proxyHost,
-                    dnsHost = remoteDns
+                    dnsHost = remoteDns,
+                    localAuthUsername = localAuthUser,
+                    localAuthPassword = localAuthPass
                 )
             }
             if (bridgeResult.isFailure) {
@@ -2819,7 +2914,9 @@ class SlipNetVpnService : VpnService() {
                 remotePassword = profile.socksPassword,
                 listenPort = proxyPort,
                 listenHost = proxyHost,
-                dnsHost = remoteDns
+                dnsHost = remoteDns,
+                localAuthUsername = localAuthUser,
+                localAuthPassword = localAuthPass
             )
         }
         if (bridgeResult.isFailure) {
@@ -3042,11 +3139,15 @@ class SlipNetVpnService : VpnService() {
                         val httpPort = preferencesDataStore.httpProxyPort.first()
                         val listenHost = preferencesDataStore.proxyListenAddress.first()
                         val socksPort = preferencesDataStore.proxyListenPort.first()
+                        val authUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+                        val authPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
                         val result = HttpProxyServer.start(
                             socksHost = "127.0.0.1",
                             socksPort = socksPort,
                             listenHost = listenHost,
-                            listenPort = httpPort
+                            listenPort = httpPort,
+                            socksAuthUsername = authUser,
+                            socksAuthPassword = authPass
                         )
                         if (result.isFailure) {
                             Log.w(TAG, "HTTP proxy failed to start: ${result.exceptionOrNull()?.message}")
@@ -3373,9 +3474,7 @@ class SlipNetVpnService : VpnService() {
                 }
 
                 // For tunnels with DNS worker pools: warn when all workers are dead.
-                // In proxy-only mode, DNS workers are unused (apps resolve DNS via CONNECT),
-                // so skip this check to avoid false warnings.
-                val dnsPoolDead = if (isProxyOnly) false else when (currentTunnelType) {
+                val dnsPoolDead = when (currentTunnelType) {
                     TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS -> DnsttSocksBridge.isDnsPoolDead()
                     TunnelType.SLIPSTREAM -> SlipstreamSocksBridge.isDnsPoolDead()
                     TunnelType.NAIVE -> NaiveSocksBridge.isDnsPoolDead()
@@ -3824,25 +3923,23 @@ class SlipNetVpnService : VpnService() {
                     }
                 }
 
+                // Resolve SSH hostname via global DNS if set (same as initial connect)
+                val reconnectGlobalDnsIp = if (preferencesDataStore.globalResolverEnabled.first()) {
+                    preferencesDataStore.globalResolverList.first()
+                        .split(",", "\n").firstOrNull()?.trim()?.split(":")?.firstOrNull()
+                        ?.takeIf { DomainRouter.isIpAddress(it) }
+                } else null
+                val reconnectProfile = if (reconnectGlobalDnsIp != null && !DomainRouter.isIpAddress(profile.domain)) {
+                    val resolved = VpnRepositoryImpl.resolveHost(profile.domain, reconnectGlobalDnsIp)
+                    if (resolved != profile.domain) profile.copy(domain = resolved) else profile
+                } else profile
+
                 // Restart the appropriate proxy
                 if (currentTunnelType == TunnelType.SSH) {
-                    // SSH-only: restart SSH tunnel directly
+                    // SSH-only: restart SSH tunnel using configured transport
                     configureSshBridge()
                     val sshResult = withContext(Dispatchers.IO) {
-                        SshTunnelBridge.startDirect(
-                            tunnelHost = profile.domain,
-                            tunnelPort = profile.sshPort,
-                            sshUsername = profile.sshUsername,
-                            sshPassword = profile.sshPassword,
-                            listenPort = proxyPort,
-                            listenHost = proxyHost,
-                            forwardDnsThroughSsh = true,
-                            sshAuthType = profile.sshAuthType,
-                            sshPrivateKey = profile.sshPrivateKey,
-                            sshKeyPassphrase = profile.sshKeyPassphrase,
-                            remoteDnsHost = remoteDns,
-                            remoteDnsFallback = remoteDnsFallback
-                        )
+                        startSshWithTransport(reconnectProfile, proxyHost, proxyPort, remoteDns, remoteDnsFallback)
                     }
                     if (sshResult.isFailure) {
                         Log.e(TAG, "Failed to restart SSH tunnel after network change", sshResult.exceptionOrNull())
@@ -4361,11 +4458,15 @@ class SlipNetVpnService : VpnService() {
                         // devices can reach it. Use 127.0.0.1 only when appendProxy is the sole
                         // reason (local VPN use only, no LAN sharing needed).
                         val listenHost = if (httpEnabled) preferencesDataStore.proxyListenAddress.first() else "127.0.0.1"
+                        val authUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+                        val authPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
                         val result = HttpProxyServer.start(
                             socksHost = "127.0.0.1",
                             socksPort = socksPort,
                             listenHost = listenHost,
-                            listenPort = httpPort
+                            listenPort = httpPort,
+                            socksAuthUsername = authUser,
+                            socksAuthPassword = authPass
                         )
                         if (result.isFailure) {
                             Log.w(TAG, "HTTP proxy failed to restart after reconnect: ${result.exceptionOrNull()?.message}")
@@ -4550,10 +4651,10 @@ class SlipNetVpnService : VpnService() {
      * Resolve a resolver host to a numeric IP for [Builder.addDnsServer].
      * Falls back to [DEFAULT_DNS] if resolution fails or host is null.
      */
-    private fun resolveToIp(host: String?): String {
-        if (host.isNullOrBlank()) return DEFAULT_DNS
-        val resolved = VpnRepositoryImpl.resolveHost(host)
-        return if (DomainRouter.isIpAddress(resolved)) resolved else DEFAULT_DNS
+    private suspend fun resolveToIp(host: String?, customDnsServer: String? = null): String = withContext(Dispatchers.IO) {
+        if (host.isNullOrBlank()) return@withContext DEFAULT_DNS
+        val resolved = VpnRepositoryImpl.resolveHost(host, customDnsServer)
+        if (DomainRouter.isIpAddress(resolved)) resolved else DEFAULT_DNS
     }
 
     private suspend fun establishVpnInterface(dnsServer: String): ParcelFileDescriptor? {
@@ -4652,11 +4753,15 @@ class SlipNetVpnService : VpnService() {
                 if (!HttpProxyServer.isRunning()) {
                     val httpEnabled = preferencesDataStore.httpProxyEnabled.first()
                     val httpListenHost = if (httpEnabled) preferencesDataStore.proxyListenAddress.first() else "127.0.0.1"
+                    val authUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+                    val authPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
                     val result = HttpProxyServer.start(
                         socksHost = "127.0.0.1",
                         socksPort = socksPort,
                         listenHost = httpListenHost,
-                        listenPort = httpPort
+                        listenPort = httpPort,
+                        socksAuthUsername = authUser,
+                        socksAuthPassword = authPass
                     )
                     if (result.isFailure) {
                         Log.w(TAG, "HTTP proxy failed to start for VPN append: ${result.exceptionOrNull()?.message}")
