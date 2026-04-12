@@ -1,4 +1,4 @@
-name: Build CLI Binaries
+name: v2.5.0 CLI Build
 
 on:
   push:

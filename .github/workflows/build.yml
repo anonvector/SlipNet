@@ -1,4 +1,4 @@
-name: Build Android APK
+name: v2.5.0 APK Build
 
 on:
   push:
