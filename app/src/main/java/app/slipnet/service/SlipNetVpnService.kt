@@ -360,6 +360,13 @@ class SlipNetVpnService : VpnService() {
             currentProfileName = profile.name
             isUserInitiatedDisconnect = false
 
+            // Log connection summary before enabling redaction so it's visible for locked profiles
+            if (profile.isLocked) {
+                val user = profile.sshUsername.ifBlank { profile.socksUsername ?: profile.naiveUsername.ifBlank { "" } }
+                Log.i(TAG, "Connecting locked profile: tunnel=${profile.tunnelType.displayName}" +
+                        if (user.isNotBlank()) ", user=$user" else "")
+            }
+
             // Redact sensitive config from in-app debug log for locked profiles
             app.slipnet.util.AppLog.redactSensitive = profile.isLocked
 
@@ -627,6 +634,17 @@ class SlipNetVpnService : VpnService() {
             currentProfileId = primaryProfile.id
             currentProfileName = chain.name
             isUserInitiatedDisconnect = false
+
+            // Log chain summary before enabling redaction so it's visible for locked profiles
+            if (profiles.any { it.isLocked }) {
+                for (p in profiles) {
+                    if (p.isLocked) {
+                        val user = p.sshUsername.ifBlank { p.socksUsername ?: p.naiveUsername.ifBlank { "" } }
+                        Log.i(TAG, "Chain locked layer: tunnel=${p.tunnelType.displayName}" +
+                                if (user.isNotBlank()) ", user=$user" else "")
+                    }
+                }
+            }
             app.slipnet.util.AppLog.redactSensitive = profiles.any { it.isLocked }
 
             getSystemService(android.app.NotificationManager::class.java).apply {
