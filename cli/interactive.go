@@ -118,9 +118,20 @@ func interactiveConnectWithURI(uri string) {
 
 	fmt.Printf("  Profile:  %s\n", profile.Name)
 	fmt.Printf("  Type:     %s\n", profile.TunnelType)
-	fmt.Printf("  Domain:   %s\n", profile.Domain)
-	if profile.Resolvers != "" {
-		fmt.Printf("  Resolver: %s\n", formatResolverDisplay(profile.Resolvers))
+	if profile.IsLocked {
+		fmt.Println("  Domain:   [hidden]")
+		user := profile.SSHUser
+		if user == "" {
+			user = profile.SOCKSUser
+		}
+		if user != "" {
+			fmt.Printf("  User:     %s\n", user)
+		}
+	} else {
+		fmt.Printf("  Domain:   %s\n", profile.Domain)
+		if profile.Resolvers != "" {
+			fmt.Printf("  Resolver: %s\n", formatResolverDisplay(profile.Resolvers))
+		}
 	}
 	fmt.Println()
 
@@ -149,7 +160,7 @@ func interactiveConnectWithURI(uri string) {
 	}
 
 	dnsHint := "blank = auto"
-	if profile.Resolvers != "" {
+	if profile.Resolvers != "" && !profile.IsLocked {
 		dnsHint = "blank = " + formatResolverDisplay(profile.Resolvers)
 	}
 	dnsOverride := promptDefault("  DNS override ("+dnsHint+")", "")
