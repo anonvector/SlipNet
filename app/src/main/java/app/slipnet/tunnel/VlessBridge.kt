@@ -440,6 +440,13 @@ object VlessBridge {
 
     /**
      * TCP transport: VLESS header + raw bidirectional relay (no WebSocket framing).
+     *
+     * NOT EXPOSED IN THE UI — WebSocket is the only user-selectable transport.
+     * The profile editor has no transport selector, and the URI importer rejects
+     * `type=tcp` with a warning. Reason: SlipNet's VLESS is positioned as a
+     * CDN-fronted tunnel, and raw TCP defeats that (no CDN to hide behind, no
+     * TLS ClientHello for SNI fragmentation to fragment). Re-expose only if a
+     * concrete non-CDN use case shows up.
      */
     private fun handleVlessTcp(client: Socket, tunnelIn: InputStream, tunnelOut: OutputStream, destHost: String, destPort: Int, initialData: ByteArray = ByteArray(0)) {
 
