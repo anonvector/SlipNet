@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class, ChainEntity::class],
-    version = 32,
+    version = 38,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -403,6 +403,54 @@ abstract class SlipNetDatabase : RoomDatabase() {
         val MIGRATION_31_32 = object : Migration(31, 32) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE server_profiles ADD COLUMN rr_spread_count INTEGER NOT NULL DEFAULT 3")
+            }
+        }
+
+        val MIGRATION_32_33 = object : Migration(32, 33) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // VLESS fields
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN vless_uuid TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN vless_ws_path TEXT NOT NULL DEFAULT '/'")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN cdn_ip TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN cdn_port INTEGER NOT NULL DEFAULT 443")
+                // SNI fragmentation
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN sni_fragment_enabled INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN sni_fragment_strategy TEXT NOT NULL DEFAULT 'sni_split'")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN sni_fragment_delay_ms INTEGER NOT NULL DEFAULT 100")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN fake_sni TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        val MIGRATION_33_34 = object : Migration(33, 34) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN vless_security TEXT NOT NULL DEFAULT 'tls'")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN vless_transport TEXT NOT NULL DEFAULT 'ws'")
+            }
+        }
+
+        val MIGRATION_34_35 = object : Migration(34, 35) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN ch_padding_enabled INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN ws_header_obfuscation INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN ws_padding_enabled INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_35_36 = object : Migration(35, 36) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN sni_spoof_ttl INTEGER NOT NULL DEFAULT 8")
+            }
+        }
+
+        val MIGRATION_36_37 = object : Migration(36, 37) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN fake_decoy_host TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        val MIGRATION_37_38 = object : Migration(37, 38) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN tcp_max_seg INTEGER NOT NULL DEFAULT 0")
             }
         }
 

@@ -25,6 +25,7 @@ import app.slipnet.tunnel.SnowflakeBridge
 import app.slipnet.tunnel.Socks5ProxyBridge
 import app.slipnet.tunnel.SshTunnelBridge
 import app.slipnet.tunnel.TorSocksBridge
+import app.slipnet.tunnel.VlessBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -773,6 +774,10 @@ class VpnRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Stopping SOCKS5 proxy bridge")
                 Socks5ProxyBridge.stop()
             }
+            TunnelType.VLESS -> {
+                Log.d(TAG, "Stopping VLESS proxy bridge")
+                VlessBridge.stop()
+            }
             null -> {
                 // Try to stop all just in case
                 Log.d(TAG, "No tunnel type set, stopping all proxies")
@@ -974,12 +979,15 @@ class VpnRepositoryImpl @Inject constructor(
                 sent = SlipstreamSocksBridge.getTunnelTxBytes()
                 received = SlipstreamSocksBridge.getTunnelRxBytes()
             }
-            TunnelType.DNSTT, TunnelType.NOIZDNS -> {
+            TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS -> {
+                // VAYDNS in proxy-only mode relays through DnsttSocksBridge on the
+                // SOCKS5 listen port, same as DNSTT/NOIZDNS — so its byte counters
+                // are authoritative in both proxy-only and VPN mode.
                 sent = DnsttSocksBridge.getTunnelTxBytes()
                 received = DnsttSocksBridge.getTunnelRxBytes()
             }
             TunnelType.SSH, TunnelType.DNSTT_SSH, TunnelType.NOIZDNS_SSH,
-            TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH -> {
+            TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH, TunnelType.VAYDNS_SSH -> {
                 sent = SshTunnelBridge.getTunnelTxBytes()
                 received = SshTunnelBridge.getTunnelRxBytes()
             }
@@ -987,7 +995,24 @@ class VpnRepositoryImpl @Inject constructor(
                 sent = Socks5ProxyBridge.getTunnelTxBytes()
                 received = Socks5ProxyBridge.getTunnelRxBytes()
             }
+            TunnelType.VLESS -> {
+                sent = VlessBridge.getTunnelTxBytes()
+                received = VlessBridge.getTunnelRxBytes()
+            }
+            TunnelType.NAIVE -> {
+                sent = NaiveSocksBridge.getTunnelTxBytes()
+                received = NaiveSocksBridge.getTunnelRxBytes()
+            }
+            TunnelType.DOH -> {
+                sent = DohBridge.getTunnelTxBytes()
+                received = DohBridge.getTunnelRxBytes()
+            }
             else -> {
+                // Snowflake falls through here. It's Go-backed and gomobile
+                // doesn't expose byte counters, so in VPN mode we read
+                // TUN-level stats via HevSocks5Tunnel; in proxy-only mode
+                // Snowflake currently shows 0 bytes until Go-side counter
+                // exposure is added.
                 val stats = HevSocks5Tunnel.getStats() ?: return
                 sent = stats.txBytes
                 received = stats.rxBytes

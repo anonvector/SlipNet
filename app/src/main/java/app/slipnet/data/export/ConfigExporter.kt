@@ -25,7 +25,7 @@ class ConfigExporter @Inject constructor() {
     companion object {
         const val SCHEME = "slipnet://"
         const val ENCRYPTED_SCHEME = "slipnet-enc://"
-        const val VERSION = "24"
+        const val VERSION = "27"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -40,6 +40,7 @@ class ConfigExporter @Inject constructor() {
         const val MODE_SOCKS5 = "socks5"
         const val MODE_VAYDNS = "vaydns"
         const val MODE_VAYDNS_SSH = "vaydns_ssh"
+        const val MODE_VLESS = "vless"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -109,6 +110,7 @@ class ConfigExporter @Inject constructor() {
             TunnelType.SOCKS5 -> MODE_SOCKS5
             TunnelType.VAYDNS -> MODE_VAYDNS
             TunnelType.VAYDNS_SSH -> MODE_VAYDNS_SSH
+            TunnelType.VLESS -> MODE_VLESS
         }
 
         // When hideResolvers is true, leave position 4 empty so old versions (v1-v16)
@@ -189,7 +191,28 @@ class ConfigExporter @Inject constructor() {
             // v23: Multi-resolver mode
             profile.resolverMode.value,
             // v24: Round-robin spread count
-            profile.rrSpreadCount.toString()
+            profile.rrSpreadCount.toString(),
+            // v25: VLESS + SNI fragmentation
+            sanitize(profile.vlessUuid),
+            sanitize(profile.vlessSecurity),
+            sanitize(profile.vlessTransport),
+            sanitize(profile.vlessWsPath),
+            sanitize(profile.cdnIp),
+            profile.cdnPort.toString(),
+            if (profile.sniFragmentEnabled) "1" else "0",
+            sanitize(profile.sniFragmentStrategy),
+            profile.sniFragmentDelayMs.toString(),
+            sanitize(profile.fakeSni),
+            // v26: DPI evasion options
+            if (profile.chPaddingEnabled) "1" else "0",
+            if (profile.wsHeaderObfuscation) "1" else "0",
+            if (profile.wsPaddingEnabled) "1" else "0",
+            // v27: SNI spoof TTL for fake/disorder strategies
+            profile.sniSpoofTtl.toString(),
+            // v27: Decoy hostname for `fake` strategy (empty = use built-in default)
+            sanitize(profile.fakeDecoyHost),
+            // v27: TCP MSS override on CDN socket (0 = auto, 40..1400 = explicit, <0 = force-disable)
+            profile.tcpMaxSeg.toString()
         ).joinToString(FIELD_DELIMITER)
     }
 

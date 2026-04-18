@@ -112,7 +112,47 @@ data class ServerProfile(
     // Multi-resolver mode: "fanout" (reliable, send to all) or "roundrobin" (fast, bandwidth aggregation)
     val resolverMode: ResolverMode = ResolverMode.ROUND_ROBIN,
     // Round-robin spread count: how many resolvers each query is sent to in fast mode (1=no duplicates, default 3)
-    val rrSpreadCount: Int = 3
+    val rrSpreadCount: Int = 3,
+    // VLESS fields (CDN-based VLESS tunnel with SNI fragmentation)
+    val vlessUuid: String = "",
+    val vlessSecurity: String = "tls",
+    val vlessTransport: String = "ws",
+    val vlessWsPath: String = "/",
+    // CDN IP to connect to (e.g. Cloudflare clean IP)
+    val cdnIp: String = "",
+    val cdnPort: Int = 443,
+    // SNI fragmentation for DPI bypass on TLS connections to CDN
+    val sniFragmentEnabled: Boolean = true,
+    // Fragment strategy. Default "micro" — strongest against reassembling
+    // DPI (1-byte TLS records + TCP_MAXSEG=70). Users on permissive networks
+    // can downgrade to "multi" / "sni_split" via the profile editor to save
+    // throughput.
+    val sniFragmentStrategy: String = "micro",
+    // Delay between fragments in milliseconds. 300ms is a safer default
+    // against reassembling DPI; drop to ~50–100 on cooperative networks.
+    val sniFragmentDelayMs: Int = 300,
+    // Low TTL applied to decoy packets in `fake` / `disorder` strategies.
+    // Must die between the local DPI and the CDN edge; 8 is the ByeDPI default.
+    val sniSpoofTtl: Int = 8,
+    // Decoy hostname written into the fake ClientHello in `fake` strategy.
+    // Empty = use the built-in default ("www.google.com"). Truncated/space-padded
+    // to match the real hostname length so record byte offsets stay identical.
+    val fakeDecoyHost: String = "",
+    // TCP MSS cap on the CDN socket. 0 = auto (applied only in `micro` / CH-padding).
+    // 40–1400 = explicit cap that forces sub-record TCP fragmentation across every
+    // TLS record, useful against DPI that inspects per-segment instead of reassembling.
+    // Trade-off: smaller MSS = more segments + slower post-handshake throughput.
+    val tcpMaxSeg: Int = 0,
+    // Fake SNI hostname (empty = use real domain)
+    val fakeSni: String = "",
+    // DPI evasion: pad ClientHello to ~517 bytes with TLS padding extension
+    val chPaddingEnabled: Boolean = false,
+    // DPI evasion: add browser-like headers and randomize order in WS upgrade request.
+    // Defaults on: cheap (a handful of bytes per connection) and useful against
+    // DPI that fingerprints by WS upgrade header shape.
+    val wsHeaderObfuscation: Boolean = true,
+    // DPI evasion: send random WS ping frames as cover traffic during relay
+    val wsPaddingEnabled: Boolean = false
 ) {
     val isExpired: Boolean get() = expirationDate > 0 && System.currentTimeMillis() > expirationDate
 }
@@ -148,7 +188,8 @@ enum class TunnelType(val value: String, val displayName: String) {
     NAIVE("naive", "NaiveProxy"),
     SOCKS5("socks5", "SOCKS5 Proxy"),
     VAYDNS("vaydns", "VayDNS"),
-    VAYDNS_SSH("vaydns_ssh", "VayDNS + SSH");
+    VAYDNS_SSH("vaydns_ssh", "VayDNS + SSH"),
+    VLESS("vless", "VLESS");
 
     companion object {
         fun fromValue(value: String): TunnelType {

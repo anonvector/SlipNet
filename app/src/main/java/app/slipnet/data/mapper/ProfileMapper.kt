@@ -95,7 +95,23 @@ class ProfileMapper @Inject constructor(
             sshWsCustomHost = entity.sshWsCustomHost,
             sshPayload = entity.sshPayload,
             resolverMode = ResolverMode.fromValue(entity.resolverMode),
-            rrSpreadCount = entity.rrSpreadCount
+            rrSpreadCount = entity.rrSpreadCount,
+            vlessUuid = entity.vlessUuid,
+            vlessSecurity = entity.vlessSecurity,
+            vlessTransport = entity.vlessTransport,
+            vlessWsPath = entity.vlessWsPath,
+            cdnIp = entity.cdnIp,
+            cdnPort = entity.cdnPort,
+            sniFragmentEnabled = entity.sniFragmentEnabled,
+            sniFragmentStrategy = entity.sniFragmentStrategy,
+            sniFragmentDelayMs = entity.sniFragmentDelayMs,
+            sniSpoofTtl = entity.sniSpoofTtl,
+            fakeDecoyHost = entity.fakeDecoyHost,
+            tcpMaxSeg = entity.tcpMaxSeg,
+            fakeSni = entity.fakeSni,
+            chPaddingEnabled = entity.chPaddingEnabled,
+            wsHeaderObfuscation = entity.wsHeaderObfuscation,
+            wsPaddingEnabled = entity.wsPaddingEnabled
         )
     }
 
@@ -170,7 +186,23 @@ class ProfileMapper @Inject constructor(
             sshWsCustomHost = profile.sshWsCustomHost,
             sshPayload = profile.sshPayload,
             resolverMode = profile.resolverMode.value,
-            rrSpreadCount = profile.rrSpreadCount
+            rrSpreadCount = profile.rrSpreadCount,
+            vlessUuid = profile.vlessUuid,
+            vlessSecurity = profile.vlessSecurity,
+            vlessTransport = profile.vlessTransport,
+            vlessWsPath = profile.vlessWsPath,
+            cdnIp = profile.cdnIp,
+            cdnPort = profile.cdnPort,
+            sniFragmentEnabled = profile.sniFragmentEnabled,
+            sniFragmentStrategy = profile.sniFragmentStrategy,
+            sniFragmentDelayMs = profile.sniFragmentDelayMs,
+            sniSpoofTtl = profile.sniSpoofTtl,
+            fakeDecoyHost = profile.fakeDecoyHost,
+            tcpMaxSeg = profile.tcpMaxSeg,
+            fakeSni = profile.fakeSni,
+            chPaddingEnabled = profile.chPaddingEnabled,
+            wsHeaderObfuscation = profile.wsHeaderObfuscation,
+            wsPaddingEnabled = profile.wsPaddingEnabled
         )
     }
 

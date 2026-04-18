@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -106,7 +108,7 @@ import app.slipnet.domain.model.SshAuthType
 import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.tunnel.DohServer
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun EditProfileScreen(
     profileId: Long?,
@@ -391,9 +393,11 @@ fun EditProfileScreen(
                                     }
                                 }
                                 if (uiState.resolversHidden) {
-                                    // Hidden resolver: show toggle for custom override
+                                    // Hidden resolver: show count and toggle for custom override
+                                    val resolverCount = uiState.defaultResolversList.size
                                     Text(
-                                        text = "DNS Resolver: Default (hidden)",
+                                        text = if (resolverCount > 0) "DNS Resolver: $resolverCount resolver${if (resolverCount != 1) "s" else ""} (hidden)"
+                                               else "DNS Resolver: Default (hidden)",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -485,43 +489,17 @@ fun EditProfileScreen(
                                         }
                                     }
                                 }
-                                // Multi-resolver mode (only shown when 2+ resolvers)
+                                // Multi-resolver mode + spread count (only shown when 2+ resolvers)
                                 // Check both visible resolvers and hidden defaults
                                 val hasMultipleResolvers = uiState.resolvers.contains(",") ||
                                     (!uiState.useCustomResolver && uiState.defaultResolversList.size >= 2)
                                 if (hasMultipleResolvers && !uiState.isSlipstreamBased) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 8.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "Resolver Mode",
-                                                style = MaterialTheme.typography.bodyLarge
-                                            )
-                                            Text(
-                                                text = if (uiState.resolverMode == ResolverMode.FANOUT)
-                                                    "Sends to all resolvers"
-                                                else
-                                                    "Distributes load across resolvers",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                        Row {
-                                            ResolverMode.entries.forEach { mode ->
-                                                FilterChip(
-                                                    selected = uiState.resolverMode == mode,
-                                                    onClick = { viewModel.updateResolverMode(mode) },
-                                                    label = { Text(mode.displayName) },
-                                                    modifier = Modifier.padding(start = 4.dp)
-                                                )
-                                            }
-                                        }
-                                    }
+                                    MultiResolverSettings(
+                                        resolverMode = uiState.resolverMode,
+                                        rrSpreadCount = uiState.rrSpreadCount,
+                                        onResolverModeChange = { viewModel.updateResolverMode(it) },
+                                        onSpreadCountChange = { viewModel.updateRrSpreadCount(it) }
+                                    )
                                 }
                             }
 
@@ -700,6 +678,37 @@ fun EditProfileScreen(
                             if (uiState.isVaydnsBased) {
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
+                                // Response Record Type selector
+                                Text(
+                                    text = "Response Record Type",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                                Text(
+                                    text = "Must match the server configuration. Try CNAME or A if TXT is blocked.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = 4.dp)
+                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    listOf("txt", "cname", "a", "aaaa", "mx", "ns", "srv", "null", "caa").forEach { type ->
+                                        if (uiState.vaydnsRecordType == type) {
+                                            Button(onClick = { }) {
+                                                Text(type.uppercase())
+                                            }
+                                        } else {
+                                            OutlinedButton(onClick = { viewModel.updateVaydnsRecordType(type) }) {
+                                                Text(type.uppercase())
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // QNAME Length
                                 var showQnameDialogLocked by remember { mutableStateOf(false) }
                                 Row(
@@ -836,6 +845,82 @@ fun EditProfileScreen(
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                     singleLine = true
                                 )
+
+                                // Advanced settings (hidden by default). Client ID Size stays locked.
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { viewModel.toggleVaydnsAdvanced() }
+                                        .padding(vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Advanced",
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    Icon(
+                                        Icons.Default.KeyboardArrowRight,
+                                        contentDescription = if (uiState.vaydnsAdvancedExpanded) "Collapse" else "Expand",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.rotate(if (uiState.vaydnsAdvancedExpanded) 90f else 0f)
+                                    )
+                                }
+
+                                AnimatedVisibility(visible = uiState.vaydnsAdvancedExpanded) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "Only change these if you know what you're doing. 0 = use default.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(bottom = 4.dp)
+                                        )
+                                        OutlinedTextField(
+                                            value = uiState.vaydnsIdleTimeout,
+                                            onValueChange = { viewModel.updateVaydnsIdleTimeout(it.filter { c -> c.isDigit() }.take(4)) },
+                                            label = { Text("Idle Timeout (seconds)") },
+                                            placeholder = { Text("10 (default)") },
+                                            supportingText = { Text("Session idle timeout.") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            singleLine = true
+                                        )
+                                        OutlinedTextField(
+                                            value = uiState.vaydnsKeepalive,
+                                            onValueChange = { viewModel.updateVaydnsKeepalive(it.filter { c -> c.isDigit() }.take(4)) },
+                                            label = { Text("Keepalive (seconds)") },
+                                            placeholder = { Text("2 (default)") },
+                                            supportingText = { Text("Keepalive interval.") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            singleLine = true
+                                        )
+                                        OutlinedTextField(
+                                            value = uiState.vaydnsUdpTimeout,
+                                            onValueChange = { viewModel.updateVaydnsUdpTimeout(it.filter { c -> c.isDigit() }.take(5)) },
+                                            label = { Text("UDP Timeout (ms)") },
+                                            placeholder = { Text("500 (default)") },
+                                            supportingText = { Text("Per-query UDP response timeout. Default: ~500ms.") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            singleLine = true
+                                        )
+                                        OutlinedTextField(
+                                            value = uiState.vaydnsMaxNumLabels,
+                                            onValueChange = { viewModel.updateVaydnsMaxNumLabels(it.filter { c -> c.isDigit() }.take(2)) },
+                                            label = { Text("Max Labels") },
+                                            placeholder = { Text("unlimited") },
+                                            supportingText = { Text("Max data labels in query name. 0 = unlimited.") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            singleLine = true
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -932,8 +1017,8 @@ fun EditProfileScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Domain / SSH Server (hidden for DOH, Snowflake, and SOCKS5 profiles)
-                if (!uiState.isDoh && !uiState.isSnowflake && !uiState.isSocks5) {
+                // Domain / SSH Server (hidden for DOH, Snowflake, SOCKS5, and VLESS profiles)
+                if (!uiState.isDoh && !uiState.isSnowflake && !uiState.isSocks5 && !uiState.isVless) {
                     OutlinedTextField(
                         value = uiState.domain,
                         onValueChange = { viewModel.updateDomain(it) },
@@ -1014,6 +1099,221 @@ fun EditProfileScreen(
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth()
                     )
+                }
+
+                // VLESS fields
+                if (uiState.isVless) {
+                    OutlinedTextField(
+                        value = uiState.vlessUuid,
+                        onValueChange = { viewModel.updateVlessUuid(it) },
+                        label = { Text("UUID") },
+                        placeholder = { Text("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx") },
+                        isError = uiState.vlessUuidError != null,
+                        supportingText = { Text(uiState.vlessUuidError ?: "VLESS user ID") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = uiState.domain,
+                        onValueChange = { viewModel.updateDomain(it) },
+                        label = { Text("Server Domain") },
+                        placeholder = { Text("your-domain.example.com") },
+                        isError = uiState.domainError != null,
+                        supportingText = { Text(uiState.domainError ?: "Your domain behind Cloudflare (used as TLS SNI and WS Host)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = uiState.cdnIp,
+                        onValueChange = { viewModel.updateCdnIp(it) },
+                        label = { Text("CDN IP") },
+                        placeholder = { Text("188.114.98.0") },
+                        isError = uiState.cdnIpError != null,
+                        supportingText = { Text(uiState.cdnIpError ?: "Cloudflare clean IP address") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    // Security + Transport selector
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("tls" to "TLS", "none" to "None").forEach { (value, label) ->
+                            FilterChip(
+                                selected = uiState.vlessSecurity == value,
+                                onClick = { viewModel.updateVlessSecurity(value) },
+                                label = { Text(label) }
+                            )
+                        }
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = uiState.cdnPort,
+                            onValueChange = { viewModel.updateCdnPort(it) },
+                            label = { Text("CDN Port") },
+                            placeholder = { Text("443") },
+                            isError = uiState.cdnPortError != null,
+                            supportingText = { Text(uiState.cdnPortError ?: "") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = uiState.vlessWsPath,
+                            onValueChange = { viewModel.updateVlessWsPath(it) },
+                            label = { Text("WS Path") },
+                            placeholder = { Text("/") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    // TLS DPI bypass options (only relevant when security=tls)
+                    if (uiState.vlessSecurity == "tls") {
+                        OutlinedTextField(
+                            value = uiState.fakeSni,
+                            onValueChange = { viewModel.updateFakeSni(it) },
+                            label = { Text("TLS SNI Override") },
+                            placeholder = { Text("") },
+                            supportingText = { Text("Replace SNI hostname in ClientHello (direct servers only — breaks CDN routing)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        // SNI Fragmentation section
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("SNI Fragmentation", style = MaterialTheme.typography.bodyLarge)
+                            Switch(
+                                checked = uiState.sniFragmentEnabled,
+                                onCheckedChange = { viewModel.updateSniFragmentEnabled(it) }
+                            )
+                        }
+
+                        if (uiState.sniFragmentEnabled) {
+                            // Strategies are ordered by effectiveness against modern
+                            // reassembling DPIs — chunkier and reorder-based modes tend
+                            // to outperform simple splits.
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                listOf(
+                                    "micro" to "Micro ★★",
+                                    "multi" to "Multi ★",
+                                    "disorder" to "Disorder ★",
+                                    "fake" to "Fake",
+                                    "sni_split" to "SNI Split",
+                                    "half" to "Half"
+                                ).forEach { (value, label) ->
+                                    FilterChip(
+                                        selected = uiState.sniFragmentStrategy == value,
+                                        onClick = { viewModel.updateSniFragmentStrategy(value) },
+                                        label = { Text(label) }
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "★★ = strongest (1 byte per TLS record + MSS cap, trades throughput). ★ = recommended against strict DPI.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            OutlinedTextField(
+                                value = uiState.sniFragmentDelayMs,
+                                onValueChange = { viewModel.updateSniFragmentDelayMs(it) },
+                                label = { Text("Fragment Delay (ms)") },
+                                placeholder = { Text("300") },
+                                supportingText = { Text("Delay between TLS fragments. 100ms works on most networks; try 300–500ms against strict reassembling DPI. In Micro mode this also controls per-record jitter.") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (uiState.sniFragmentStrategy == "fake" || uiState.sniFragmentStrategy == "disorder") {
+                                OutlinedTextField(
+                                    value = uiState.sniSpoofTtl,
+                                    onValueChange = { viewModel.updateSniSpoofTtl(it) },
+                                    label = { Text("Decoy TTL (hops)") },
+                                    placeholder = { Text("8") },
+                                    supportingText = { Text("Decoy packet must die between local DPI and CDN edge. Try 4–12 if connections fail; lower it if your CDN POP is close.") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            if (uiState.sniFragmentStrategy == "fake") {
+                                OutlinedTextField(
+                                    value = uiState.fakeDecoyHost,
+                                    onValueChange = { viewModel.updateFakeDecoyHost(it) },
+                                    label = { Text("Decoy Hostname") },
+                                    placeholder = { Text("www.google.com") },
+                                    supportingText = { Text("SNI written into the decoy ClientHello. Pick a host the local DPI is known to allow. Truncated or space-padded to the real hostname length. Empty = www.google.com.") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            OutlinedTextField(
+                                value = uiState.tcpMaxSeg,
+                                onValueChange = { viewModel.updateTcpMaxSeg(it) },
+                                label = { Text("Force TCP MSS (advanced)") },
+                                placeholder = { Text("0") },
+                                supportingText = { Text("Cap outgoing TCP segment size so each TLS record spills across multiple segments. 0 = auto (on only in Micro / CH-padding). 40–1400 = explicit override; 70 is a good starting point against per-segment DPI. Smaller = slower throughput.") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        // ClientHello padding
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("ClientHello Padding", style = MaterialTheme.typography.bodyLarge)
+                                Text("Micro-fragment each byte into its own TLS record (~6x wire expansion)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(
+                                checked = uiState.chPaddingEnabled,
+                                onCheckedChange = { viewModel.updateChPaddingEnabled(it) }
+                            )
+                        }
+
+                        // Header obfuscation (only for WS transport)
+                        if (uiState.vlessTransport == "ws") {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Header Obfuscation", style = MaterialTheme.typography.bodyLarge)
+                                    Text("Add browser headers and randomize order in WS upgrade", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Switch(
+                                    checked = uiState.wsHeaderObfuscation,
+                                    onCheckedChange = { viewModel.updateWsHeaderObfuscation(it) }
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Cover Traffic", style = MaterialTheme.typography.bodyLarge)
+                                    Text("Send random WS pings to mask traffic patterns", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Switch(
+                                    checked = uiState.wsPaddingEnabled,
+                                    onCheckedChange = { viewModel.updateWsPaddingEnabled(it) }
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // DoH Server URL (shown for DOH profiles)
@@ -1175,7 +1475,7 @@ fun EditProfileScreen(
 
                 // DNS Resolver
                 val showResolvers = !uiState.isSshOnly && !uiState.isDoh && !uiState.isSnowflake && !uiState.isNaiveBased &&
-                        !uiState.isSocks5 && !(uiState.isDnsttOrNoizOrVaydnsBased && uiState.dnsTransport == DnsTransport.DOH)
+                        !uiState.isSocks5 && !uiState.isVless && !(uiState.isDnsttOrNoizOrVaydnsBased && uiState.dnsTransport == DnsTransport.DOH)
                 if (showResolvers) {
                     if (globalResolverEnabled) {
                         Card(
@@ -1193,8 +1493,10 @@ fun EditProfileScreen(
                         }
                     }
                     if (uiState.resolversHidden) {
+                        val resolverCount = uiState.defaultResolversList.size
                         Text(
-                            text = "DNS Resolver: Default (hidden)",
+                            text = if (resolverCount > 0) "DNS Resolver: $resolverCount resolver${if (resolverCount != 1) "s" else ""} (hidden)"
+                                   else "DNS Resolver: Default (hidden)",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1567,7 +1869,8 @@ fun EditProfileScreen(
                                 value = uiState.vaydnsIdleTimeout,
                                 onValueChange = { viewModel.updateVaydnsIdleTimeout(it.filter { c -> c.isDigit() }.take(4)) },
                                 label = { Text("Idle Timeout (seconds)") },
-                                supportingText = { Text("Session idle timeout. Default: 10s (120s with DNSTT compat).") },
+                                placeholder = { Text("10 (default)") },
+                                supportingText = { Text("Session idle timeout.") },
                                 modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 singleLine = true
@@ -1576,7 +1879,8 @@ fun EditProfileScreen(
                                 value = uiState.vaydnsKeepalive,
                                 onValueChange = { viewModel.updateVaydnsKeepalive(it.filter { c -> c.isDigit() }.take(4)) },
                                 label = { Text("Keepalive (seconds)") },
-                                supportingText = { Text("Keepalive interval. Default: 2s (10s with DNSTT compat).") },
+                                placeholder = { Text("2 (default)") },
+                                supportingText = { Text("Keepalive interval.") },
                                 modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 singleLine = true
@@ -1585,6 +1889,7 @@ fun EditProfileScreen(
                                 value = uiState.vaydnsUdpTimeout,
                                 onValueChange = { viewModel.updateVaydnsUdpTimeout(it.filter { c -> c.isDigit() }.take(5)) },
                                 label = { Text("UDP Timeout (ms)") },
+                                placeholder = { Text("500 (default)") },
                                 supportingText = { Text("Per-query UDP response timeout. Default: ~500ms.") },
                                 modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -1594,16 +1899,8 @@ fun EditProfileScreen(
                                 value = uiState.vaydnsMaxNumLabels,
                                 onValueChange = { viewModel.updateVaydnsMaxNumLabels(it.filter { c -> c.isDigit() }.take(2)) },
                                 label = { Text("Max Labels") },
+                                placeholder = { Text("unlimited") },
                                 supportingText = { Text("Max data labels in query name. 0 = unlimited.") },
-                                modifier = Modifier.fillMaxWidth(),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                singleLine = true
-                            )
-                            OutlinedTextField(
-                                value = uiState.vaydnsClientIdSize,
-                                onValueChange = { viewModel.updateVaydnsClientIdSize(it.filter { c -> c.isDigit() }.take(1)) },
-                                label = { Text("Client ID Size (bytes)") },
-                                supportingText = { Text("Client ID size in bytes. Default: 2.") },
                                 modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 singleLine = true
