@@ -1616,9 +1616,31 @@ class ResolverScannerRepositoryImpl @Inject constructor(
 
                 val tunnelSetupMs = SystemClock.elapsedRealtime() - totalStart
                 val actualPort = SlipstreamBridge.getClientPort()
+                val isSshVariant = profile.tunnelType == TunnelType.SLIPSTREAM_SSH
 
-                // Fast scan mode: QUIC handshake proves tunnel connectivity
+                // Fast scan mode: QUIC handshake proves the tunnel transport is
+                // alive. For non-SSH Slipstream, additionally run a SOCKS5
+                // greet against the remote Dante so wrong user/pass credentials
+                // surface as a test failure (warmupDnsttTunnel is misnamed — it's
+                // a generic local-SOCKS5 → remote-Dante warmup, tunnel-agnostic).
+                // SSH variants can't have cheap credential verification; banner
+                // read in warmupSshTunnel-equivalent happens only in full mode.
                 if (!fullVerification) {
+                    if (!isSshVariant) {
+                        val remaining = (timeoutMs - tunnelSetupMs).coerceAtLeast(500)
+                        val socksOk = warmupDnsttTunnel(
+                            actualPort, remaining,
+                            profile.socksUsername, profile.socksPassword
+                        )
+                        if (!socksOk) {
+                            return@withTimeoutOrNull E2eTestResult(
+                                tunnelSetupMs = tunnelSetupMs,
+                                totalMs = SystemClock.elapsedRealtime() - totalStart,
+                                errorMessage = "SOCKS auth failed (wrong credentials?)",
+                                phase = E2eTestPhase.TUNNEL_SETUP
+                            )
+                        }
+                    }
                     return@withTimeoutOrNull E2eTestResult(
                         tunnelSetupMs = tunnelSetupMs,
                         totalMs = SystemClock.elapsedRealtime() - totalStart,
@@ -1628,7 +1650,6 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 }
 
                 // Phase 3: Full verification — HTTP/SSH through tunnel
-                val isSshVariant = profile.tunnelType == TunnelType.SLIPSTREAM_SSH
                 if (isSshVariant) {
                     onPhaseUpdate("SSH connect...")
                     val remaining = timeoutMs - tunnelSetupMs
@@ -1916,44 +1937,88 @@ class ResolverScannerRepositoryImpl @Inject constructor(
      * returns true prematurely. The TCP accept blocks until Noise finishes, then
      * the CONNECT request provides the actual tunnel proof.
      */
+    private enum class WarmupOutcome { OK, AUTH_FAILED, METHOD_MISMATCH, OTHER_ERROR }
+
     private fun warmupDnsttTunnel(
         dnsttPort: Int,
         timeoutMs: Long,
         username: String? = null,
         password: String? = null
     ): Boolean {
+        val hasAuth = !username.isNullOrBlank() && !password.isNullOrBlank()
+        if (hasAuth) {
+            // First pass: insist on user/pass (method 0x02 only). This forces
+            // the server to exercise the supplied credentials, catching the
+            // "server accepts either → wrong credentials falsely pass" case.
+            when (tryWarmupHandshake(dnsttPort, timeoutMs, offerUserPass = true, username, password)) {
+                WarmupOutcome.OK -> return true
+                WarmupOutcome.AUTH_FAILED -> return false // credentials rejected — fail, don't mask
+                WarmupOutcome.METHOD_MISMATCH, WarmupOutcome.OTHER_ERROR -> {
+                    // Server didn't offer user/pass — fall through to no-auth.
+                    // A genuinely no-auth-only Dante still passes this way.
+                }
+            }
+        }
+        return tryWarmupHandshake(dnsttPort, timeoutMs, offerUserPass = false, null, null) == WarmupOutcome.OK
+    }
+
+    /**
+     * One warmup attempt — opens a fresh socket and sends either a user/pass-only
+     * or a no-auth-only SOCKS5 greeting. Returns a tri-state outcome so the
+     * caller can decide whether to retry with the other method.
+     *
+     * Deliberately skips SOCKS5 CONNECT: the greet exchange alone round-trips
+     * through Noise + KCP + smux + remote Dante, which is sufficient proof of
+     * reachability without pulling remote DNS and public-internet into the
+     * dependency chain.
+     */
+    private fun tryWarmupHandshake(
+        dnsttPort: Int,
+        timeoutMs: Long,
+        offerUserPass: Boolean,
+        username: String?,
+        password: String?
+    ): WarmupOutcome {
         var sock: Socket? = null
         return try {
             val warmupTimeout = timeoutMs.toInt().coerceAtLeast(1)
             sock = Socket()
             sock.connect(java.net.InetSocketAddress("127.0.0.1", dnsttPort), warmupTimeout)
             sock.soTimeout = warmupTimeout
-
             val input = sock.getInputStream()
             val output = sock.getOutputStream()
 
-            // SOCKS5 auth with remote Dante (bytes travel through DNS tunnel).
-            // performSocksAuth handles both no-auth and username/password methods,
-            // exactly matching what performHttpThroughSocks does.
-            if (!performSocksAuth(input, output, username, password)) return false
-
-            // SOCKS5 CONNECT to example.com:80 — proves bidirectional tunnel data flow.
-            // VER=5, CMD=1(CONNECT), RSV=0, ATYP=3(domain), LEN, DOMAIN, PORT_HI, PORT_LO
-            val domain = "example.com"
-            val connectReq = byteArrayOf(
-                0x05, 0x01, 0x00, 0x03,
-                domain.length.toByte()
-            ) + domain.toByteArray() + byteArrayOf(0x00, 0x50) // port 80
-            output.write(connectReq)
+            // Offer exactly one method so the server's pick is unambiguous.
+            val method = if (offerUserPass) 0x02.toByte() else 0x00.toByte()
+            output.write(byteArrayOf(0x05, 0x01, method))
             output.flush()
 
-            // Read first 4 bytes of SOCKS5 CONNECT reply (VER REP RSV ATYP).
-            // Any valid reply (even REP != 0) proves data traveled through the tunnel and back.
-            val connectResp = ByteArray(4)
-            input.readFully(connectResp)
-            connectResp[0] == 0x05.toByte()
-        } catch (e: Exception) {
-            false
+            val greetResp = ByteArray(2)
+            input.readFully(greetResp)
+            if (greetResp[0] != 0x05.toByte()) return WarmupOutcome.OTHER_ERROR
+            val chosen = greetResp[1].toInt() and 0xFF
+            if (chosen == 0xFF) return WarmupOutcome.METHOD_MISMATCH
+            if (chosen != method.toInt()) return WarmupOutcome.OTHER_ERROR
+
+            if (offerUserPass) {
+                // RFC 1929 user/pass subnegotiation. Send credentials, read result.
+                val user = username!!.toByteArray()
+                val pass = password!!.toByteArray()
+                val authReq = ByteArray(3 + user.size + pass.size)
+                authReq[0] = 0x01
+                authReq[1] = user.size.toByte()
+                System.arraycopy(user, 0, authReq, 2, user.size)
+                authReq[2 + user.size] = pass.size.toByte()
+                System.arraycopy(pass, 0, authReq, 3 + user.size, pass.size)
+                output.write(authReq)
+                output.flush()
+                val authResp = ByteArray(2)
+                input.readFully(authResp)
+                if (authResp[1] != 0x00.toByte()) return WarmupOutcome.AUTH_FAILED
+            }
+            WarmupOutcome.OK
+        } catch (_: Exception) {
+            WarmupOutcome.OTHER_ERROR
         } finally {
             try { sock?.close() } catch (_: Exception) {}
         }
@@ -2129,8 +2194,12 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         password: String?
     ): Boolean {
         val hasAuth = !username.isNullOrBlank() && !password.isNullOrBlank()
+        // Offer both no-auth and user/pass when we have credentials, so the
+        // server picks whichever it supports — otherwise a credentialed
+        // profile pointed at a no-auth Dante (or vice versa) would fail
+        // the greeting with 0xFF even though the tunnel itself is fine.
         if (hasAuth) {
-            output.write(byteArrayOf(0x05, 0x01, 0x02))
+            output.write(byteArrayOf(0x05, 0x02, 0x00, 0x02))
         } else {
             output.write(byteArrayOf(0x05, 0x01, 0x00))
         }

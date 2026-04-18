@@ -64,6 +64,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="slipnet" />
                 <data android:scheme="slipnet-enc" />
+                <data android:scheme="vless" />
             </intent-filter>
             <!-- Opens app when user long-presses the Quick Settings tile -->
             <intent-filter>

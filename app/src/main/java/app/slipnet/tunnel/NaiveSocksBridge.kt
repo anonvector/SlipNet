@@ -13,6 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
@@ -60,6 +61,18 @@ object NaiveSocksBridge {
     private val running = AtomicBoolean(false)
     private val connectionThreads = CopyOnWriteArrayList<Thread>()
     private val remoteSockets = CopyOnWriteArrayList<Socket>()
+    private val tunnelTxBytes = AtomicLong(0)
+    private val tunnelRxBytes = AtomicLong(0)
+
+    /** Total bytes relayed client → upstream through this bridge. */
+    fun getTunnelTxBytes(): Long = tunnelTxBytes.get()
+    /** Total bytes relayed upstream → client through this bridge. */
+    fun getTunnelRxBytes(): Long = tunnelRxBytes.get()
+
+    fun resetTrafficStats() {
+        tunnelTxBytes.set(0)
+        tunnelRxBytes.set(0)
+    }
 
     // --- DNS Worker Pool ---
     private class DnsWorker(
@@ -703,7 +716,7 @@ object NaiveSocksBridge {
             remoteSocket.use { remote ->
                 val t1 = Thread({
                     try {
-                        copyStream(clientInput, remoteOutput, uploadLimiter)
+                        copyStream(clientInput, remoteOutput, uploadLimiter, tunnelTxBytes)
                     } catch (_: Exception) {
                     } finally {
                         try { remoteOutput.close() } catch (_: Exception) {}
@@ -713,7 +726,7 @@ object NaiveSocksBridge {
                 t1.start()
 
                 try {
-                    copyStream(remoteInput, clientOutput, downloadLimiter)
+                    copyStream(remoteInput, clientOutput, downloadLimiter, tunnelRxBytes)
                 } catch (_: Exception) {
                 } finally {
                     try { remote.close() } catch (_: Exception) {}
@@ -742,7 +755,7 @@ object NaiveSocksBridge {
 
             val t1 = Thread({
                 try {
-                    copyStream(clientInput, remoteOutput, uploadLimiter)
+                    copyStream(clientInput, remoteOutput, uploadLimiter, tunnelTxBytes)
                 } catch (_: Exception) {
                 } finally {
                     try { remoteOutput.close() } catch (_: Exception) {}
@@ -752,7 +765,7 @@ object NaiveSocksBridge {
             t1.start()
 
             try {
-                copyStream(remoteInput, clientOutput, downloadLimiter)
+                copyStream(remoteInput, clientOutput, downloadLimiter, tunnelRxBytes)
             } catch (_: Exception) {
             } finally {
                 try { remote.close() } catch (_: Exception) {}
@@ -1030,7 +1043,7 @@ object NaiveSocksBridge {
         }
     }
 
-    private fun copyStream(input: InputStream, output: OutputStream, limiter: RateLimiter? = null) {
+    private fun copyStream(input: InputStream, output: OutputStream, limiter: RateLimiter? = null, counter: AtomicLong? = null) {
         val buffered = BufferedOutputStream(output, BUFFER_SIZE)
         val buffer = ByteArray(BUFFER_SIZE)
         val maxRead = if (limiter != null && limiter.bytesPerSecond > 0) {
@@ -1041,6 +1054,7 @@ object NaiveSocksBridge {
             if (bytesRead == -1) break
             limiter?.acquire(bytesRead)
             buffered.write(buffer, 0, bytesRead)
+            counter?.addAndGet(bytesRead.toLong())
             if (bytesRead < maxRead || input.available() == 0) {
                 buffered.flush()
             }
