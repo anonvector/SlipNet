@@ -8,14 +8,14 @@ plugins {
     id("com.android.application")
     id("org.mozilla.rust-android-gradle.rust-android")
     kotlin("android")
-    kotlin("kapt")
+    id("com.google.devtools.ksp")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.dagger.hilt.android")
 }
 
 val minSdkVersion = 24
-val appVersionName = "2.5.0"
-val appVersionCode = 70
+val appVersionName = "2.5.2"
+val appVersionCode = 74
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -435,13 +435,13 @@ dependencies {
 
     // Hilt
     implementation("com.google.dagger:hilt-android:2.57.1")
-    kapt("com.google.dagger:hilt-compiler:2.57.1")
+    ksp("com.google.dagger:hilt-compiler:2.57.1")
     implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
 
     // Room
     implementation( "androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
-    kapt("androidx.room:room-compiler:2.8.4")
+    ksp("androidx.room:room-compiler:2.8.4")
 
     // DataStore
     implementation("androidx.datastore:datastore-preferences:1.2.0")
@@ -477,10 +477,7 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }
 
-kapt {
-    correctErrorTypes = true
+ksp {
     // Room schema export
-    arguments {
-        arg("room.schemaLocation", "$projectDir/schemas")
-    }
+    arg("room.schemaLocation", "$projectDir/schemas")
 }

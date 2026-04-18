@@ -196,6 +196,26 @@ data class EditProfileUiState(
     val resolverMode: ResolverMode = ResolverMode.ROUND_ROBIN,
     // Round-robin spread count (how many resolvers to send to in fast mode)
     val rrSpreadCount: Int = 3,
+    // VLESS fields
+    val vlessUuid: String = "",
+    val vlessUuidError: String? = null,
+    val vlessSecurity: String = "tls",
+    val vlessTransport: String = "ws",
+    val vlessWsPath: String = "/",
+    val cdnIp: String = "",
+    val cdnIpError: String? = null,
+    val cdnPort: String = "443",
+    val cdnPortError: String? = null,
+    val sniFragmentEnabled: Boolean = true,
+    val sniFragmentStrategy: String = "micro",
+    val sniFragmentDelayMs: String = "300",
+    val sniSpoofTtl: String = "8",
+    val fakeDecoyHost: String = "",
+    val tcpMaxSeg: String = "0",
+    val fakeSni: String = "",
+    val chPaddingEnabled: Boolean = false,
+    val wsHeaderObfuscation: Boolean = true,
+    val wsPaddingEnabled: Boolean = false,
 ) {
     val useSsh: Boolean
         get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.VAYDNS_SSH
@@ -239,8 +259,11 @@ data class EditProfileUiState(
     val isSocks5: Boolean
         get() = tunnelType == TunnelType.SOCKS5
 
+    val isVless: Boolean
+        get() = tunnelType == TunnelType.VLESS
+
     val showConnectionMethod: Boolean
-        get() = !isSshOnly && !isDoh && !isSnowflake && !isSocks5
+        get() = !isSshOnly && !isDoh && !isSnowflake && !isSocks5 && !isVless
 }
 
 @HiltViewModel
@@ -355,11 +378,11 @@ class EditProfileViewModel @Inject constructor(
                     vaydnsRecordType = profile.vaydnsRecordType,
                     vaydnsMaxQnameLen = profile.vaydnsMaxQnameLen,
                     vaydnsRps = if (profile.vaydnsRps > 0) profile.vaydnsRps.toInt().toString() else "0",
-                    vaydnsIdleTimeout = profile.vaydnsIdleTimeout.toString(),
-                    vaydnsKeepalive = profile.vaydnsKeepalive.toString(),
-                    vaydnsUdpTimeout = profile.vaydnsUdpTimeout.toString(),
-                    vaydnsMaxNumLabels = profile.vaydnsMaxNumLabels.toString(),
-                    vaydnsClientIdSize = profile.vaydnsClientIdSize.toString(),
+                    vaydnsIdleTimeout = if (profile.vaydnsIdleTimeout == 0) "" else profile.vaydnsIdleTimeout.toString(),
+                    vaydnsKeepalive = if (profile.vaydnsKeepalive == 0) "" else profile.vaydnsKeepalive.toString(),
+                    vaydnsUdpTimeout = if (profile.vaydnsUdpTimeout == 0) "" else profile.vaydnsUdpTimeout.toString(),
+                    vaydnsMaxNumLabels = if (profile.vaydnsMaxNumLabels == 0) "" else profile.vaydnsMaxNumLabels.toString(),
+                    vaydnsClientIdSize = if (profile.vaydnsClientIdSize == 0) "" else profile.vaydnsClientIdSize.toString(),
                     naivePort = profile.naivePort.toString(),
                     naiveUsername = profile.naiveUsername,
                     naivePassword = profile.naivePassword,
@@ -388,6 +411,22 @@ class EditProfileViewModel @Inject constructor(
                     sshPayload = profile.sshPayload,
                     resolverMode = profile.resolverMode,
                     rrSpreadCount = profile.rrSpreadCount,
+                    vlessUuid = profile.vlessUuid,
+                    vlessSecurity = profile.vlessSecurity,
+                    vlessTransport = profile.vlessTransport,
+                    vlessWsPath = profile.vlessWsPath,
+                    cdnIp = profile.cdnIp,
+                    cdnPort = profile.cdnPort.toString(),
+                    sniFragmentEnabled = profile.sniFragmentEnabled,
+                    sniFragmentStrategy = profile.sniFragmentStrategy,
+                    sniFragmentDelayMs = profile.sniFragmentDelayMs.toString(),
+                    sniSpoofTtl = profile.sniSpoofTtl.toString(),
+                    fakeDecoyHost = profile.fakeDecoyHost,
+                    tcpMaxSeg = profile.tcpMaxSeg.toString(),
+                    fakeSni = profile.fakeSni,
+                    chPaddingEnabled = profile.chPaddingEnabled,
+                    wsHeaderObfuscation = profile.wsHeaderObfuscation,
+                    wsPaddingEnabled = profile.wsPaddingEnabled,
                     isLoading = false
                 )
             } else {
@@ -571,6 +610,57 @@ class EditProfileViewModel @Inject constructor(
 
     fun updateSocks5ServerPort(port: String) {
         _uiState.value = _uiState.value.copy(socks5ServerPort = port, socks5ServerPortError = null)
+    }
+
+    // VLESS update functions
+    fun updateVlessUuid(uuid: String) {
+        _uiState.value = _uiState.value.copy(vlessUuid = uuid, vlessUuidError = null)
+    }
+    fun updateVlessSecurity(security: String) {
+        _uiState.value = _uiState.value.copy(vlessSecurity = security)
+    }
+    fun updateVlessTransport(transport: String) {
+        _uiState.value = _uiState.value.copy(vlessTransport = transport)
+    }
+    fun updateVlessWsPath(path: String) {
+        _uiState.value = _uiState.value.copy(vlessWsPath = path)
+    }
+    fun updateCdnIp(ip: String) {
+        _uiState.value = _uiState.value.copy(cdnIp = ip, cdnIpError = null)
+    }
+    fun updateCdnPort(port: String) {
+        _uiState.value = _uiState.value.copy(cdnPort = port, cdnPortError = null)
+    }
+    fun updateSniFragmentEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(sniFragmentEnabled = enabled)
+    }
+    fun updateSniFragmentStrategy(strategy: String) {
+        _uiState.value = _uiState.value.copy(sniFragmentStrategy = strategy)
+    }
+    fun updateSniFragmentDelayMs(delay: String) {
+        _uiState.value = _uiState.value.copy(sniFragmentDelayMs = delay)
+    }
+
+    fun updateSniSpoofTtl(ttl: String) {
+        _uiState.value = _uiState.value.copy(sniSpoofTtl = ttl)
+    }
+    fun updateFakeDecoyHost(host: String) {
+        _uiState.value = _uiState.value.copy(fakeDecoyHost = host)
+    }
+    fun updateTcpMaxSeg(mss: String) {
+        _uiState.value = _uiState.value.copy(tcpMaxSeg = mss)
+    }
+    fun updateFakeSni(sni: String) {
+        _uiState.value = _uiState.value.copy(fakeSni = sni)
+    }
+    fun updateChPaddingEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(chPaddingEnabled = enabled)
+    }
+    fun updateWsHeaderObfuscation(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(wsHeaderObfuscation = enabled)
+    }
+    fun updateWsPaddingEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(wsPaddingEnabled = enabled)
     }
 
     fun updateDohUrl(url: String) {
@@ -1195,10 +1285,11 @@ class EditProfileViewModel @Inject constructor(
             hasError = true
         }
 
-        if (state.tunnelType != TunnelType.DOH && state.tunnelType != TunnelType.SNOWFLAKE && state.domain.isBlank()) {
+        val skipDomain = state.tunnelType == TunnelType.DOH || state.tunnelType == TunnelType.SNOWFLAKE || state.isVless
+        if (!skipDomain && state.domain.isBlank()) {
             _uiState.value = _uiState.value.copy(domainError = "Domain is required")
             hasError = true
-        } else if (state.tunnelType != TunnelType.DOH && state.tunnelType != TunnelType.SNOWFLAKE && state.domain.isNotBlank()) {
+        } else if (!skipDomain && state.domain.isNotBlank()) {
             val domainError = validateDomain(state.domain.trim(), state.tunnelType)
             if (domainError != null) {
                 _uiState.value = _uiState.value.copy(domainError = domainError)
@@ -1222,7 +1313,7 @@ class EditProfileViewModel @Inject constructor(
         // Resolver validation — skip when saving for scanner since the whole point
         // is to find resolvers. Also skip for tunnel types that don't need resolvers.
         val skipResolvers = forScanner || state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
-                state.tunnelType == TunnelType.SNOWFLAKE || state.isNaiveBased || state.isSocks5 ||
+                state.tunnelType == TunnelType.SNOWFLAKE || state.isNaiveBased || state.isSocks5 || state.isVless ||
                 (state.isDnsttOrNoizOrVaydnsBased && state.dnsTransport == DnsTransport.DOH) ||
                 (state.resolversHidden && !state.useCustomResolver)
         if (!skipResolvers) {
@@ -1260,6 +1351,29 @@ class EditProfileViewModel @Inject constructor(
             val port = state.socks5ServerPort.toIntOrNull()
             if (port == null || port !in 1..65535) {
                 _uiState.value = _uiState.value.copy(socks5ServerPortError = "Port must be between 1 and 65535")
+                hasError = true
+            }
+        }
+
+        // VLESS validation
+        if (state.isVless) {
+            if (state.vlessUuid.isBlank()) {
+                _uiState.value = _uiState.value.copy(vlessUuidError = "VLESS UUID is required")
+                hasError = true
+            } else {
+                val hex = state.vlessUuid.trim().replace("-", "")
+                if (hex.length != 32 || !hex.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+                    _uiState.value = _uiState.value.copy(vlessUuidError = "Invalid UUID format")
+                    hasError = true
+                }
+            }
+            if (state.cdnIp.isBlank()) {
+                _uiState.value = _uiState.value.copy(cdnIpError = "CDN IP is required")
+                hasError = true
+            }
+            val cdnPort = state.cdnPort.toIntOrNull()
+            if (cdnPort == null || cdnPort !in 1..65535) {
+                _uiState.value = _uiState.value.copy(cdnPortError = "Port must be between 1 and 65535")
                 hasError = true
             }
         }
@@ -1402,7 +1516,30 @@ class EditProfileViewModel @Inject constructor(
                     sshWsCustomHost = if (state.isSshOnly && state.sshTransport == SshTransport.WEBSOCKET) state.sshWsCustomHost.trim() else "",
                     sshPayload = if (state.isSshOnly && state.sshTransport == SshTransport.DIRECT) state.sshPayload else "",
                     resolverMode = state.resolverMode,
-                    rrSpreadCount = state.rrSpreadCount
+                    rrSpreadCount = state.rrSpreadCount,
+                    vlessUuid = if (state.isVless) state.vlessUuid.trim() else "",
+                    vlessSecurity = if (state.isVless) state.vlessSecurity else "tls",
+                    vlessTransport = if (state.isVless) state.vlessTransport else "ws",
+                    vlessWsPath = if (state.isVless) state.vlessWsPath.ifBlank { "/" } else "/",
+                    cdnIp = if (state.isVless) state.cdnIp.trim() else "",
+                    cdnPort = if (state.isVless) (state.cdnPort.toIntOrNull() ?: 443) else 443,
+                    sniFragmentEnabled = if (state.isVless) state.sniFragmentEnabled else true,
+                    sniFragmentStrategy = if (state.isVless) state.sniFragmentStrategy else "sni_split",
+                    sniFragmentDelayMs = if (state.isVless) (state.sniFragmentDelayMs.toIntOrNull() ?: 300) else 300,
+                    sniSpoofTtl = if (state.isVless) (state.sniSpoofTtl.toIntOrNull()?.coerceIn(1, 64) ?: 8) else 8,
+                    fakeDecoyHost = if (state.isVless) state.fakeDecoyHost.trim() else "",
+                    tcpMaxSeg = if (state.isVless) {
+                        val raw = state.tcpMaxSeg.toIntOrNull() ?: 0
+                        when {
+                            raw == 0 -> 0
+                            raw < 0 -> -1
+                            else -> raw.coerceIn(40, 1400)
+                        }
+                    } else 0,
+                    fakeSni = if (state.isVless) state.fakeSni.trim() else "",
+                    chPaddingEnabled = if (state.isVless) state.chPaddingEnabled else false,
+                    wsHeaderObfuscation = if (state.isVless) state.wsHeaderObfuscation else false,
+                    wsPaddingEnabled = if (state.isVless) state.wsPaddingEnabled else false
                 )
 
                 val savedId = saveProfileUseCase(profile)

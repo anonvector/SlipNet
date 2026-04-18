@@ -40,6 +40,7 @@ import app.slipnet.tunnel.RateLimiter
 import app.slipnet.tunnel.SlipstreamBridge
 import app.slipnet.tunnel.SlipstreamSocksBridge
 import app.slipnet.tunnel.Socks5ProxyBridge
+import app.slipnet.tunnel.VlessBridge
 import app.slipnet.tunnel.SnowflakeBridge
 import app.slipnet.tunnel.SshTunnelBridge
 import app.slipnet.tunnel.TorSocksBridge
@@ -555,6 +556,7 @@ class SlipNetVpnService : VpnService() {
                     TunnelType.VAYDNS -> connectVaydns(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
                     TunnelType.VAYDNS_SSH -> connectVaydnsSsh(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
                     TunnelType.SOCKS5 -> connectSocks5(profile, dnsServer, remoteDns)
+                    TunnelType.VLESS -> connectVless(profile, dnsServer)
                 }
 
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1202,6 +1204,7 @@ class SlipNetVpnService : VpnService() {
             }
             TunnelType.DOH -> DohBridge.stop()
             TunnelType.SOCKS5 -> Socks5ProxyBridge.stopAll()
+            TunnelType.VLESS -> VlessBridge.stop()
             else -> {}
         }
     }
@@ -2972,6 +2975,156 @@ class SlipNetVpnService : VpnService() {
         finishConnection()
     }
 
+    /**
+     * Connect using VLESS tunnel type with SNI fragmentation.
+     * Traffic flow:
+     * App -> TUN -> hev-socks5-tunnel -> VlessBridge SOCKS5 (proxyPort)
+     *   -> SniFragmentForwarder (proxyPort+1) -> CDN IP:443
+     *     -> TLS (fragmented ClientHello) -> WebSocket -> VLESS -> CDN -> Server
+     */
+    private suspend fun connectVless(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String) {
+        val proxyPort = preferencesDataStore.proxyListenPort.first()
+        val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        vpnRepository.setCurrentTunnelType(app.slipnet.domain.model.TunnelType.VLESS)
+
+        if (isProxyOnly) {
+            VlessBridge.debugLogging = preferencesDataStore.debugLogging.first()
+            val bridgeResult = withContext(Dispatchers.IO) {
+                VlessBridge.start(
+                    listenPort = proxyPort,
+                    listenHost = proxyHost,
+                    cdnIp = profile.cdnIp,
+                    cdnPort = profile.cdnPort,
+                    serverDomain = profile.domain,
+                    vlessUuid = profile.vlessUuid,
+                    security = profile.vlessSecurity,
+                    transport = profile.vlessTransport,
+                    wsPath = profile.vlessWsPath,
+                    fragmentEnabled = profile.sniFragmentEnabled,
+                    fragmentStrategy = profile.sniFragmentStrategy,
+                    fragmentDelayMs = profile.sniFragmentDelayMs,
+                    sniSpoofTtl = profile.sniSpoofTtl,
+                    fakeDecoyHost = profile.fakeDecoyHost,
+                    tcpMaxSeg = profile.tcpMaxSeg,
+                    fakeSni = profile.fakeSni,
+                    chPaddingEnabled = profile.chPaddingEnabled,
+                    wsHeaderObfuscation = profile.wsHeaderObfuscation,
+                    wsPaddingEnabled = profile.wsPaddingEnabled
+                )
+            }
+            if (bridgeResult.isFailure) {
+                connectionManager.onVpnError(bridgeResult.exceptionOrNull()?.message ?: "Failed to start VLESS bridge")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+
+            if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 100)) {
+                connectionManager.onVpnError("VLESS bridge failed to start")
+                VlessBridge.stop()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+
+            val probeResult = withContext(Dispatchers.IO) { VlessBridge.probe() }
+            if (probeResult.isFailure) {
+                val reason = probeResult.exceptionOrNull()?.message ?: "unknown"
+                connectionManager.onVpnError("VLESS setup check failed: $reason. Verify CDN IP, domain, and WS path.")
+                VlessBridge.stop()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+
+            vpnRepository.setProxyConnected(profile)
+            Log.i(TAG, "Proxy-only mode: VLESS bridge ready on $proxyHost:$proxyPort")
+            finishConnection()
+            return
+        }
+
+        // Step 1: Establish VPN interface
+        vpnInterface = establishVpnInterface(dnsServer)
+        if (vpnInterface == null) {
+            connectionManager.onVpnError("Failed to establish VPN interface")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        delay(200)
+
+        // Step 2: Start VLESS bridge
+        VlessBridge.debugLogging = preferencesDataStore.debugLogging.first()
+        val bridgeResult = withContext(Dispatchers.IO) {
+            VlessBridge.start(
+                listenPort = proxyPort,
+                listenHost = proxyHost,
+                cdnIp = profile.cdnIp,
+                cdnPort = profile.cdnPort,
+                serverDomain = profile.domain,
+                vlessUuid = profile.vlessUuid,
+                transport = profile.vlessTransport,
+                wsPath = profile.vlessWsPath,
+                fragmentEnabled = profile.sniFragmentEnabled,
+                fragmentStrategy = profile.sniFragmentStrategy,
+                fragmentDelayMs = profile.sniFragmentDelayMs,
+                sniSpoofTtl = profile.sniSpoofTtl,
+                fakeDecoyHost = profile.fakeDecoyHost,
+                tcpMaxSeg = profile.tcpMaxSeg,
+                fakeSni = profile.fakeSni,
+                chPaddingEnabled = profile.chPaddingEnabled,
+                wsHeaderObfuscation = profile.wsHeaderObfuscation,
+                wsPaddingEnabled = profile.wsPaddingEnabled
+            )
+        }
+        if (bridgeResult.isFailure) {
+            connectionManager.onVpnError(bridgeResult.exceptionOrNull()?.message ?: "Failed to start VLESS bridge")
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 100)) {
+            connectionManager.onVpnError("VLESS bridge failed to start")
+            VlessBridge.stop()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        val probeResult = withContext(Dispatchers.IO) { VlessBridge.probe() }
+        if (probeResult.isFailure) {
+            val reason = probeResult.exceptionOrNull()?.message ?: "unknown"
+            connectionManager.onVpnError("VLESS setup check failed: $reason. Verify CDN IP, domain, and WS path.")
+            VlessBridge.stop()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Step 3: Start tun2socks
+        val tun2socksResult = vpnRepository.startTun2Socks(profile, vpnInterface!!)
+        if (tun2socksResult.isFailure) {
+            connectionManager.onVpnError(tun2socksResult.exceptionOrNull()?.message ?: "Failed to start tunnel")
+            VlessBridge.stop()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        Log.d(TAG, "VLESS tunnel started")
+        finishConnection()
+    }
+
     private suspend fun connectSnowflakeSmart(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String) {
         val proxyPort = preferencesDataStore.proxyListenPort.first()
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
@@ -3100,6 +3253,7 @@ class SlipNetVpnService : VpnService() {
             TunnelType.NAIVE -> NaiveBridge.isRunning()
             TunnelType.SNOWFLAKE -> SnowflakeBridge.isRunning()
             TunnelType.SOCKS5 -> Socks5ProxyBridge.isRunning()
+            TunnelType.VLESS -> VlessBridge.isRunning()
         }
         Log.e(TAG, "Proxy failed to become ready on port $port, nativeRunning=$nativeRunning")
 
@@ -3344,6 +3498,7 @@ class SlipNetVpnService : VpnService() {
                             Socks5ProxyBridge.getInstance("chain-socks5-$it")?.isRunning() == true
                         }
                     }
+                    TunnelType.VLESS -> VlessBridge.isRunning()
                 }
 
                 if (!nativeRunning) {
@@ -4611,6 +4766,10 @@ class SlipNetVpnService : VpnService() {
                 Log.d(TAG, "Stopping SOCKS5 proxy bridge")
                 Socks5ProxyBridge.stop()
             }
+            TunnelType.VLESS -> {
+                Log.d(TAG, "Stopping VLESS bridge")
+                VlessBridge.stop()
+            }
         }
     }
 
@@ -4633,6 +4792,7 @@ class SlipNetVpnService : VpnService() {
             TunnelType.NAIVE -> { /* NaiveProxy standalone: no bridge reference to clear */ }
             TunnelType.SNOWFLAKE -> { /* Snowflake: no bridge reference to clear */ }
             TunnelType.SOCKS5 -> { /* SOCKS5: no bridge reference to clear */ }
+            TunnelType.VLESS -> { /* VLESS: no VpnService reference to clear */ }
         }
     }
 
@@ -4661,6 +4821,7 @@ class SlipNetVpnService : VpnService() {
             TunnelType.NAIVE -> NaiveBridge.isClientHealthy() && NaiveSocksBridge.isClientHealthy()
             TunnelType.SNOWFLAKE -> SnowflakeBridge.isClientHealthy() && TorSocksBridge.isClientHealthy()
             TunnelType.SOCKS5 -> Socks5ProxyBridge.isRunning() && Socks5ProxyBridge.isClientHealthy()
+            TunnelType.VLESS -> VlessBridge.isRunning() && VlessBridge.isClientHealthy()
         }
     }
 
@@ -4706,7 +4867,8 @@ class SlipNetVpnService : VpnService() {
                 currentTunnelType == TunnelType.NAIVE_SSH ||
                 currentTunnelType == TunnelType.NAIVE ||
                 currentTunnelType == TunnelType.SNOWFLAKE ||
-                currentTunnelType == TunnelType.SOCKS5
+                currentTunnelType == TunnelType.SOCKS5 ||
+                currentTunnelType == TunnelType.VLESS
 
         val splitEnabled = preferencesDataStore.splitTunnelingEnabled.first()
         val splitMode = preferencesDataStore.splitTunnelingMode.first()

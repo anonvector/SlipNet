@@ -106,6 +106,7 @@ class ConfigImporter @Inject constructor() {
         private const val MODE_SOCKS5 = "socks5"
         private const val MODE_VAYDNS = "vaydns"
         private const val MODE_VAYDNS_SSH = "vaydns_ssh"
+        private const val MODE_VLESS = "vless"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -127,7 +128,8 @@ class ConfigImporter @Inject constructor() {
         private const val V16_FIELD_COUNT = 36
         private const val V17_FIELD_COUNT = 38
         private const val V18_FIELD_COUNT = 41
-        private const val CURRENT_MAX_VERSION = 24
+        private const val CURRENT_MAX_VERSION = 26
+        private const val VLESS_SCHEME = "vless://"
     }
 
     fun parseAndImport(input: String, localDeviceId: String = ""): ImportResult {
@@ -142,6 +144,17 @@ class ConfigImporter @Inject constructor() {
 
         for ((index, line) in lines.withIndex()) {
             val trimmedLine = line.trim()
+
+            // Handle standard vless:// URIs
+            if (trimmedLine.startsWith(VLESS_SCHEME, ignoreCase = true)) {
+                val result = parseVlessUri(trimmedLine, index + 1)
+                when (result) {
+                    is ProfileParseResult.Success -> profiles.add(result.profile)
+                    is ProfileParseResult.Warning -> warnings.add(result.message)
+                    is ProfileParseResult.Error -> warnings.add(result.message)
+                }
+                continue
+            }
 
             if (trimmedLine.startsWith(ENCRYPTED_SCHEME, ignoreCase = true)) {
                 val encoded = trimmedLine.substring(ENCRYPTED_SCHEME.length)
@@ -261,12 +274,15 @@ class ConfigImporter @Inject constructor() {
             "22" -> parseProfileV22(fields, lineNum)
             "23" -> parseProfileV23(fields, lineNum)
             "24" -> parseProfileV24(fields, lineNum)
+            "25" -> parseProfileV25(fields, lineNum)
+            "26" -> parseProfileV26(fields, lineNum)
+            "27" -> parseProfileV27(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 24) {
-                    parseProfileV24(fields, lineNum)
+                if (versionNum != null && versionNum > 27) {
+                    parseProfileV27(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -353,6 +369,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -381,7 +398,7 @@ class ConfigImporter @Inject constructor() {
 
         // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5 && tunnelType != TunnelType.VLESS) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -439,6 +456,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -470,7 +488,7 @@ class ConfigImporter @Inject constructor() {
 
         // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5 && tunnelType != TunnelType.VLESS) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -530,6 +548,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -563,7 +582,7 @@ class ConfigImporter @Inject constructor() {
 
         // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5 && tunnelType != TunnelType.VLESS) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -624,6 +643,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -658,7 +678,7 @@ class ConfigImporter @Inject constructor() {
 
         // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5 && tunnelType != TunnelType.VLESS) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -730,6 +750,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -764,7 +785,7 @@ class ConfigImporter @Inject constructor() {
 
         // SSH-only profiles don't need resolvers
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5 && tunnelType != TunnelType.VLESS) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -836,6 +857,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -868,7 +890,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SOCKS5 && tunnelType != TunnelType.VLESS) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -938,6 +960,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -971,7 +994,7 @@ class ConfigImporter @Inject constructor() {
         }
 
         val resolvers = parseResolvers(resolversStr)
-        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SNOWFLAKE && tunnelType != TunnelType.SOCKS5) {
+        if (resolvers.isEmpty() && tunnelType != TunnelType.SSH && tunnelType != TunnelType.DOH && tunnelType != TunnelType.SNOWFLAKE && tunnelType != TunnelType.SOCKS5 && tunnelType != TunnelType.VLESS) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
         }
 
@@ -1051,6 +1074,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1088,6 +1112,7 @@ class ConfigImporter @Inject constructor() {
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
+                tunnelType == TunnelType.VLESS ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1185,6 +1210,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1229,6 +1255,7 @@ class ConfigImporter @Inject constructor() {
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
+                tunnelType == TunnelType.VLESS ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1321,6 +1348,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1370,6 +1398,7 @@ class ConfigImporter @Inject constructor() {
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
+                tunnelType == TunnelType.VLESS ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1464,6 +1493,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1514,6 +1544,7 @@ class ConfigImporter @Inject constructor() {
         val isDnsttBased = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
+                tunnelType == TunnelType.VLESS ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1608,6 +1639,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1665,6 +1697,7 @@ class ConfigImporter @Inject constructor() {
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
                 tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NAIVE ||
+                tunnelType == TunnelType.VLESS ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1769,6 +1802,7 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_VLESS -> TunnelType.VLESS
 
             else -> {
                 return ProfileParseResult.Warning("Line $lineNum: Unsupported tunnel type '$tunnelTypeStr', skipping")
@@ -1827,6 +1861,7 @@ class ConfigImporter @Inject constructor() {
         val skipResolvers = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DOH ||
                 tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
                 tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NAIVE ||
+                tunnelType == TunnelType.VLESS ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -2113,6 +2148,242 @@ class ConfigImporter @Inject constructor() {
             rrSpreadCount = rrSpreadCount
         )
 
+        return ProfileParseResult.Success(profile)
+    }
+
+    /**
+     * Parse a standard VLESS URI:
+     * vless://uuid@server:port?type=ws&security=tls&path=/ws&host=domain&sni=domain&fp=chrome#name
+     *
+     * Supported query params:
+     * - type: transport type (ws, tcp, grpc) — only ws is supported
+     * - security: tls, none
+     * - path: WebSocket path
+     * - host: WebSocket Host header / TLS SNI
+     * - sni: TLS SNI (overrides host for SNI)
+     * - headerType: (ignored)
+     * - fp: fingerprint (ignored)
+     * - fragment: comma-separated fragment settings (e.g., "100,sni_split")
+     * - cdn: CDN IP override
+     * - cdn-port: CDN port override
+     *
+     * Fragment after # is the profile name.
+     */
+    private fun parseVlessUri(uri: String, lineNum: Int): ProfileParseResult {
+        try {
+            // Strip scheme
+            val withoutScheme = uri.removePrefix("vless://").removePrefix("VLESS://")
+
+            // Split fragment (profile name)
+            val (mainPart, profileName) = if ('#' in withoutScheme) {
+                val idx = withoutScheme.indexOf('#')
+                withoutScheme.substring(0, idx) to java.net.URLDecoder.decode(withoutScheme.substring(idx + 1), "UTF-8")
+            } else {
+                withoutScheme to "VLESS"
+            }
+
+            // Split userinfo@host:port?params
+            val atIdx = mainPart.indexOf('@')
+            if (atIdx < 0) return ProfileParseResult.Error("Line $lineNum: Invalid VLESS URI — missing UUID")
+            val uuid = mainPart.substring(0, atIdx)
+
+            val afterAt = mainPart.substring(atIdx + 1)
+            val queryIdx = afterAt.indexOf('?')
+            val hostPort = if (queryIdx >= 0) afterAt.substring(0, queryIdx) else afterAt
+            val queryString = if (queryIdx >= 0) afterAt.substring(queryIdx + 1) else ""
+
+            // Parse host:port (handle bracketed IPv6 like [::1]:443)
+            val server: String
+            val port: Int
+            if (hostPort.startsWith('[')) {
+                val closeBracket = hostPort.indexOf(']')
+                if (closeBracket < 0) return ProfileParseResult.Error("Line $lineNum: Invalid IPv6 address in VLESS URI")
+                server = hostPort.substring(1, closeBracket)
+                port = if (closeBracket + 1 < hostPort.length && hostPort[closeBracket + 1] == ':') {
+                    hostPort.substring(closeBracket + 2).toIntOrNull() ?: 443
+                } else 443
+            } else {
+                val colonIdx = hostPort.lastIndexOf(':')
+                if (colonIdx > 0 && hostPort.indexOf(':') == colonIdx) {
+                    // Single colon — host:port
+                    server = hostPort.substring(0, colonIdx)
+                    port = hostPort.substring(colonIdx + 1).toIntOrNull() ?: 443
+                } else {
+                    server = hostPort
+                    port = 443
+                }
+            }
+
+            // Parse query params
+            val params = mutableMapOf<String, String>()
+            if (queryString.isNotBlank()) {
+                queryString.split('&').forEach { param ->
+                    val eqIdx = param.indexOf('=')
+                    if (eqIdx > 0) {
+                        val key = param.substring(0, eqIdx)
+                        val value = java.net.URLDecoder.decode(param.substring(eqIdx + 1), "UTF-8")
+                        params[key] = value
+                    }
+                }
+            }
+
+            val transport = params["type"] ?: "tcp"
+            val security = params["security"] ?: "tls"
+            val wsPath = params["path"] ?: "/"
+            val wsHost = params["host"] ?: server
+            val sni = params["sni"] ?: wsHost
+            val cdnIp = params["cdn"] ?: server
+            val cdnPort = params["cdn-port"]?.toIntOrNull() ?: port
+
+            // Fragment settings from query params (optional). Default ON with
+            // the strong DPI-evasion preset so pasted VLESS URIs are usable on
+            // restrictive networks out of the box. Users can disable or
+            // downgrade in the editor. The URI can override each field
+            // explicitly via `fragment=<delay>,<strategy>`.
+            val fragmentParam = params["fragment"]
+            val fragmentEnabled = if (fragmentParam != null) fragmentParam.isNotBlank() else true
+            val fragmentParts = (fragmentParam ?: "").split(',')
+            val fragmentDelay = fragmentParts.getOrNull(0)?.toIntOrNull() ?: 300
+            val fragmentStrategy = fragmentParts.getOrNull(1)?.takeIf { it in listOf("sni_split", "half", "multi", "micro", "fake", "disorder") } ?: "micro"
+
+            val normalizedTransport = when (transport) {
+                "ws", "websocket" -> "ws"
+                "tcp", "raw" -> "tcp"
+                else -> return ProfileParseResult.Warning("Line $lineNum: Only VLESS over WebSocket is supported — '$transport' transport is not available")
+            }
+
+            // Only WebSocket transport is supported.
+            if (normalizedTransport != "ws") {
+                return ProfileParseResult.Warning("Line $lineNum: Only VLESS over WebSocket is supported — this config uses '$transport' transport")
+            }
+
+            val normalizedSecurity = when (security) {
+                "tls", "reality" -> "tls"
+                "none", "" -> "none"
+                else -> "tls"
+            }
+
+            // Validate UUID
+            val hexUuid = uuid.replace("-", "")
+            if (hexUuid.length != 32 || !hexUuid.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+                return ProfileParseResult.Error("Line $lineNum: Invalid VLESS UUID")
+            }
+
+            // domain = CDN routing domain (WS Host header + default TLS SNI)
+            // fakeSni = TLS SNI override for DPI evasion (sent in fragmented ClientHello)
+            val profile = ServerProfile(
+                name = profileName,
+                domain = wsHost,
+                tunnelType = TunnelType.VLESS,
+                vlessUuid = uuid,
+                vlessSecurity = normalizedSecurity,
+                vlessTransport = normalizedTransport,
+                vlessWsPath = wsPath,
+                cdnIp = cdnIp,
+                cdnPort = cdnPort,
+                sniFragmentEnabled = fragmentEnabled,
+                sniFragmentStrategy = fragmentStrategy,
+                sniFragmentDelayMs = fragmentDelay,
+                fakeSni = if (sni != wsHost) sni else ""
+            )
+
+            return ProfileParseResult.Success(profile)
+        } catch (e: Exception) {
+            return ProfileParseResult.Error("Line $lineNum: Failed to parse VLESS URI: ${e.message}")
+        }
+    }
+
+    private fun parseProfileV25(fields: List<String>, lineNum: Int): ProfileParseResult {
+        // v25 extends v24 with VLESS + SNI fragmentation fields
+        val baseResult = parseProfileV24(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // VLESS UUID (position 62)
+        val vlessUuid = if (fields.size > 62) fields[62] else ""
+        // VLESS security (position 63)
+        val vlessSecurity = if (fields.size > 63 && fields[63].isNotBlank()) fields[63] else "tls"
+        // VLESS transport (position 64)
+        val vlessTransport = if (fields.size > 64 && fields[64].isNotBlank()) fields[64] else "ws"
+        // VLESS WebSocket path (position 65)
+        val vlessWsPath = if (fields.size > 65 && fields[65].isNotBlank()) fields[65] else "/"
+        // CDN IP (position 66)
+        val cdnIp = if (fields.size > 66) fields[66] else ""
+        // CDN port (position 67)
+        val cdnPort = if (fields.size > 67) fields[67].toIntOrNull() ?: 443 else 443
+        // SNI fragment enabled (position 68)
+        val sniFragmentEnabled = if (fields.size > 68) fields[68] == "1" else true
+        // SNI fragment strategy (position 69)
+        val sniFragmentStrategy = if (fields.size > 69 && fields[69].isNotBlank()) fields[69] else "sni_split"
+        // SNI fragment delay (position 70)
+        val sniFragmentDelayMs = if (fields.size > 70) fields[70].toIntOrNull() ?: 100 else 100
+        // Fake SNI (position 71)
+        val fakeSni = if (fields.size > 71) fields[71] else ""
+
+        val profile = baseResult.profile.copy(
+            vlessUuid = vlessUuid,
+            vlessSecurity = vlessSecurity,
+            vlessTransport = vlessTransport,
+            vlessWsPath = vlessWsPath,
+            cdnIp = cdnIp,
+            cdnPort = cdnPort,
+            sniFragmentEnabled = sniFragmentEnabled,
+            sniFragmentStrategy = sniFragmentStrategy,
+            sniFragmentDelayMs = sniFragmentDelayMs,
+            fakeSni = fakeSni
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    // v26 extends v25 with DPI evasion options
+    private fun parseProfileV26(fields: List<String>, lineNum: Int): ProfileParseResult {
+        val baseResult = parseProfileV25(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // ClientHello padding (position 72)
+        val chPaddingEnabled = if (fields.size > 72) fields[72] == "1" else false
+        // WS header obfuscation (position 73)
+        val wsHeaderObfuscation = if (fields.size > 73) fields[73] == "1" else false
+        // WS cover traffic (position 74)
+        val wsPaddingEnabled = if (fields.size > 74) fields[74] == "1" else false
+
+        // SNI spoof TTL for fake/disorder strategies (position 75)
+        val sniSpoofTtl = if (fields.size > 75) fields[75].toIntOrNull()?.coerceIn(1, 64) ?: 8 else 8
+
+        val profile = baseResult.profile.copy(
+            chPaddingEnabled = chPaddingEnabled,
+            wsHeaderObfuscation = wsHeaderObfuscation,
+            wsPaddingEnabled = wsPaddingEnabled,
+            sniSpoofTtl = sniSpoofTtl
+        )
+
+        return ProfileParseResult.Success(profile)
+    }
+
+    // v27 extends v26 with the decoy hostname used in the `fake` fragment strategy
+    // and the optional TCP MSS override on the CDN socket.
+    private fun parseProfileV27(fields: List<String>, lineNum: Int): ProfileParseResult {
+        val baseResult = parseProfileV26(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        // Decoy hostname for `fake` strategy (position 76, empty = built-in default)
+        val fakeDecoyHost = if (fields.size > 76) fields[76] else ""
+
+        // TCP MSS override on CDN socket (position 77).
+        // 0 = auto, 40..1400 = explicit cap, < 0 = force-disable. Anything else coerced to 0.
+        val tcpMaxSeg = if (fields.size > 77) {
+            val raw = fields[77].toIntOrNull() ?: 0
+            when {
+                raw == 0 -> 0
+                raw < 0 -> -1
+                else -> raw.coerceIn(40, 1400)
+            }
+        } else 0
+
+        val profile = baseResult.profile.copy(
+            fakeDecoyHost = fakeDecoyHost,
+            tcpMaxSeg = tcpMaxSeg
+        )
         return ProfileParseResult.Success(profile)
     }
 

@@ -214,5 +214,56 @@ data class ProfileEntity(
 
     // Round-robin spread count: how many resolvers each query is sent to in fast mode
     @ColumnInfo(name = "rr_spread_count", defaultValue = "3")
-    val rrSpreadCount: Int = 3
+    val rrSpreadCount: Int = 3,
+
+    // VLESS fields
+    @ColumnInfo(name = "vless_uuid", defaultValue = "")
+    val vlessUuid: String = "",
+
+    @ColumnInfo(name = "vless_security", defaultValue = "tls")
+    val vlessSecurity: String = "tls",
+
+    @ColumnInfo(name = "vless_transport", defaultValue = "ws")
+    val vlessTransport: String = "ws",
+
+    @ColumnInfo(name = "vless_ws_path", defaultValue = "/")
+    val vlessWsPath: String = "/",
+
+    @ColumnInfo(name = "cdn_ip", defaultValue = "")
+    val cdnIp: String = "",
+
+    @ColumnInfo(name = "cdn_port", defaultValue = "443")
+    val cdnPort: Int = 443,
+
+    // SNI fragmentation
+    @ColumnInfo(name = "sni_fragment_enabled", defaultValue = "1")
+    val sniFragmentEnabled: Boolean = true,
+
+    @ColumnInfo(name = "sni_fragment_strategy", defaultValue = "sni_split")
+    val sniFragmentStrategy: String = "sni_split",
+
+    @ColumnInfo(name = "sni_fragment_delay_ms", defaultValue = "100")
+    val sniFragmentDelayMs: Int = 100,
+
+    @ColumnInfo(name = "sni_spoof_ttl", defaultValue = "8")
+    val sniSpoofTtl: Int = 8,
+
+    @ColumnInfo(name = "fake_sni", defaultValue = "")
+    val fakeSni: String = "",
+
+    @ColumnInfo(name = "fake_decoy_host", defaultValue = "")
+    val fakeDecoyHost: String = "",
+
+    @ColumnInfo(name = "tcp_max_seg", defaultValue = "0")
+    val tcpMaxSeg: Int = 0,
+
+    // DPI evasion options
+    @ColumnInfo(name = "ch_padding_enabled", defaultValue = "0")
+    val chPaddingEnabled: Boolean = false,
+
+    @ColumnInfo(name = "ws_header_obfuscation", defaultValue = "0")
+    val wsHeaderObfuscation: Boolean = false,
+
+    @ColumnInfo(name = "ws_padding_enabled", defaultValue = "0")
+    val wsPaddingEnabled: Boolean = false
 )
