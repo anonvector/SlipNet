@@ -128,6 +128,7 @@ import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.ConnectionState
+import app.slipnet.domain.model.PingResult
 import app.slipnet.domain.model.ProfileChain
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
@@ -259,7 +260,7 @@ fun MainScreen(
     ) { result ->
         val contents = result.contents
         if (contents != null) {
-            if (contents.startsWith("slipnet://") || contents.startsWith("slipnet-enc://")) {
+            if (contents.startsWith("slipnet://") || contents.startsWith("slipnet-enc://") || contents.startsWith("vless://")) {
                 viewModel.parseImportConfig(contents)
             } else {
                 scope.launch {
@@ -496,6 +497,17 @@ fun MainScreen(
                                     onClick = {
                                         showOverflowMenu = false
                                         viewModel.clearPingResults()
+                                    }
+                                )
+                            }
+                            // Only show "Sort by Ping" when at least one profile has a
+                            // successful measurement — otherwise there's nothing to sort by.
+                            if (uiState.pingResults.values.any { it is PingResult.Success }) {
+                                DropdownMenuItem(
+                                    text = { Text("Sort by Ping") },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        viewModel.sortProfilesByPing()
                                     }
                                 )
                             }
@@ -846,6 +858,15 @@ fun MainScreen(
                         onClick = {
                             showAddMenu = false
                             onNavigateToAddProfile("socks5")
+                        }
+                    )
+                    AddMenuOption(
+                        icon = Icons.Default.Language,
+                        title = "VLESS",
+                        description = "VLESS over WebSocket (CDN)",
+                        onClick = {
+                            showAddMenu = false
+                            onNavigateToAddProfile("vless")
                         }
                     )
                     if (BuildConfig.INCLUDE_NAIVE) {

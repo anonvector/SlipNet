@@ -660,7 +660,16 @@ class MainViewModel @Inject constructor(
             TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
         )
         private const val E2E_TEST_URL = "http://www.gstatic.com/generate_204"
-        private const val E2E_TIMEOUT_MS = 7000L
+        /** Per-resolver E2E test timeout. With HTTP verification removed and
+         *  the warmup SOCKS5 CONNECT dropped, the only significant cost is
+         *  the Noise/QUIC handshake (~2–5s typical). 8s leaves ~3s headroom
+         *  for cold/loaded resolvers without dragging on dead ones. */
+        private const val E2E_TIMEOUT_MS = 8000L
+        /** Total budget across all resolvers for a single profile. A profile
+         *  with many dead resolvers won't block the whole ping job — after
+         *  this budget, remaining resolvers are skipped and the last error
+         *  is surfaced. */
+        private const val E2E_TOTAL_BUDGET_MS = 15000L
     }
 
     fun pingAllProfiles() {
@@ -701,7 +710,10 @@ class MainViewModel @Inject constructor(
                     }
                 }
 
-                // E2E tests must be sequential (bridges are singletons)
+                // E2E tests run sequentially: Slipstream still uses the singleton
+                // native lib; DNSTT/NoizDNS/Vaydns now use the isolated variant
+                // and *could* run in parallel, but a mixed list is simplest to
+                // schedule one-at-a-time.
                 val e2eJob = launch {
                     for (profile in e2eProfiles) {
                         val result = testProfileE2e(profile)
@@ -819,36 +831,84 @@ class MainViewModel @Inject constructor(
     }
 
     /**
+     * Persistently reorder the profile list ascending by last-measured ping
+     * latency. Profiles without a successful ping keep their relative order
+     * and sit at the bottom. Mirrors [moveProfile] by updating both in-memory
+     * state and DB so the new order survives restarts.
+     */
+    fun sortProfilesByPing() {
+        val current = _uiState.value.profiles
+        val pings = _uiState.value.pingResults
+        val sorted = current.sortedBy { profile ->
+            (pings[profile.id] as? PingResult.Success)?.latencyMs ?: Long.MAX_VALUE
+        }
+        if (sorted == current) return
+        _uiState.value = _uiState.value.copy(profiles = sorted)
+        viewModelScope.launch {
+            profileRepository.updateProfileOrder(sorted.map { it.id })
+        }
+    }
+
+    /**
      * E2E test for DNS-tunneled profiles: starts a real tunnel with the first resolver,
      * performs a handshake and HTTP/SSH verification, then reports total latency.
      */
     private suspend fun testProfileE2e(profile: ServerProfile): PingResult {
-        val resolver = profile.resolvers.firstOrNull()
-            ?: return PingResult.Error("No resolver")
+        if (profile.resolvers.isEmpty()) return PingResult.Error("No resolver")
 
-        return try {
-            val result: E2eTestResult = resolverScannerRepository.testResolverE2e(
-                resolverHost = resolver.host,
-                resolverPort = resolver.port,
-                profile = profile,
-                testUrl = E2E_TEST_URL,
-                timeoutMs = E2E_TIMEOUT_MS,
-                fullVerification = true
-            ) { phase ->
-                // Update UI with current phase while test runs
-                _uiState.value = _uiState.value.copy(
-                    pingResults = _uiState.value.pingResults + (profile.id to PingResult.Testing(phase))
-                )
+        // Try resolvers in order — if the first is geo-blocked / rate-limited
+        // right now, the profile can still work through a later one, so we
+        // shouldn't mark the whole profile as failed on the first resolver's
+        // error. Stop at the first success; otherwise surface the last error.
+        // Hard-bound total time via E2E_TOTAL_BUDGET_MS so a profile with many
+        // dead resolvers doesn't stall the ping job: remaining resolvers are
+        // skipped once the budget is exhausted.
+        val budgetStart = System.currentTimeMillis()
+        var lastError = "Failed"
+        for ((index, resolver) in profile.resolvers.withIndex()) {
+            val elapsed = System.currentTimeMillis() - budgetStart
+            val remainingBudget = E2E_TOTAL_BUDGET_MS - elapsed
+            if (remainingBudget <= 1000L) {
+                lastError = "Timeout (${index} of ${profile.resolvers.size} resolvers tried)"
+                break
             }
+            val perResolverTimeout = minOf(E2E_TIMEOUT_MS, remainingBudget)
+            try {
+                // Use the *isolated* variant: spins up an ephemeral DNSTT/NoizDNS/
+                // Vaydns client on a unique port instead of reusing the singleton
+                // DnsttBridge / DnsttSocksBridge that the live VPN session owns.
+                // Fixes the flaky "Bridge start failed" / port-collision errors
+                // seen when testing multiple DNS-tunnel profiles sequentially.
+                val result: E2eTestResult = resolverScannerRepository.testResolverE2eIsolated(
+                    resolverHost = resolver.host,
+                    resolverPort = resolver.port,
+                    profile = profile,
+                    testUrl = E2E_TEST_URL,
+                    timeoutMs = perResolverTimeout,
+                    // fullVerification=false: stop after the tunnel warmup
+                    // handshake (Noise + KCP + smux + remote Dante SOCKS5
+                    // CONNECT for non-SSH, SSH banner read for SSH variants).
+                    // That already requires bidirectional data flow through
+                    // the entire tunnel stack — strong enough proof of
+                    // "reachability" without the false negatives caused by
+                    // fetching gstatic.com over a 12s budget.
+                    fullVerification = false
+                ) { phase ->
+                    val prefix = if (profile.resolvers.size > 1) "[${index + 1}/${profile.resolvers.size}] " else ""
+                    _uiState.value = _uiState.value.copy(
+                        pingResults = _uiState.value.pingResults + (profile.id to PingResult.Testing(prefix + phase))
+                    )
+                }
 
-            if (result.success) {
-                PingResult.Success(result.totalMs)
-            } else {
-                PingResult.Error(result.errorMessage?.take(25) ?: "Failed")
+                if (result.success) {
+                    return PingResult.Success(result.totalMs)
+                }
+                lastError = result.errorMessage?.take(25) ?: "Failed"
+            } catch (e: Exception) {
+                lastError = e.message?.take(25) ?: "Failed"
             }
-        } catch (e: Exception) {
-            PingResult.Error(e.message?.take(25) ?: "Failed")
         }
+        return PingResult.Error(lastError)
     }
 
     /**
@@ -889,6 +949,14 @@ class MainViewModel @Inject constructor(
                 host to 443
             }
             TunnelType.SOCKS5 -> profile.domain to profile.socks5ServerPort
+            TunnelType.VLESS -> {
+                // Test reachability to the CDN edge — that's what the TLS/WS
+                // handshake will hit. Fall back to the configured domain on
+                // 443 if the user didn't pin a specific CDN IP.
+                val host = profile.cdnIp.takeIf { it.isNotBlank() } ?: profile.domain
+                val port = if (profile.cdnPort > 0) profile.cdnPort else 443
+                if (host.isBlank()) null else host to port
+            }
             else -> null
         }
     }

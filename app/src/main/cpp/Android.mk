@@ -19,3 +19,16 @@ LOCAL_LDFLAGS += -Wl,-z,common-page-size=16384
 LOCAL_LDFLAGS += -Wl,--gc-sections -s
 
 include $(BUILD_SHARED_LIBRARY)
+
+# Build SNI-spoofing socket ops (TTL + vmsplice fake send)
+LOCAL_PATH := $(MY_LOCAL_PATH)
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := slipnet-sockops
+LOCAL_SRC_FILES := socket_ops/socket_ops_jni.c
+LOCAL_LDLIBS := -llog
+LOCAL_LDFLAGS += -Wl,-z,max-page-size=16384
+LOCAL_LDFLAGS += -Wl,-z,common-page-size=16384
+LOCAL_LDFLAGS += -Wl,--gc-sections -s
+
+include $(BUILD_SHARED_LIBRARY)

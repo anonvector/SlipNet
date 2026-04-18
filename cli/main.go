@@ -114,11 +114,27 @@ type Profile struct {
 
 	// Locked profile (config position 31)
 	IsLocked bool
+
+	// VLESS fields (config positions 62-69)
+	VlessUuid            string
+	VlessWsPath          string
+	VlessCdnIp           string
+	VlessCdnPort         int
+	SniFragmentEnabled   bool
+	SniFragmentStrategy  string
+	SniFragmentDelayMs   int
+	FakeSni              string
 }
 
 func parseURI(uri string) (*Profile, error) {
 	const scheme = "slipnet://"
 	const encScheme = "slipnet-enc://"
+	const vlessScheme = "vless://"
+
+	// Handle vless:// URIs
+	if strings.HasPrefix(strings.ToLower(uri), vlessScheme) {
+		return parseVlessURI(uri)
+	}
 
 	var encoded string
 	var encrypted bool
@@ -130,7 +146,7 @@ func parseURI(uri string) (*Profile, error) {
 	case strings.HasPrefix(uri, scheme):
 		encoded = strings.TrimPrefix(uri, scheme)
 	default:
-		return nil, fmt.Errorf("invalid URI scheme, expected slipnet:// or slipnet-enc://")
+		return nil, fmt.Errorf("invalid URI scheme, expected slipnet://, slipnet-enc://, or vless://")
 	}
 
 	// Strip any whitespace/newlines from terminal line wrapping
@@ -294,6 +310,55 @@ func parseURI(uri string) (*Profile, error) {
 		if v, err := strconv.Atoi(fields[61]); err == nil && v >= 1 {
 			p.RRSpreadCount = v
 		}
+	}
+
+	// VLESS UUID (position 62)
+	if len(fields) > 62 {
+		p.VlessUuid = fields[62]
+	}
+	// VLESS WS path (position 63)
+	if len(fields) > 63 && fields[63] != "" {
+		p.VlessWsPath = fields[63]
+	} else {
+		p.VlessWsPath = "/"
+	}
+	// CDN IP (position 64)
+	if len(fields) > 64 {
+		p.VlessCdnIp = fields[64]
+	}
+	// CDN port (position 65)
+	if len(fields) > 65 {
+		if v, err := strconv.Atoi(fields[65]); err == nil && v > 0 {
+			p.VlessCdnPort = v
+		}
+	}
+	if p.VlessCdnPort == 0 {
+		p.VlessCdnPort = 443
+	}
+	// SNI fragment enabled (position 66)
+	if len(fields) > 66 {
+		p.SniFragmentEnabled = fields[66] == "1"
+	} else {
+		p.SniFragmentEnabled = true // default enabled
+	}
+	// SNI fragment strategy (position 67)
+	if len(fields) > 67 && fields[67] != "" {
+		p.SniFragmentStrategy = fields[67]
+	} else {
+		p.SniFragmentStrategy = "sni_split"
+	}
+	// SNI fragment delay (position 68)
+	if len(fields) > 68 {
+		if v, err := strconv.Atoi(fields[68]); err == nil && v >= 0 {
+			p.SniFragmentDelayMs = v
+		}
+	}
+	if p.SniFragmentDelayMs == 0 {
+		p.SniFragmentDelayMs = 100
+	}
+	// Fake SNI (position 69)
+	if len(fields) > 69 {
+		p.FakeSni = fields[69]
 	}
 
 	return p, nil
@@ -585,6 +650,12 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		}
 		connectSOCKS5(profile)
 		return
+	case "vless":
+		if portOverride > 0 {
+			profile.Port = portOverride
+		}
+		connectVless(profile)
+		return
 	case "doh":
 		if portOverride > 0 {
 			profile.Port = portOverride
@@ -595,7 +666,7 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		return
 	case "ss", "slipstream_ssh", "snowflake", "naive":
 		fmt.Fprintf(os.Stderr, "  Error: This config uses tunnel type %q which is not supported by the CLI.\n"+
-			"  SlipNet CLI supports DNSTT, NoizDNS, VayDNS, SSH, SOCKS5, and DoH tunnel types.\n"+
+			"  SlipNet CLI supports DNSTT, NoizDNS, VayDNS, SSH, SOCKS5, VLESS, and DoH tunnel types.\n"+
 			"  Use the SlipNet app for other tunnel types.\n", profile.TunnelType)
 		return
 	default:

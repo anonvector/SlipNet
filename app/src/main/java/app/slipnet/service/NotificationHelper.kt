@@ -81,12 +81,12 @@ class NotificationHelper @Inject constructor(
         when (state) {
             is ConnectionState.Disconnected -> {
                 builder
-                    .setContentTitle("Slipstream VPN")
+                    .setContentTitle("SlipNet")
                     .setContentText("Disconnected")
             }
             is ConnectionState.Connecting -> {
                 builder
-                    .setContentTitle("Slipstream VPN")
+                    .setContentTitle("SlipNet")
                     .setContentText("Connecting...")
                     .setProgress(0, 0, true)
             }
@@ -137,13 +137,13 @@ class NotificationHelper @Inject constructor(
             }
             is ConnectionState.Disconnecting -> {
                 builder
-                    .setContentTitle("Slipstream VPN")
+                    .setContentTitle("SlipNet")
                     .setContentText("Disconnecting...")
                     .setProgress(0, 0, true)
             }
             is ConnectionState.Error -> {
                 builder
-                    .setContentTitle("Slipstream VPN")
+                    .setContentTitle("SlipNet")
                     .setContentText("Error: ${state.message}")
             }
         }
