@@ -248,6 +248,14 @@ data class ProfileEntity(
     @ColumnInfo(name = "sni_spoof_ttl", defaultValue = "8")
     val sniSpoofTtl: Int = 8,
 
+    @ColumnInfo(name = "vless_sni", defaultValue = "")
+    val vlessSni: String = "",
+
+    // Legacy column retained for Room schema compatibility only.
+    // Prior versions conflated "real SNI" and "DPI-evasion SNI override" into
+    // this one field; v39 migrated the real values into vless_sni and cleared
+    // this column. Kept nullable-empty going forward; drop in a future table
+    // recreation migration when convenient.
     @ColumnInfo(name = "fake_sni", defaultValue = "")
     val fakeSni: String = "",
 

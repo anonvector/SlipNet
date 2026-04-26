@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.NetworkPing
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Share
@@ -62,6 +63,8 @@ fun ProfileListItem(
     onExportClick: () -> Unit,
     onShareQrClick: () -> Unit,
     onPinClick: () -> Unit,
+    onPingClick: () -> Unit,
+    isPingRunning: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var showExportMenu by remember { mutableStateOf(false) }
@@ -381,6 +384,17 @@ fun ProfileListItem(
                                 }
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text("Real Ping") },
+                            onClick = {
+                                showExportMenu = false
+                                onPingClick()
+                            },
+                            enabled = !isPingRunning,
+                            leadingIcon = {
+                                Icon(Icons.Default.NetworkPing, contentDescription = null)
+                            }
+                        )
                     }
                 }
 

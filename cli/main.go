@@ -808,6 +808,25 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	log.SetOutput(io.Discard)
 
 	isVaydns := profile.TunnelType == "vaydns" || profile.TunnelType == "vaydns_ssh"
+	sshMode := profile.TunnelType == "dnstt_ssh" || profile.TunnelType == "sayedns_ssh" || profile.TunnelType == "vaydns_ssh"
+
+	// For _ssh variants, the DNS tunnel binds to an internal loopback port
+	// and we layer an SSH client + SOCKS5 server on top so that listenAddr
+	// speaks real SOCKS5 (instead of raw SSH).
+	tunnelListenAddr := listenAddr
+	if sshMode {
+		if profile.SSHUser == "" && profile.SOCKSUser == "" {
+			fmt.Fprintln(os.Stderr, "  Error: _ssh tunnel types require SSH credentials in the profile.\n"+
+				"  Re-export the config with SSH user/pass set, or use the plain dnstt/sayedns/vaydns variant.")
+			return
+		}
+		p := allocatePort()
+		if p == 0 {
+			fmt.Fprintln(os.Stderr, "  Error: failed to allocate internal loopback port for SSH layer")
+			return
+		}
+		tunnelListenAddr = fmt.Sprintf("127.0.0.1:%d", p)
+	}
 
 	// tunnelClient abstracts over DNSTT/NoizDNS and VayDNS client types.
 	type tunnelClient interface {
@@ -818,7 +837,7 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 
 	newClient := func() (tunnelClient, error) {
 		if isVaydns {
-			c, err := vaydns.NewClient(dnsAddr, profile.Domain, profile.PublicKey, listenAddr)
+			c, err := vaydns.NewClient(dnsAddr, profile.Domain, profile.PublicKey, tunnelListenAddr)
 			if err != nil {
 				return nil, err
 			}
@@ -922,7 +941,7 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		}
 
 		// DNSTT / NoizDNS
-		c, err := mobile.NewClient(dnsAddr, profile.Domain, profile.PublicKey, listenAddr)
+		c, err := mobile.NewClient(dnsAddr, profile.Domain, profile.PublicKey, tunnelListenAddr)
 		if err != nil {
 			return nil, err
 		}
@@ -989,6 +1008,16 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 		return
 	}
 
+	var sshLayer *dnsSSHLayer
+	if sshMode {
+		sshLayer, err = startDNSSSHLayer(profile, tunnelListenAddr, listenAddr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Error: SSH layer failed: %v\n", err)
+			client.Stop()
+			return
+		}
+	}
+
 	fmt.Println()
 	fmt.Printf("  Connected! SOCKS5 proxy listening on %s\n", listenAddr)
 	fmt.Println()
@@ -1003,13 +1032,54 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	rebuild := func(reason string) bool {
+		fmt.Printf("\n  %s, reconnecting in %v...\n", reason, 3*time.Second)
+		if sshLayer != nil {
+			sshLayer.Close()
+			sshLayer = nil
+		}
+		client.Stop()
+		time.Sleep(3 * time.Second)
+
+		client, err = newClient()
+		if err != nil {
+			fmt.Printf("  Failed to create client: %v\n", err)
+			return false
+		}
+		if err := client.Start(); err != nil {
+			fmt.Printf("  Reconnect failed: %v\n", err)
+			return false
+		}
+		if sshMode {
+			sshLayer, err = startDNSSSHLayer(profile, tunnelListenAddr, listenAddr)
+			if err != nil {
+				fmt.Printf("  SSH layer failed: %v\n", err)
+				client.Stop()
+				return false
+			}
+		}
+		fmt.Println("  Reconnected!")
+		return true
+	}
+
+	// sshDeadCh fires when the SSH layer dies. For non-_ssh, leave nil so
+	// the select case never fires.
+	sshDeadCh := func() <-chan struct{} {
+		if sshLayer != nil {
+			return sshLayer.Dead()
+		}
+		return nil
+	}
+
 	// Monitor tunnel health and auto-reconnect when session dies.
-	reconnectDelay := 3 * time.Second
 	for {
 		select {
 		case <-sigCh:
 			fmt.Println()
 			fmt.Println("  Disconnecting...")
+			if sshLayer != nil {
+				sshLayer.Close()
+			}
 			done := make(chan struct{})
 			go func() { client.Stop(); close(done) }()
 			select {
@@ -1019,22 +1089,11 @@ func connectWithParams(uri string, portOverride int, hostOverride string, dnsOve
 				fmt.Println("  Shutdown timed out, forcing exit.")
 			}
 			return
+		case <-sshDeadCh():
+			rebuild("SSH layer died")
 		case <-time.After(5 * time.Second):
 			if !client.IsRunning() {
-				fmt.Printf("\n  Tunnel died, reconnecting in %v...\n", reconnectDelay)
-				client.Stop()
-				time.Sleep(reconnectDelay)
-
-				client, err = newClient()
-				if err != nil {
-					fmt.Printf("  Failed to create client: %v\n", err)
-					continue
-				}
-				if err := client.Start(); err != nil {
-					fmt.Printf("  Reconnect failed: %v\n", err)
-					continue
-				}
-				fmt.Println("  Reconnected!")
+				rebuild("Tunnel died")
 			}
 		}
 	}

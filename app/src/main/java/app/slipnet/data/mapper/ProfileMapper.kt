@@ -108,7 +108,7 @@ class ProfileMapper @Inject constructor(
             sniSpoofTtl = entity.sniSpoofTtl,
             fakeDecoyHost = entity.fakeDecoyHost,
             tcpMaxSeg = entity.tcpMaxSeg,
-            fakeSni = entity.fakeSni,
+            vlessSni = entity.vlessSni,
             chPaddingEnabled = entity.chPaddingEnabled,
             wsHeaderObfuscation = entity.wsHeaderObfuscation,
             wsPaddingEnabled = entity.wsPaddingEnabled
@@ -199,7 +199,8 @@ class ProfileMapper @Inject constructor(
             sniSpoofTtl = profile.sniSpoofTtl,
             fakeDecoyHost = profile.fakeDecoyHost,
             tcpMaxSeg = profile.tcpMaxSeg,
-            fakeSni = profile.fakeSni,
+            vlessSni = profile.vlessSni,
+            fakeSni = "",
             chPaddingEnabled = profile.chPaddingEnabled,
             wsHeaderObfuscation = profile.wsHeaderObfuscation,
             wsPaddingEnabled = profile.wsPaddingEnabled

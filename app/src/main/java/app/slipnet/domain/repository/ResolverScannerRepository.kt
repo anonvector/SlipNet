@@ -1,6 +1,7 @@
 package app.slipnet.domain.repository
 
 import android.content.Context
+import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.E2eTestResult
 import app.slipnet.domain.model.ResolverScanResult
 import app.slipnet.domain.model.ServerProfile
@@ -75,13 +76,15 @@ interface ResolverScannerRepository {
         port: Int = 53,
         testDomain: String,
         timeoutMs: Long = 3000,
-        querySize: Int = 0
+        querySize: Int = 0,
+        transport: DnsTransport = DnsTransport.UDP
     ): ResolverScanResult
 
     /**
      * Scan multiple resolvers concurrently
      * Emits results as they complete
      * @param querySize Cap tunnel-realism probe size to match the user's query-size setting (0 = full capacity)
+     * @param transport UDP or TCP — only these two are supported for scanning
      */
     fun scanResolvers(
         hosts: List<String>,
@@ -89,7 +92,8 @@ interface ResolverScannerRepository {
         testDomain: String,
         timeoutMs: Long = 3000,
         concurrency: Int = 50,
-        querySize: Int = 0
+        querySize: Int = 0,
+        transport: DnsTransport = DnsTransport.UDP
     ): Flow<ResolverScanResult>
 
     /**
@@ -102,7 +106,8 @@ interface ResolverScannerRepository {
         host: String,
         port: Int = 53,
         testDomain: String,
-        timeoutMs: Long = 3000
+        timeoutMs: Long = 3000,
+        transport: DnsTransport = DnsTransport.UDP
     ): Boolean
 
     /**
@@ -122,7 +127,8 @@ interface ResolverScannerRepository {
         timeoutMs: Long = 3000,
         probeCount: Int = 5,
         passThreshold: Int = 2,
-        responseSize: Int = 1232
+        responseSize: Int = 1232,
+        transport: DnsTransport = DnsTransport.UDP
     ): Int
 
     /**

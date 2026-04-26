@@ -60,9 +60,9 @@ data class ServerProfile(
     val boundDeviceId: String = "",
     // NoizDNS stealth mode: trades speed for DPI resistance (jitter, slow polling, cover traffic)
     val noizdnsStealth: Boolean = false,
-    // DNS query payload size cap (KCP MTU). Default 100 bytes.
-    // Lower values produce smaller, less conspicuous DNS queries. 0 = full capacity.
-    val dnsPayloadSize: Int = 100,
+    // DNS query payload size cap (KCP MTU). 0 = full capacity (matches DB default).
+    // Lower values produce smaller, less conspicuous DNS queries.
+    val dnsPayloadSize: Int = 0,
     // When true, resolvers are hidden from the user (set during import of hidden-resolver profiles)
     val resolversHidden: Boolean = false,
     // Original default resolvers from import (preserved when user overrides with custom resolvers)
@@ -143,8 +143,12 @@ data class ServerProfile(
     // TLS record, useful against DPI that inspects per-segment instead of reassembling.
     // Trade-off: smaller MSS = more segments + slower post-handshake throughput.
     val tcpMaxSeg: Int = 0,
-    // Fake SNI hostname (empty = use real domain)
-    val fakeSni: String = "",
+    // TLS SNI sent in the ClientHello. Empty = fall back to [domain] (the WS
+    // Host). Set explicitly when the CDN cert hostname differs from the WS
+    // Host, or — against a direct server you control — to any decoy string
+    // for DPI evasion (cert verification is permissive). This is the single
+    // SNI field; matches V2Ray/Xray's streamSettings.tlsSettings.serverName.
+    val vlessSni: String = "",
     // DPI evasion: pad ClientHello to ~517 bytes with TLS padding extension
     val chPaddingEnabled: Boolean = false,
     // DPI evasion: add browser-like headers and randomize order in WS upgrade request.

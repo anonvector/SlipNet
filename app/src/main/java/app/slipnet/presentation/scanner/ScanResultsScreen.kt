@@ -133,7 +133,7 @@ fun ScanResultsScreen(
     fromProfile: Boolean = false,
     parentBackStackEntry: NavBackStackEntry,
     onNavigateBack: () -> Unit,
-    onResolversSelected: (String) -> Unit,
+    onResolversSelected: (String, String?) -> Unit,
     viewModel: DnsScannerViewModel = hiltViewModel(parentBackStackEntry)
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -172,8 +172,16 @@ fun ScanResultsScreen(
             ScoreFilter.entries.find { it.name == prefs.getString("score_filter", null) } ?: ScoreFilter.SCORE_2_PLUS
         )
     }
+    var probeFilter by remember {
+        mutableStateOf(
+            prefs.getStringSet("probe_filter", emptySet())?.let { stored ->
+                ProbeFilter.entries.filter { it.name in stored }.toSet()
+            } ?: emptySet()
+        )
+    }
     var showSortMenu by remember { mutableStateOf(false) }
     var showFilterMenu by remember { mutableStateOf(false) }
+    var showProbeMenu by remember { mutableStateOf(false) }
     var showPrismFilterDialog by remember { mutableStateOf(false) }
     var prismMinProbes by remember {
         mutableStateOf(
@@ -239,18 +247,23 @@ fun ScanResultsScreen(
 
     // Single-pass filter: visible E2E-passed and Stage 1 working IPs (respects search/score)
     val isPrism = uiState.scanMode == ScanMode.PRISM
-    val (visibleE2eIps, visibleStage1Ips) = remember(throttledResults, scoreFilter, searchQuery, isPrism, prismMinProbes) {
+    val isE2eOnly = uiState.scanMode == ScanMode.E2E
+    val (visibleE2eIps, visibleStage1Ips) = remember(throttledResults, scoreFilter, probeFilter, searchQuery, isPrism, isE2eOnly, prismMinProbes) {
         val query = searchQuery.trim()
         val e2e = mutableListOf<String>()
         val stage1 = mutableListOf<String>()
         for (result in throttledResults) {
-            // Prism results have no tunnelTestResult (score), skip score filter for them
+            // Prism and E2E-only results have no tunnelTestResult (score), skip score filter for them
             val matchesFilters = if (isPrism) {
                 result.prismVerified == true &&
                     (result.prismPassedProbes ?: 0) >= prismMinProbes &&
                     (query.isEmpty() || result.host.contains(query))
+            } else if (isE2eOnly) {
+                result.e2eTestResult?.success == true &&
+                    (query.isEmpty() || result.host.contains(query))
             } else {
                 (result.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
+                    result.passesProbeFilter(probeFilter) &&
                     (query.isEmpty() || result.host.contains(query))
             }
             if (!matchesFilters) continue
@@ -303,10 +316,12 @@ fun ScanResultsScreen(
                             Text("E2E passed (${visibleE2eIps.size})")
                         }
                     }
-                    TextButton(onClick = {
-                        if (action == "copy") doCopy(visibleStage1Ips) else doExport(visibleStage1Ips)
-                    }) {
-                        Text("Stage 1 working (${visibleStage1Ips.size})")
+                    if (visibleStage1Ips.isNotEmpty()) {
+                        TextButton(onClick = {
+                            if (action == "copy") doCopy(visibleStage1Ips) else doExport(visibleStage1Ips)
+                        }) {
+                            Text("Stage 1 working (${visibleStage1Ips.size})")
+                        }
                     }
                     if (selectedIps.isNotEmpty()) {
                         TextButton(onClick = {
@@ -351,13 +366,13 @@ fun ScanResultsScreen(
                             )
                         }
                     }
-                    if (visibleStage1Ips.isNotEmpty() && isIdle) {
+                    if ((visibleStage1Ips.isNotEmpty() || visibleE2eIps.isNotEmpty()) && isIdle) {
                         IconButton(
                             onClick = {
-                                if (hasE2eResults || uiState.selectedResolvers.isNotEmpty()) {
-                                    pendingAction = "copy"
-                                } else {
-                                    copyIpsToClipboard(visibleStage1Ips)
+                                when {
+                                    hasE2eResults || uiState.selectedResolvers.isNotEmpty() -> pendingAction = "copy"
+                                    visibleStage1Ips.isNotEmpty() -> copyIpsToClipboard(visibleStage1Ips)
+                                    else -> copyIpsToClipboard(visibleE2eIps)
                                 }
                             }
                         ) {
@@ -365,10 +380,10 @@ fun ScanResultsScreen(
                         }
                         IconButton(
                             onClick = {
-                                if (hasE2eResults || uiState.selectedResolvers.isNotEmpty()) {
-                                    pendingAction = "export"
-                                } else {
-                                    performExport(context, visibleStage1Ips, scope, snackbarHostState)
+                                when {
+                                    hasE2eResults || uiState.selectedResolvers.isNotEmpty() -> pendingAction = "export"
+                                    visibleStage1Ips.isNotEmpty() -> performExport(context, visibleStage1Ips, scope, snackbarHostState)
+                                    else -> performExport(context, visibleE2eIps, scope, snackbarHostState)
                                 }
                             }
                         ) {
@@ -379,7 +394,10 @@ fun ScanResultsScreen(
                         TextButton(
                             onClick = {
                                 viewModel.saveRecentDns()
-                                onResolversSelected(viewModel.getSelectedResolversString())
+                                onResolversSelected(
+                                    viewModel.getSelectedResolversString(),
+                                    viewModel.getRecommendedTransportHint()
+                                )
                             }
                         ) {
                             Text("Apply", fontWeight = FontWeight.SemiBold)
@@ -594,7 +612,7 @@ fun ScanResultsScreen(
             // Results
             val isSimpleMode = uiState.scanMode == ScanMode.SIMPLE
             val isE2eOnlyMode = uiState.scanMode == ScanMode.E2E
-            val displayResults = remember(throttledResults, scoreFilter, sortOption, isSimpleMode, isE2eOnlyMode, isPrismMode, showAllWorking, searchQuery, hasE2eResults, prismMinProbes) {
+            val displayResults = remember(throttledResults, scoreFilter, probeFilter, sortOption, isSimpleMode, isE2eOnlyMode, isPrismMode, showAllWorking, searchQuery, hasE2eResults, prismMinProbes) {
                 val query = searchQuery.trim()
                 val filtered = if (isE2eOnlyMode) {
                     // E2E mode only has E2E-passed results
@@ -632,12 +650,14 @@ fun ScanResultsScreen(
                         it.status == ResolverStatus.WORKING &&
                             it.e2eTestResult?.success == true &&
                             (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
+                            it.passesProbeFilter(probeFilter) &&
                             (query.isEmpty() || it.host.contains(query))
                     }
                 } else {
                     throttledResults.filter {
                         it.status == ResolverStatus.WORKING &&
                             (it.tunnelTestResult?.score ?: 0) >= scoreFilter.minScore &&
+                            it.passesProbeFilter(probeFilter) &&
                             (query.isEmpty() || it.host.contains(query))
                     }
                 }
@@ -766,7 +786,8 @@ fun ScanResultsScreen(
                                     else null,
                                 onToggleSelection = if (canApply) {
                                     { viewModel.toggleResolverSelection(result.host) }
-                                } else null
+                                } else null,
+                                transportSupport = uiState.hostTransportSupport[result.host]
                             )
                         }
                     }
@@ -898,6 +919,60 @@ fun ScanResultsScreen(
                             }
                         }
 
+                        // Probe-pass filter (ADVANCED mode only): require specific DNS probes to pass
+                        if (uiState.scanMode == ScanMode.ADVANCED) Box {
+                            val probeLabel = when {
+                                probeFilter.isEmpty() -> "Probes"
+                                probeFilter.size == 1 -> probeFilter.first().label
+                                else -> "Probes ${probeFilter.size}/6"
+                            }
+                            FilterChip(
+                                selected = probeFilter.isNotEmpty(),
+                                onClick = { showProbeMenu = true },
+                                label = { Text(probeLabel) },
+                                trailingIcon = {
+                                    Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(16.dp))
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.secondary,
+                                    selectedTrailingIconColor = MaterialTheme.colorScheme.secondary
+                                )
+                            )
+                            DropdownMenu(
+                                expanded = showProbeMenu,
+                                onDismissRequest = { showProbeMenu = false }
+                            ) {
+                                ProbeFilter.entries.forEach { probe ->
+                                    val checked = probe in probeFilter
+                                    DropdownMenuItem(
+                                        text = { Text(probe.label) },
+                                        onClick = {
+                                            probeFilter = if (checked) probeFilter - probe else probeFilter + probe
+                                            prefs.edit().putStringSet(
+                                                "probe_filter",
+                                                probeFilter.map { it.name }.toSet()
+                                            ).apply()
+                                        },
+                                        leadingIcon = if (checked) ({
+                                            Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp))
+                                        }) else null
+                                    )
+                                }
+                                if (probeFilter.isNotEmpty()) {
+                                    HorizontalDivider()
+                                    DropdownMenuItem(
+                                        text = { Text("Clear") },
+                                        onClick = {
+                                            probeFilter = emptySet()
+                                            prefs.edit().remove("probe_filter").apply()
+                                            showProbeMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
                         // Toggle E2E-passed-only vs all working (not shown for E2E-only since all results are E2E-passed)
                         if ((uiState.scanMode == ScanMode.SIMPLE || hasE2eResults) && uiState.scanMode != ScanMode.E2E) {
                             FilterChip(
@@ -952,6 +1027,32 @@ private enum class ScoreFilter(val label: String, val minScore: Int) {
     SCORE_4_PLUS("4+", 4),
     SCORE_5_PLUS("5+", 5),
     SCORE_6("6/6", 6)
+}
+
+/** Individual DNS-probe filter: only resolvers whose [matches] returns true pass. */
+private enum class ProbeFilter(val label: String) {
+    NS("NS"),
+    TXT("TXT"),
+    RND("RND"),
+    DPI("DPI"),
+    EDNS("EDNS"),
+    NXD("NXD");
+
+    fun matches(result: app.slipnet.domain.model.DnsTunnelTestResult): Boolean = when (this) {
+        NS -> result.nsSupport
+        TXT -> result.txtSupport
+        RND -> result.randomSubdomain
+        DPI -> result.tunnelRealism
+        EDNS -> result.edns0Support
+        NXD -> result.nxdomainCorrect
+    }
+}
+
+/** True iff every probe in [probes] passed. Empty set = no filtering. */
+private fun app.slipnet.domain.model.ResolverScanResult.passesProbeFilter(probes: Set<ProbeFilter>): Boolean {
+    if (probes.isEmpty()) return true
+    val t = tunnelTestResult ?: return false
+    return probes.all { it.matches(t) }
 }
 
 private enum class SortOption {
@@ -1567,7 +1668,9 @@ private fun ResultsResolverItem(
     showSelection: Boolean = true,
     isE2eTesting: Boolean = false,
     e2ePhase: String? = null,
-    onToggleSelection: (() -> Unit)? = null
+    onToggleSelection: (() -> Unit)? = null,
+    /** (udpOk, tcpOk) — non-null only for BOTH-mode scans. */
+    transportSupport: Pair<Boolean, Boolean>? = null
 ) {
     val isDisabled = isLimitReached && !isSelected
     val canInteract = showSelection && result.status == ResolverStatus.WORKING && onToggleSelection != null && !isDisabled
@@ -1600,11 +1703,15 @@ private fun ResultsResolverItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            ResultsStatusIcon(status = result.status)
+            // Status icon stays out of WORKING rows: the score/latency already tell the story,
+            // and dropping the green check cleans up the common case.
+            if (result.status != ResolverStatus.WORKING) {
+                ResultsStatusIcon(status = result.status)
+            }
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -1619,7 +1726,14 @@ private fun ResultsResolverItem(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    ResultsStatusLabel(status = result.status)
+                    if (result.status != ResolverStatus.WORKING) {
+                        ResultsStatusLabel(status = result.status)
+                    }
+
+                    transportSupport?.let { (udpOk, tcpOk) ->
+                        if (udpOk) TransportBadge("UDP")
+                        if (tcpOk) TransportBadge("TCP")
+                    }
 
                     result.responseTimeMs?.let { ms ->
                         Text(
@@ -1712,6 +1826,22 @@ private fun ResultsResolverItem(
             }
         }
     }
+}
+
+@Composable
+private fun TransportBadge(label: String) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .background(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                shape = RoundedCornerShape(4.dp)
+            )
+            .padding(horizontal = 6.dp, vertical = 1.dp)
+    )
 }
 
 @Composable

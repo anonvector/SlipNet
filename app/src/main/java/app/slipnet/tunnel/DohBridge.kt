@@ -10,6 +10,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
@@ -191,6 +192,13 @@ object DohBridge {
     private var dohUrl: String = ""
     private var localAuthUsername: String? = null
     private var localAuthPassword: String? = null
+    /**
+     * Optional upstream SOCKS5 proxy. When set, every network call this bridge
+     * makes — DoH HTTPS, TCP CONNECT passthrough — is tunneled through it.
+     * Used for chained modes like DoH-over-Tor where the previous layer
+     * (Snowflake) provides a local SOCKS5 port.
+     */
+    @Volatile private var upstreamSocksAddr: InetSocketAddress? = null
     private var serverSocket: ServerSocket? = null
     private var acceptorThread: Thread? = null
     private val running = AtomicBoolean(false)
@@ -218,38 +226,54 @@ object DohBridge {
      * - Custom DNS resolver with pre-resolved IPs for known DoH servers
      */
     internal fun createHttpClient(): OkHttpClient {
-        return OkHttpClient.Builder()
+        val builder = OkHttpClient.Builder()
             .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(5, TimeUnit.SECONDS)
             .writeTimeout(5, TimeUnit.SECONDS)
-            .dns(object : Dns {
-                override fun lookup(hostname: String): List<InetAddress> {
-                    // Pre-resolved IPs (fast, bypass ISP DNS)
-                    val preResolved = serverIpMap[hostname]?.mapNotNull { ip ->
-                        try { InetAddress.getByName(ip) } catch (_: Exception) { null }
-                    } ?: emptyList()
 
-                    // System DNS as fallback (handles stale/outdated pre-resolved IPs)
-                    val systemResolved = try {
-                        Dns.SYSTEM.lookup(hostname)
-                    } catch (_: Exception) { emptyList() }
+        val upstream = upstreamSocksAddr
+        if (upstream != null) {
+            builder.proxy(Proxy(Proxy.Type.SOCKS, upstream))
+        }
 
-                    // Combine: pre-resolved first, then system DNS (deduplicated)
-                    val combined = (preResolved + systemResolved)
-                        .distinctBy { it.hostAddress }
+        builder.dns(object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                // Pre-resolved IPs (fast, bypass ISP DNS)
+                val preResolved = serverIpMap[hostname]?.mapNotNull { ip ->
+                    try { InetAddress.getByName(ip) } catch (_: Exception) { null }
+                } ?: emptyList()
 
-                    if (combined.isNotEmpty()) {
-                        if (preResolved.isNotEmpty()) {
-                            logd("DNS: $hostname → ${combined.size} IPs (${preResolved.size} pre-resolved + system)")
-                        }
-                        return combined
-                    }
-
-                    throw java.net.UnknownHostException("No addresses for $hostname")
+                if (upstream != null) {
+                    // Chained mode (e.g. DoH-over-Tor): never hit the system
+                    // resolver, or the DoH hostname leaks to the ISP.
+                    if (preResolved.isNotEmpty()) return preResolved
+                    throw java.net.UnknownHostException(
+                        "$hostname has no pre-resolved IPs; DoH-over-SOCKS5 requires a DoH server from the built-in list"
+                    )
                 }
-            })
-            .build()
+
+                // System DNS as fallback (handles stale/outdated pre-resolved IPs)
+                val systemResolved = try {
+                    Dns.SYSTEM.lookup(hostname)
+                } catch (_: Exception) { emptyList() }
+
+                // Combine: pre-resolved first, then system DNS (deduplicated)
+                val combined = (preResolved + systemResolved)
+                    .distinctBy { it.hostAddress }
+
+                if (combined.isNotEmpty()) {
+                    if (preResolved.isNotEmpty()) {
+                        logd("DNS: $hostname → ${combined.size} IPs (${preResolved.size} pre-resolved + system)")
+                    }
+                    return combined
+                }
+
+                throw java.net.UnknownHostException("No addresses for $hostname")
+            }
+        })
+
+        return builder.build()
     }
 
     /**
@@ -260,18 +284,27 @@ object DohBridge {
      * @param listenHost Local host for the SOCKS5 proxy
      * @return Result indicating success or failure
      */
-    fun start(dohUrl: String, listenPort: Int, listenHost: String = "127.0.0.1", localAuthUsername: String? = null, localAuthPassword: String? = null): Result<Unit> {
+    fun start(
+        dohUrl: String,
+        listenPort: Int,
+        listenHost: String = "127.0.0.1",
+        localAuthUsername: String? = null,
+        localAuthPassword: String? = null,
+        upstreamSocksAddr: InetSocketAddress? = null
+    ): Result<Unit> {
         Log.i(TAG, "========================================")
         Log.i(TAG, "Starting DoH bridge")
         Log.i(TAG, "  DoH URL: $dohUrl")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
         Log.i(TAG, "  Local auth: ${if (!localAuthUsername.isNullOrEmpty()) "enabled" else "disabled"}")
+        Log.i(TAG, "  Upstream SOCKS5: ${upstreamSocksAddr ?: "direct"}")
         Log.i(TAG, "========================================")
 
         stop()
         this.dohUrl = dohUrl
         this.localAuthUsername = localAuthUsername
         this.localAuthPassword = localAuthPassword
+        this.upstreamSocksAddr = upstreamSocksAddr
         httpClient = createHttpClient()
 
         return try {
@@ -332,6 +365,7 @@ object DohBridge {
             client.connectionPool.evictAll()
         }
         httpClient = null
+        upstreamSocksAddr = null
 
         logd("DoH bridge stopped")
     }
@@ -532,7 +566,8 @@ object DohBridge {
             logd("CONNECT: domain routing bypass for $effectiveHost:$destPort (already direct)")
         }
 
-        // DohBridge always connects directly — just handle the sniffed buffer
+        // connectDirect handles both direct and upstream-SOCKS5 dialing;
+        // routing here is purely for logging/sniffing.
         clientSocket.soTimeout = 0
         val effectiveInput = if (sniffLen > 0)
             SequenceInputStream(ByteArrayInputStream(sniffBuffer!!, 0, sniffLen), clientInput)
@@ -550,19 +585,28 @@ object DohBridge {
     ) {
         val remoteSocket: Socket
         try {
-            remoteSocket = Socket()
-            // Resolve domain names via DoH so DNS doesn't leak to system/ISP resolver.
-            // SlipNet's process is excluded from VPN, so InetSocketAddress(hostname)
-            // would resolve via ISP DNS — defeating the purpose of DoH mode.
-            val connectHost = if (DomainRouter.isIpAddress(destHost)) {
-                destHost
+            val upstream = upstreamSocksAddr
+            if (upstream != null) {
+                // Chained mode: dial the destination through the upstream SOCKS5
+                // (e.g. Tor). Send ADDR_DOMAIN so the upstream resolves the name
+                // through its own circuit instead of us leaking it locally.
+                remoteSocket = dialThroughSocks5(upstream, destHost, destPort)
+                logd("CONNECT: $destHost:$destPort via SOCKS5 $upstream")
             } else {
-                resolveViaDoH(destHost).also { ip ->
-                    if (ip != null) logd("CONNECT: resolved $destHost → $ip via DoH")
-                    else Log.w(TAG, "CONNECT: DoH resolution failed for $destHost, falling back to system DNS")
-                } ?: destHost
+                remoteSocket = Socket()
+                // Resolve domain names via DoH so DNS doesn't leak to system/ISP resolver.
+                // SlipNet's process is excluded from VPN, so InetSocketAddress(hostname)
+                // would resolve via ISP DNS — defeating the purpose of DoH mode.
+                val connectHost = if (DomainRouter.isIpAddress(destHost)) {
+                    destHost
+                } else {
+                    resolveViaDoH(destHost).also { ip ->
+                        if (ip != null) logd("CONNECT: resolved $destHost → $ip via DoH")
+                        else Log.w(TAG, "CONNECT: DoH resolution failed for $destHost, falling back to system DNS")
+                    } ?: destHost
+                }
+                remoteSocket.connect(InetSocketAddress(connectHost, destPort), TCP_CONNECT_TIMEOUT_MS)
             }
-            remoteSocket.connect(InetSocketAddress(connectHost, destPort), TCP_CONNECT_TIMEOUT_MS)
         } catch (e: Exception) {
             logd("CONNECT: failed to connect to $destHost:$destPort: ${e.message}")
             if (sendReply) {
@@ -724,14 +768,16 @@ object DohBridge {
     /**
      * Forward a UDP packet.
      * DNS queries (port 53) go via DoH HTTPS.
-     * Non-DNS UDP is forwarded directly.
+     * Non-DNS UDP is forwarded directly when running unchained, or dropped
+     * when chained behind a SOCKS5 upstream (e.g. Tor) that can't carry UDP.
      */
     private fun forwardUdpPacket(host: String, port: Int, payload: ByteArray): ByteArray? {
-        return if (port == 53) {
-            forwardDnsViaDoH(payload)
-        } else {
-            forwardUdpDirect(host, port, payload)
+        if (port == 53) return forwardDnsViaDoH(payload)
+        if (upstreamSocksAddr != null) {
+            logd("FWD_UDP: dropping non-DNS UDP to $host:$port (SOCKS5 upstream can't carry UDP)")
+            return null
         }
+        return forwardUdpDirect(host, port, payload)
     }
 
     /**
@@ -760,6 +806,81 @@ object DohBridge {
             logd("DoH: failed: ${e.message}")
             null
         }
+    }
+
+    /**
+     * Open a TCP connection to [destHost]:[destPort] through [upstream] using
+     * SOCKS5 with no authentication. Uses ADDR_DOMAIN for hostnames so the
+     * upstream (e.g. Tor) resolves the name through its own circuit.
+     */
+    private fun dialThroughSocks5(upstream: InetSocketAddress, destHost: String, destPort: Int): Socket {
+        val socket = Socket()
+        try {
+            socket.connect(upstream, TCP_CONNECT_TIMEOUT_MS)
+            socket.soTimeout = TCP_CONNECT_TIMEOUT_MS
+            socket.tcpNoDelay = true
+            val out = socket.getOutputStream()
+            val ins = socket.getInputStream()
+
+            // Greeting: VER=5, NMETHODS=1, METHOD=0x00 (no auth).
+            out.write(byteArrayOf(0x05, 0x01, 0x00))
+            out.flush()
+            val greetReply = ByteArray(2)
+            ins.readFully(greetReply)
+            if (greetReply[0].toInt() != 0x05 || greetReply[1].toInt() != 0x00) {
+                throw java.io.IOException("SOCKS5 greeting rejected (method=${greetReply[1].toInt() and 0xFF})")
+            }
+
+            // CONNECT request.
+            val portHi = ((destPort shr 8) and 0xFF).toByte()
+            val portLo = (destPort and 0xFF).toByte()
+            val request = when {
+                isIpv4Literal(destHost) -> {
+                    val parts = destHost.split(".").map { (it.toInt() and 0xFF).toByte() }
+                    byteArrayOf(0x05, 0x01, 0x00, 0x01, parts[0], parts[1], parts[2], parts[3], portHi, portLo)
+                }
+                destHost.contains(":") -> {
+                    // IPv6 literal — parse via InetAddress (no DNS since it's a literal).
+                    val addr = InetAddress.getByName(destHost).address
+                    byteArrayOf(0x05, 0x01, 0x00, 0x04) + addr + byteArrayOf(portHi, portLo)
+                }
+                else -> {
+                    val domain = destHost.toByteArray(Charsets.US_ASCII)
+                    if (domain.size > 255) throw java.io.IOException("hostname too long for SOCKS5")
+                    byteArrayOf(0x05, 0x01, 0x00, 0x03, domain.size.toByte()) + domain + byteArrayOf(portHi, portLo)
+                }
+            }
+            out.write(request)
+            out.flush()
+
+            val head = ByteArray(4)
+            ins.readFully(head)
+            if (head[0].toInt() != 0x05) throw java.io.IOException("SOCKS5 bad version in reply")
+            if (head[1].toInt() != 0x00) throw java.io.IOException("SOCKS5 CONNECT failed (rep=${head[1].toInt() and 0xFF})")
+            when (head[3].toInt() and 0xFF) {
+                0x01 -> ins.readFully(ByteArray(4))
+                0x03 -> {
+                    val len = ins.read()
+                    if (len < 0) throw java.io.IOException("SOCKS5 truncated reply")
+                    ins.readFully(ByteArray(len))
+                }
+                0x04 -> ins.readFully(ByteArray(16))
+                else -> throw java.io.IOException("SOCKS5 unknown ATYP in reply")
+            }
+            ins.readFully(ByteArray(2)) // bound port
+
+            socket.soTimeout = 0
+            return socket
+        } catch (e: Exception) {
+            try { socket.close() } catch (_: Exception) {}
+            throw e
+        }
+    }
+
+    private fun isIpv4Literal(host: String): Boolean {
+        val parts = host.split(".")
+        if (parts.size != 4) return false
+        return parts.all { p -> p.toIntOrNull()?.let { it in 0..255 } ?: false }
     }
 
     /**

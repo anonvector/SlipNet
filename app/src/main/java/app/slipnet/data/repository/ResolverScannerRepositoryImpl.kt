@@ -181,12 +181,13 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         port: Int,
         testDomain: String,
         timeoutMs: Long,
-        querySize: Int
+        querySize: Int,
+        transport: DnsTransport
     ): ResolverScanResult = withContext(Dispatchers.IO) {
         val startTime = SystemClock.elapsedRealtime()
 
         try {
-            scanResolverDnsTunnel(host, port, testDomain, timeoutMs, startTime, querySize)
+            scanResolverDnsTunnel(host, port, testDomain, timeoutMs, startTime, querySize, transport)
         } catch (e: Exception) {
             val responseTime = SystemClock.elapsedRealtime() - startTime
             ResolverScanResult(
@@ -208,7 +209,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         testDomain: String,
         timeoutMs: Long,
         startTime: Long,
-        querySize: Int = 0
+        querySize: Int = 0,
+        transport: DnsTransport = DnsTransport.UDP
     ): ResolverScanResult = withContext(Dispatchers.IO) {
         // For tunnel subdomains like "t.example.com", queries hit the DNSTT server
         // which can't answer generic DNS queries. Use the parent zone for basic/NS/TXT
@@ -219,7 +221,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         // First, do a basic connectivity check (against the parent zone)
         val basicCheck = withTimeoutOrNull(timeoutMs) {
             val randSub = generateRandomSubdomain()
-            performDnsQuery(host, port, "$randSub.$parentDomain", DNS_TYPE_A, timeoutMs)
+            performDnsQuery(host, port, "$randSub.$parentDomain", DNS_TYPE_A, timeoutMs, transport)
         }
 
         if (basicCheck == null) {
@@ -233,15 +235,15 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         }
 
         // Run all tunnel compatibility tests in parallel
-        val nsDeferred = async { testNsDelegation(host, port, testDomain, timeoutMs) }
-        val txtDeferred = async { testRecordType(host, port, parentDomain, DNS_TYPE_TXT, timeoutMs) }
+        val nsDeferred = async { testNsDelegation(host, port, testDomain, timeoutMs, transport) }
+        val txtDeferred = async { testRecordType(host, port, parentDomain, DNS_TYPE_TXT, timeoutMs, transport) }
         val rndDeferred = async {
-            testRandomSubdomain(host, port, testDomain, timeoutMs)
-                || testRandomSubdomain(host, port, testDomain, timeoutMs)
+            testRandomSubdomain(host, port, testDomain, timeoutMs, transport)
+                || testRandomSubdomain(host, port, testDomain, timeoutMs, transport)
         }
-        val tunnelRealismDeferred = async { testTunnelRealism(host, port, testDomain, timeoutMs, querySize) }
-        val ednsDeferred = async { probeEdnsMaxPayload(host, port, testDomain, timeoutMs) }
-        val nxdomainDeferred = async { testNxdomainCorrect(host, port, timeoutMs) }
+        val tunnelRealismDeferred = async { testTunnelRealism(host, port, testDomain, timeoutMs, querySize, transport) }
+        val ednsDeferred = async { probeEdnsMaxPayload(host, port, testDomain, timeoutMs, transport) }
+        val nxdomainDeferred = async { testNxdomainCorrect(host, port, timeoutMs, transport) }
 
         val nsSupport = nsDeferred.await()
         val txtSupport = txtDeferred.await()
@@ -282,13 +284,14 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         port: Int,
         testDomain: String,
         recordType: Int,
-        timeoutMs: Long
+        timeoutMs: Long,
+        transport: DnsTransport = DnsTransport.UDP
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             val randSub = generateRandomSubdomain()
             val queryDomain = "$randSub.$testDomain"
             val result = withTimeoutOrNull(timeoutMs) {
-                performDnsQuery(host, port, queryDomain, recordType, timeoutMs)
+                performDnsQuery(host, port, queryDomain, recordType, timeoutMs, transport)
             }
             // Success if we got a response OR if we got NXDOMAIN/NOERROR
             // (NXDOMAIN is acceptable - means server queried properly)
@@ -305,14 +308,15 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         host: String,
         port: Int,
         testDomain: String,
-        timeoutMs: Long
+        timeoutMs: Long,
+        transport: DnsTransport = DnsTransport.UDP
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             val randSub1 = generateRandomSubdomain()
             val randSub2 = generateRandomSubdomain()
             val queryDomain = "$randSub1.$randSub2.$testDomain"
             val result = withTimeoutOrNull(timeoutMs) {
-                performDnsQuery(host, port, queryDomain, DNS_TYPE_A, timeoutMs)
+                performDnsQuery(host, port, queryDomain, DNS_TYPE_A, timeoutMs, transport)
             }
             // Any response (including NXDOMAIN) means the resolver processed the query
             result != null
@@ -333,20 +337,23 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         port: Int,
         testDomain: String,
         timeoutMs: Long,
-        querySize: Int = 0
+        querySize: Int = 0,
+        transport: DnsTransport = DnsTransport.UDP
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            // Generate a random payload roughly the size dnstt/Slipstream would use
-            // (80-120 bytes → ~130-192 base32 chars, split into 57-char DNS labels).
-            // When querySize is set, scale down so the probe stays within budget.
-            val randLen = if (querySize >= 50) {
+            // Generate a random payload roughly the size dnstt/Slipstream would use,
+            // split into 57-char base32 labels. Cap at ~130 random bytes (≈208 base32
+            // chars + label-length octets + suffix) to stay under the 255-octet QNAME
+            // wire limit. querySize == 0 means "full capacity" → use the cap.
+            val maxRandLen = 130
+            val randLen = if (querySize > 0) {
                 val suffixLen = testDomain.length + 2 // "." separator + root label
                 val overhead = 12 + 4 + suffixLen     // header + qtype/qclass + domain suffix
                 val available = (querySize - overhead).coerceAtLeast(10)
-                // base32 expands 5 bytes → 8 chars; labels add ~1 byte per 57 chars
-                (available * 5 / 9).coerceIn(5, 100)
+                // base32 expands 5 bytes → 8 chars; /9 leaves headroom for label-length octets
+                (available * 5 / 9).coerceIn(8, maxRandLen)
             } else {
-                100
+                maxRandLen
             }
             val payloadBytes = ByteArray(randLen).also { Random.nextBytes(it) }
             val base32Sub = base32Encode(payloadBytes)
@@ -354,7 +361,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             val queryDomain = "$dotified.$testDomain"
 
             val result = withTimeoutOrNull(timeoutMs) {
-                performDnsQuery(host, port, queryDomain, DNS_TYPE_TXT, timeoutMs)
+                performDnsQuery(host, port, queryDomain, DNS_TYPE_TXT, timeoutMs, transport)
             }
             // Any response (including NXDOMAIN/SERVFAIL) means the query survived DPI
             result != null
@@ -373,7 +380,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         host: String,
         port: Int,
         testDomain: String,
-        timeoutMs: Long
+        timeoutMs: Long,
+        transport: DnsTransport = DnsTransport.UDP
     ): Int = withContext(Dispatchers.IO) {
         val sizes = intArrayOf(512, 900, 1232)
         var maxWorking = 0
@@ -382,28 +390,18 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             try {
                 val queryDomain = "${generateRandomSubdomain()}.$testDomain"
                 val dnsQuery = buildDnsQueryWithEdns0(queryDomain, DNS_TYPE_TXT, size)
-                val serverAddress = InetAddress.getByName(host)
+                val (responseBuffer, len) = if (transport == DnsTransport.TCP) {
+                    dnsQueryTcp(host, port, dnsQuery, timeoutMs) ?: continue
+                } else {
+                    dnsQueryUdp(host, port, dnsQuery, timeoutMs, 4096) ?: continue
+                }
 
-                val socket = DatagramSocket()
-                socket.soTimeout = timeoutMs.toInt().coerceIn(500, 30000)
-                try {
-                    val requestPacket = DatagramPacket(dnsQuery, dnsQuery.size, serverAddress, port)
-                    socket.send(requestPacket)
-
-                    val responseBuffer = ByteArray(4096)
-                    val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
-                    socket.receive(responsePacket)
-
-                    val len = responsePacket.length
-                    if (len >= 12) {
-                        // Check RCODE isn't FORMERR (1) — some resolvers reject unknown EDNS sizes
-                        val rcode = responseBuffer[3].toInt() and 0x0F
-                        if (rcode != 1 && hasOptRecord(responseBuffer, len)) {
-                            maxWorking = size
-                        }
+                if (len >= 12) {
+                    // Check RCODE isn't FORMERR (1) — some resolvers reject unknown EDNS sizes
+                    val rcode = responseBuffer[3].toInt() and 0x0F
+                    if (rcode != 1 && hasOptRecord(responseBuffer, len)) {
+                        maxWorking = size
                     }
-                } finally {
-                    socket.close()
                 }
             } catch (_: Exception) {
                 // This size failed; try next
@@ -422,7 +420,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
     private suspend fun testNxdomainCorrect(
         host: String,
         port: Int,
-        timeoutMs: Long
+        timeoutMs: Long,
+        transport: DnsTransport = DnsTransport.UDP
     ): Boolean = withContext(Dispatchers.IO) {
         var nxdomainCount = 0
         val attempts = 3
@@ -434,7 +433,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                 val queryDomain = "nxd-$randomLabel.invalid"
 
                 val result = withTimeoutOrNull(timeoutMs) {
-                    performDnsQuery(host, port, queryDomain, DNS_TYPE_A, timeoutMs)
+                    performDnsQuery(host, port, queryDomain, DNS_TYPE_A, timeoutMs, transport)
                 }
 
                 if (result != null && result.responseCode == 3) {
@@ -725,13 +724,14 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         host: String,
         port: Int,
         testDomain: String,
-        timeoutMs: Long
+        timeoutMs: Long,
+        transport: DnsTransport
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             val parentDomain = getParentDomain(testDomain)
             val randSub = generateRandomSubdomain()
             val query = "$randSub.$parentDomain"
-            performDnsQuery(host, port, query, DNS_TYPE_A, timeoutMs)
+            performDnsQuery(host, port, query, DNS_TYPE_A, timeoutMs, transport)
             true
         } catch (_: Exception) {
             false
@@ -746,7 +746,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         timeoutMs: Long,
         probeCount: Int,
         passThreshold: Int,
-        responseSize: Int
+        responseSize: Int,
+        transport: DnsTransport
     ): Int = withContext(Dispatchers.IO) {
         var passed = 0
         val maxFailures = probeCount - passThreshold
@@ -754,7 +755,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         val perProbeTimeout = (timeoutMs / passThreshold).coerceIn(200, 30000)
         for (i in 1..probeCount) {
             if (!coroutineContext.isActive) break
-            if (verifyResolverOnce(host, port, testDomain, pubkey, perProbeTimeout, responseSize)) {
+            if (verifyResolverOnce(host, port, testDomain, pubkey, perProbeTimeout, responseSize, transport)) {
                 passed++
                 if (passed >= passThreshold) break // already verified
             } else {
@@ -771,7 +772,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         testDomain: String,
         pubkey: ByteArray,
         timeoutMs: Long,
-        responseSize: Int = 1232
+        responseSize: Int = 1232,
+        transport: DnsTransport = DnsTransport.UDP
     ): Boolean {
         return try {
             // 1. Generate random 16-byte nonce
@@ -811,21 +813,10 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             val ednsSize = if (responseSize > 1232) responseSize else 1232
             val queryDomain = "$encoded.$testDomain"
             val queryPacket = buildDnsQueryWithEdns0(queryDomain, DNS_TYPE_TXT, ednsSize)
-            val serverAddress = InetAddress.getByName(host)
-            var socket: DatagramSocket? = null
-            val responseBytes: ByteArray
-            val responseLen: Int
-            try {
-                socket = DatagramSocket()
-                socket.soTimeout = timeoutMs.toInt().coerceIn(200, 30000)
-                socket.send(DatagramPacket(queryPacket, queryPacket.size, serverAddress, port))
-                val buf = ByteArray(4096)
-                val pkt = DatagramPacket(buf, buf.size)
-                socket.receive(pkt)
-                responseBytes = buf
-                responseLen = pkt.length
-            } finally {
-                socket?.close()
+            val (responseBytes, responseLen) = if (transport == DnsTransport.TCP) {
+                dnsQueryTcp(host, port, queryPacket, timeoutMs) ?: return false
+            } else {
+                dnsQueryUdp(host, port, queryPacket, timeoutMs, 4096) ?: return false
             }
 
             // 5. Check RCODE == 0
@@ -970,7 +961,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         testDomain: String,
         timeoutMs: Long,
         concurrency: Int,
-        querySize: Int
+        querySize: Int,
+        transport: DnsTransport
     ): Flow<ResolverScanResult> = channelFlow {
         val semaphore = Semaphore(concurrency)
 
@@ -978,7 +970,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             launch {
                 semaphore.acquire()
                 try {
-                    val result = scanResolver(host, port, testDomain, timeoutMs, querySize)
+                    val result = scanResolver(host, port, testDomain, timeoutMs, querySize, transport)
                     send(result)
                 } finally {
                     semaphore.release()
@@ -2275,34 +2267,27 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         port: Int,
         domain: String,
         recordType: Int = DNS_TYPE_A,
-        timeoutMs: Long = 3000
+        timeoutMs: Long = 3000,
+        transport: DnsTransport = DnsTransport.UDP
     ): DnsQueryResult = withContext(Dispatchers.IO) {
-        var socket: DatagramSocket? = null
         try {
-            socket = DatagramSocket()
-            socket.soTimeout = timeoutMs.toInt().coerceIn(500, 30000)
-
             val dnsQuery = buildDnsQuery(domain, recordType)
-            val serverAddress = InetAddress.getByName(host)
-            val requestPacket = DatagramPacket(dnsQuery, dnsQuery.size, serverAddress, port)
+            val (responseBuffer, responseLen) = if (transport == DnsTransport.TCP) {
+                dnsQueryTcp(host, port, dnsQuery, timeoutMs)
+                    ?: return@withContext DnsQueryResult(success = false, error = "TCP DNS: no response")
+            } else {
+                dnsQueryUdp(host, port, dnsQuery, timeoutMs, 512)
+                    ?: return@withContext DnsQueryResult(success = false, error = "UDP DNS: no response")
+            }
 
-            socket.send(requestPacket)
-
-            val responseBuffer = ByteArray(512)
-            val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
-            socket.receive(responsePacket)
-
-            // Parse the DNS response
-            val responseCode = if (responsePacket.length >= 4) {
+            val responseCode = if (responseLen >= 4) {
                 responseBuffer[3].toInt() and 0x0F
             } else 0
 
-            // For A records, try to extract the IP
             if (recordType == DNS_TYPE_A) {
-                val resolvedIp = parseDnsResponse(responseBuffer, responsePacket.length)
+                val resolvedIp = parseDnsResponse(responseBuffer, responseLen)
 
                 if (resolvedIp != null) {
-                    // Check for censorship (10.x.x.x hijacking)
                     val isCensored = resolvedIp.startsWith("10.") ||
                             resolvedIp == "0.0.0.0" ||
                             resolvedIp.startsWith("127.")
@@ -2314,7 +2299,6 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                         responseCode = responseCode
                     )
                 } else {
-                    // NXDOMAIN (3) or NOERROR (0) without answer is still a valid response
                     DnsQueryResult(
                         success = responseCode == 0 || responseCode == 3,
                         error = if (responseCode != 0 && responseCode != 3) "Response code: $responseCode" else null,
@@ -2322,21 +2306,97 @@ class ResolverScannerRepositoryImpl @Inject constructor(
                     )
                 }
             } else {
-                // For NS/TXT queries, we just care that we got a response
-                // NXDOMAIN (3), NOERROR (0), or even NOTIMP (4) means the server processed the query
                 DnsQueryResult(
                     success = responseCode == 0 || responseCode == 3,
                     responseCode = responseCode,
                     error = if (responseCode != 0 && responseCode != 3) "Response code: $responseCode" else null,
-                    rawResponse = responseBuffer.copyOf(responsePacket.length),
-                    rawLength = responsePacket.length
+                    rawResponse = responseBuffer.copyOf(responseLen),
+                    rawLength = responseLen
                 )
             }
         } catch (e: Exception) {
             DnsQueryResult(success = false, error = e.message)
+        }
+    }
+
+    /**
+     * Send a raw DNS query over UDP and receive the response.
+     * Returns (buffer, length) or null on failure.
+     */
+    private fun dnsQueryUdp(
+        host: String,
+        port: Int,
+        query: ByteArray,
+        timeoutMs: Long,
+        bufferSize: Int
+    ): Pair<ByteArray, Int>? {
+        var socket: DatagramSocket? = null
+        return try {
+            socket = DatagramSocket()
+            socket.soTimeout = timeoutMs.toInt().coerceIn(500, 30000)
+            val serverAddress = InetAddress.getByName(host)
+            socket.send(DatagramPacket(query, query.size, serverAddress, port))
+            val buf = ByteArray(bufferSize)
+            val pkt = DatagramPacket(buf, buf.size)
+            socket.receive(pkt)
+            buf to pkt.length
+        } catch (_: Exception) {
+            null
         } finally {
             socket?.close()
         }
+    }
+
+    /**
+     * Send a raw DNS query over TCP using RFC 1035 §4.2.2 framing
+     * (2-byte big-endian length prefix). Returns (buffer, length) or null on failure.
+     * Buffer is sized large enough for max TCP DNS response (64KB).
+     */
+    private fun dnsQueryTcp(
+        host: String,
+        port: Int,
+        query: ByteArray,
+        timeoutMs: Long
+    ): Pair<ByteArray, Int>? {
+        var socket: Socket? = null
+        return try {
+            socket = Socket()
+            val tm = timeoutMs.toInt().coerceIn(500, 30000)
+            socket.connect(java.net.InetSocketAddress(host, port), tm)
+            socket.soTimeout = tm
+
+            val out = socket.getOutputStream()
+            val prefix = byteArrayOf(
+                ((query.size shr 8) and 0xFF).toByte(),
+                (query.size and 0xFF).toByte()
+            )
+            out.write(prefix)
+            out.write(query)
+            out.flush()
+
+            val input = socket.getInputStream()
+            val lenBuf = ByteArray(2)
+            readExact(input, lenBuf, 2) ?: return null
+            val respLen = ((lenBuf[0].toInt() and 0xFF) shl 8) or (lenBuf[1].toInt() and 0xFF)
+            if (respLen <= 0 || respLen > 65535) return null
+            val respBuf = ByteArray(respLen)
+            readExact(input, respBuf, respLen) ?: return null
+            respBuf to respLen
+        } catch (_: Exception) {
+            null
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun readExact(input: InputStream, buf: ByteArray, len: Int): Unit? {
+        var read = 0
+        while (read < len) {
+            val n = input.read(buf, read, len - read)
+            if (n <= 0) return null
+            read += n
+        }
+        return Unit
     }
 
     /**
@@ -2615,7 +2675,8 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         host: String,
         port: Int,
         testDomain: String,
-        timeoutMs: Long
+        timeoutMs: Long,
+        transport: DnsTransport = DnsTransport.UDP
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             // Query NS for the parent zone — that's where the NS delegation for
@@ -2623,7 +2684,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             // the delegation "t.example.com NS ns.example.com").
             val nsDomain = getParentDomain(testDomain)
             val nsResult = withTimeoutOrNull(timeoutMs) {
-                performDnsQuery(host, port, nsDomain, DNS_TYPE_NS, timeoutMs)
+                performDnsQuery(host, port, nsDomain, DNS_TYPE_NS, timeoutMs, transport)
             } ?: return@withContext false
 
             if (!nsResult.success || nsResult.rawResponse == null) return@withContext false
@@ -2635,7 +2696,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             // Resolve the first NS hostname (glue record) via A query
             val nsHostname = nsHosts[0].trimEnd('.')
             val glueResult = withTimeoutOrNull(timeoutMs) {
-                performDnsQuery(host, port, nsHostname, DNS_TYPE_A, timeoutMs)
+                performDnsQuery(host, port, nsHostname, DNS_TYPE_A, timeoutMs, transport)
             } ?: return@withContext false
 
             // Pass only if the A query succeeded and returned an IP
