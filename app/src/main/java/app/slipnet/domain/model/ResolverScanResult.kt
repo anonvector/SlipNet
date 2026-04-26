@@ -119,7 +119,17 @@ data class ResolverScanResult(
     /** Number of Prism probes that passed (e.g. 8 out of 10). */
     val prismPassedProbes: Int? = null,
     /** Total Prism probes sent. */
-    val prismTotalProbes: Int? = null
+    val prismTotalProbes: Int? = null,
+    /**
+     * Whether the UDP probe succeeded. Only populated when the scanner ran in BOTH mode
+     * (UDP + TCP probed in parallel). Null for single-transport scans.
+     */
+    val udpWorking: Boolean? = null,
+    /**
+     * Whether the TCP probe succeeded. Only populated when the scanner ran in BOTH mode.
+     * Null for single-transport scans.
+     */
+    val tcpWorking: Boolean? = null
 )
 
 /**

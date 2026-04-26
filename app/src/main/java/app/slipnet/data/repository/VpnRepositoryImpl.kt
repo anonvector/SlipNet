@@ -29,6 +29,9 @@ import app.slipnet.tunnel.VlessBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,6 +50,17 @@ class VpnRepositoryImpl @Inject constructor(
 ) : VpnRepository {
     companion object {
         private const val TAG = "VpnRepositoryImpl"
+
+        /**
+         * Per-resolver TCP-connect budget for the preflight that filters dead
+         * TCP/DoT resolvers before they reach the native bridge. Probes run in
+         * parallel so this also caps total preflight time. Tuned for heavily
+         * throttled networks (Iran cellular): SYN retransmit + DPI inspection
+         * + lossy 4G can stack to several seconds even when the resolver is
+         * actually live. 8 s leaves enough headroom to avoid false-dropping
+         * working resolvers, while still bounding worst-case connect overhead.
+         */
+        private const val PREFLIGHT_TIMEOUT_MS = 8000
 
         /**
          * Resolve a hostname to a numeric IP. Go on Android cannot resolve
@@ -415,8 +429,13 @@ class VpnRepositoryImpl @Inject constructor(
     /**
      * Format the DNS server address string for the Go bridge, resolving any
      * domain names to numeric IPs (Go on Android cannot resolve hostnames).
+     *
+     * For TCP and DoT transports, runs a fast parallel TCP-connect preflight
+     * and drops unresponsive resolvers before they reach the native bridge —
+     * a single dead resolver in the list would otherwise stall connection
+     * setup while the bridge times out on it.
      */
-    private fun formatDnsServerAddress(profile: ServerProfile, resolverOverride: List<DnsResolver>? = null): String {
+    private suspend fun formatDnsServerAddress(profile: ServerProfile, resolverOverride: List<DnsResolver>? = null): String {
         val resolvers = resolverOverride ?: profile.resolvers
         return when (profile.dnsTransport) {
             DnsTransport.UDP -> {
@@ -427,25 +446,81 @@ class VpnRepositoryImpl @Inject constructor(
                 profile.dohUrl.ifBlank { "https://dns.google/dns-query" }
             }
             DnsTransport.TCP -> {
-                resolvers.joinToString(",") { "tcp://${resolveHost(it.host)}:${it.port}" }
+                val resolved = resolvers.map { it to resolveHost(it.host) }
+                val live = preflightTcp(resolved, portOf = { it.port }, timeoutMs = PREFLIGHT_TIMEOUT_MS)
+                live.joinToString(",") { (resolver, ip) -> "tcp://$ip:${resolver.port}" }
                     .ifBlank { "tcp://8.8.8.8:53" }
             }
             DnsTransport.DOT -> {
                 // DoT uses port 853, not 53. When global resolver override provides
                 // only an IP (defaulting to port 53), use 853 instead.
-                resolvers.joinToString(",") {
-                    val port = if (it.port == 53) 853 else it.port
-                    "tls://${resolveHost(it.host)}:$port"
+                val resolved = resolvers.map { it to resolveHost(it.host) }
+                val live = preflightTcp(resolved, portOf = { if (it.port == 53) 853 else it.port }, timeoutMs = PREFLIGHT_TIMEOUT_MS)
+                live.joinToString(",") { (resolver, ip) ->
+                    val port = if (resolver.port == 53) 853 else resolver.port
+                    "tls://$ip:$port"
                 }.ifBlank { "tls://8.8.8.8:853" }
             }
         }
     }
 
-    suspend fun startDohProxy(profile: ServerProfile): Result<Unit> = withContext(Dispatchers.IO) {
+    private data class ResolverProbe(val resolver: DnsResolver, val ip: String, val ok: Boolean)
+
+    /**
+     * Probe each (resolver, resolvedIp) in parallel with a TCP connect. Returns
+     * the subset that responded within [timeoutMs]. If every probe fails, returns
+     * the input unchanged so the bridge can surface the real error instead of
+     * silently dropping the user's entire resolver list.
+     */
+    private suspend fun preflightTcp(
+        resolved: List<Pair<DnsResolver, String>>,
+        portOf: (DnsResolver) -> Int,
+        timeoutMs: Int
+    ): List<Pair<DnsResolver, String>> {
+        if (resolved.size <= 1) return resolved
+        val probes: List<ResolverProbe> = coroutineScope {
+            resolved.map { (resolver, ip) ->
+                async {
+                    ResolverProbe(resolver, ip, tryTcpConnect(ip, portOf(resolver), timeoutMs))
+                }
+            }.awaitAll()
+        }
+        val live = probes.filter { it.ok }.map { it.resolver to it.ip }
+        if (live.isEmpty()) {
+            Log.w(TAG, "Resolver preflight: none of ${resolved.size} resolvers responded within ${timeoutMs}ms — passing full list to bridge")
+            return resolved
+        }
+        if (live.size != resolved.size) {
+            val dead = probes.filter { !it.ok }
+                .joinToString(",") { "${it.resolver.host}:${it.resolver.port}" }
+            Log.w(TAG, "Resolver preflight: dropped unresponsive resolver(s): $dead")
+        }
+        return live
+    }
+
+    private fun tryTcpConnect(host: String, port: Int, timeoutMs: Int): Boolean {
+        var socket: java.net.Socket? = null
+        return try {
+            socket = java.net.Socket()
+            socket.connect(java.net.InetSocketAddress(host, port), timeoutMs)
+            true
+        } catch (_: Exception) {
+            false
+        } finally {
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun startDohProxy(
+        profile: ServerProfile,
+        portOverride: Int? = null,
+        hostOverride: String? = null,
+        upstreamSocksAddr: java.net.InetSocketAddress? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
-        val proxyPort = preferencesDataStore.proxyListenPort.first()
-        val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
+        val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
         val localAuthUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
         val localAuthPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
 
@@ -454,7 +529,8 @@ class VpnRepositoryImpl @Inject constructor(
             listenPort = proxyPort,
             listenHost = proxyHost,
             localAuthUsername = localAuthUser,
-            localAuthPassword = localAuthPass
+            localAuthPassword = localAuthPass,
+            upstreamSocksAddr = upstreamSocksAddr
         )
 
         if (result.isSuccess) {
@@ -586,7 +662,8 @@ class VpnRepositoryImpl @Inject constructor(
         profile: ServerProfile,
         snowflakePtPort: Int,
         torSocksPort: Int,
-        bridgePort: Int
+        bridgePort: Int,
+        upstreamSocksAddr: java.net.InetSocketAddress? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
         val proxyHost = preferencesDataStore.proxyListenAddress.first()
@@ -597,7 +674,8 @@ class VpnRepositoryImpl @Inject constructor(
             snowflakePort = snowflakePtPort,
             torSocksPort = torSocksPort,
             listenHost = proxyHost,
-            bridgeLines = profile.torBridgeLines
+            bridgeLines = profile.torBridgeLines,
+            upstreamSocksAddr = upstreamSocksAddr
         )
 
         if (sfResult.isFailure) {

@@ -72,7 +72,7 @@ object VlessBridge {
     private var sniSpoofTtl: Int = 8
     private var fakeDecoyHost: String = ""
     private var tcpMaxSeg: Int = 0
-    private var fakeSni: String = ""
+    private var vlessSni: String = ""
     private var fragmentEnabled: Boolean = true
     private var chPaddingEnabled: Boolean = false
     private var wsHeaderObfuscation: Boolean = false
@@ -95,7 +95,7 @@ object VlessBridge {
         sniSpoofTtl: Int = 8,
         fakeDecoyHost: String = "",
         tcpMaxSeg: Int = 0,
-        fakeSni: String = "",
+        vlessSni: String = "",
         chPaddingEnabled: Boolean = false,
         wsHeaderObfuscation: Boolean = false,
         wsPaddingEnabled: Boolean = false
@@ -110,7 +110,7 @@ object VlessBridge {
         if (transport == "ws") Log.i(TAG, "  WS Path: $wsPath")
         Log.i(TAG, "  Fragment: $fragmentEnabled (strategy=$fragmentStrategy, delay=${fragmentDelayMs}ms, spoofTtl=$sniSpoofTtl)")
         if (fragmentStrategy == "fake" && fakeDecoyHost.isNotBlank()) Log.i(TAG, "  Fake Decoy Host: $fakeDecoyHost")
-        if (fakeSni.isNotBlank()) Log.i(TAG, "  Fake SNI: $fakeSni")
+        if (vlessSni.isNotBlank()) Log.i(TAG, "  TLS SNI: $vlessSni")
         Log.i(TAG, "  CH Padding: $chPaddingEnabled | WS Header Obfuscation: $wsHeaderObfuscation | WS Padding: $wsPaddingEnabled")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
         Log.i(TAG, "========================================")
@@ -130,7 +130,7 @@ object VlessBridge {
         this.sniSpoofTtl = sniSpoofTtl
         this.fakeDecoyHost = fakeDecoyHost
         this.tcpMaxSeg = tcpMaxSeg
-        this.fakeSni = fakeSni
+        this.vlessSni = vlessSni
         this.chPaddingEnabled = chPaddingEnabled
         this.wsHeaderObfuscation = wsHeaderObfuscation
         this.wsPaddingEnabled = wsPaddingEnabled
@@ -254,7 +254,7 @@ object VlessBridge {
                 tIn = BufferedInputStream(sock.getInputStream())
                 tOut = sock.getOutputStream()
             } else {
-                val sni = fakeSni.ifBlank { serverDomain }
+                val sni = resolveSni()
                 val sslCtx = SSLContext.getInstance("TLS")
                 sslCtx.init(null, trustAllManagers(), SecureRandom())
                 val ssl = sslCtx.socketFactory.createSocket(sock, sni, cdnPort, true) as SSLSocket
@@ -411,7 +411,7 @@ object VlessBridge {
                 tunnelIn = BufferedInputStream(raw.getInputStream())
                 tunnelOut = raw.getOutputStream()
             } else {
-                val sni = fakeSni.ifBlank { serverDomain }
+                val sni = resolveSni()
                 val sslCtx = SSLContext.getInstance("TLS")
                 sslCtx.init(null, trustAllManagers(), SecureRandom())
                 val sslSocket = sslCtx.socketFactory.createSocket(raw, sni, cdnPort, true) as SSLSocket
@@ -858,6 +858,12 @@ object VlessBridge {
     }
 
     // ── Utility ──────────────────────────────────────────────────────
+
+    /**
+     * SNI for the CDN TLS handshake: the explicit [vlessSni], or the WS Host
+     * ([serverDomain]) when none is set. Matches V2Ray's single-serverName model.
+     */
+    private fun resolveSni(): String = vlessSni.ifBlank { serverDomain }
 
     private fun parseUUID(uuid: String): ByteArray {
         val hex = uuid.replace("-", "")

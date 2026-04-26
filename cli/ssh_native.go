@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -23,12 +24,31 @@ func sshConnect(profile *Profile) (*ssh.Client, error) {
 	if sshPort == 0 {
 		sshPort = 22
 	}
+
+	conn, err := sshDial(profile)
+	if err != nil {
+		return nil, fmt.Errorf("transport: %w", err)
+	}
+	addr := net.JoinHostPort(sshHost, strconv.Itoa(sshPort))
+	client, err := sshHandshakeOver(profile, conn, addr)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+// sshHandshakeOver performs the SSH handshake over an existing net.Conn.
+// On success the returned client owns conn; on error the caller still owns it.
+func sshHandshakeOver(profile *Profile, conn net.Conn, addr string) (*ssh.Client, error) {
 	sshUser := profile.SSHUser
 	if sshUser == "" {
 		sshUser = profile.SOCKSUser
 	}
+	if sshUser == "" {
+		return nil, fmt.Errorf("SSH username required (set SSH user/pass in profile)")
+	}
 
-	// Build auth methods
 	var auths []ssh.AuthMethod
 	if profile.SSHPass != "" {
 		auths = append(auths, ssh.Password(profile.SSHPass))
@@ -41,26 +61,74 @@ func sshConnect(profile *Profile) (*ssh.Client, error) {
 		Timeout:         30 * time.Second,
 	}
 
-	// Establish transport
-	conn, err := sshDial(profile)
-	if err != nil {
-		return nil, fmt.Errorf("transport: %w", err)
-	}
-
-	// SSH handshake over the transport
-	addr := net.JoinHostPort(sshHost, fmt.Sprintf("%d", sshPort))
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
 	if err != nil {
-		conn.Close()
 		return nil, fmt.Errorf("SSH handshake: %w", err)
 	}
-
 	client := ssh.NewClient(sshConn, chans, reqs)
-
-	// Start keep-alive
 	go sshKeepAlive(client, 30*time.Second)
-
 	return client, nil
+}
+
+// dnsSSHLayer is an SSH client + SOCKS5 server layered on top of a running
+// DNS tunnel. The DNS tunnel listens on an internal loopback port; this
+// layer dials that port, completes the SSH handshake, and exposes a real
+// SOCKS5 server on the user-facing listenAddr.
+type dnsSSHLayer struct {
+	client *ssh.Client
+	dead   chan struct{}
+}
+
+// Dead returns a channel that is closed when the underlying SSH connection
+// terminates (so the caller can rebuild the whole stack).
+func (l *dnsSSHLayer) Dead() <-chan struct{} { return l.dead }
+
+// Close tears down the SSH client (which also stops the SOCKS5 listener).
+func (l *dnsSSHLayer) Close() {
+	if l.client != nil {
+		l.client.Close()
+	}
+}
+
+// startDNSSSHLayer waits for the tunnel's internal port to be ready, dials
+// it, performs an SSH handshake, and starts a local SOCKS5 server on
+// listenAddr that forwards through the SSH client.
+func startDNSSSHLayer(profile *Profile, internalAddr, listenAddr string) (*dnsSSHLayer, error) {
+	if !waitForPort(context.Background(), internalAddr, 15*time.Second) {
+		return nil, fmt.Errorf("tunnel internal port %s not ready", internalAddr)
+	}
+	conn, err := net.DialTimeout("tcp", internalAddr, 10*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("dial tunnel: %w", err)
+	}
+
+	sshHost := profile.SSHHost
+	if sshHost == "" {
+		sshHost = profile.Domain
+	}
+	sshPort := profile.SSHPort
+	if sshPort == 0 {
+		sshPort = 22
+	}
+	addr := net.JoinHostPort(sshHost, strconv.Itoa(sshPort))
+
+	client, err := sshHandshakeOver(profile, conn, addr)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	layer := &dnsSSHLayer{client: client, dead: make(chan struct{})}
+	go func() {
+		client.Wait()
+		close(layer.dead)
+	}()
+	go func() {
+		// runSOCKS5Server returns nil when its listener is closed (which
+		// happens automatically once client.Wait() fires).
+		_ = runSOCKS5Server(client, listenAddr, "", "")
+	}()
+	return layer, nil
 }
 
 // sshKeepAlive sends periodic keep-alive requests to detect dead connections.

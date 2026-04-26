@@ -77,6 +77,8 @@ fun NavGraph(
         ) { backStackEntry ->
             val selectedResolvers = backStackEntry.savedStateHandle
                 .get<String>("selected_resolvers")
+            val transportHint = backStackEntry.savedStateHandle
+                .get<String>("selected_resolvers_transport")
 
             EditProfileScreen(
                 profileId = null,
@@ -86,7 +88,8 @@ fun NavGraph(
                 onNavigateToScanner = { savedId ->
                     navController.navigate(NavRoutes.DnsScanner.createRoute(savedId, fromProfile = true))
                 },
-                selectedResolvers = selectedResolvers
+                selectedResolvers = selectedResolvers,
+                selectedResolversTransportHint = transportHint
             )
         }
 
@@ -99,6 +102,8 @@ fun NavGraph(
             val profileId = backStackEntry.arguments?.getLong("profileId")
             val selectedResolvers = backStackEntry.savedStateHandle
                 .get<String>("selected_resolvers")
+            val transportHint = backStackEntry.savedStateHandle
+                .get<String>("selected_resolvers_transport")
 
             EditProfileScreen(
                 profileId = profileId,
@@ -108,7 +113,8 @@ fun NavGraph(
                 onNavigateToScanner = { savedId ->
                     navController.navigate(NavRoutes.DnsScanner.createRoute(savedId ?: profileId, fromProfile = true))
                 },
-                selectedResolvers = selectedResolvers
+                selectedResolvers = selectedResolvers,
+                selectedResolversTransportHint = transportHint
             )
         }
 
@@ -157,7 +163,7 @@ fun NavGraph(
                 onNavigateToResults = {
                     navController.navigate(NavRoutes.ScanResults.createRoute(profileId, fromProfile))
                 },
-                onResolversSelected = { resolvers ->
+                onResolversSelected = { resolvers, transportHint ->
                     val profileRoute = if (profileId != null) {
                         NavRoutes.EditProfile.createRoute(profileId)
                     } else if (fromProfile) {
@@ -166,7 +172,9 @@ fun NavGraph(
                         null
                     }
                     if (profileRoute != null) {
-                        navController.getBackStackEntry(profileRoute).savedStateHandle["selected_resolvers"] = resolvers
+                        val handle = navController.getBackStackEntry(profileRoute).savedStateHandle
+                        handle["selected_resolvers"] = resolvers
+                        handle["selected_resolvers_transport"] = transportHint
                         navController.popBackStack(profileRoute, inclusive = false)
                     } else {
                         navController.popBackStack()
@@ -198,13 +206,15 @@ fun NavGraph(
                 onNavigateBack = {
                     navController.popBackStack()
                 },
-                onResolversSelected = { resolvers ->
+                onResolversSelected = { resolvers, transportHint ->
                     val profileRoute = if (profileId != null) {
                         NavRoutes.EditProfile.createRoute(profileId)
                     } else {
                         NavRoutes.AddProfile.route
                     }
-                    navController.getBackStackEntry(profileRoute).savedStateHandle["selected_resolvers"] = resolvers
+                    val handle = navController.getBackStackEntry(profileRoute).savedStateHandle
+                    handle["selected_resolvers"] = resolvers
+                    handle["selected_resolvers_transport"] = transportHint
                     navController.popBackStack(profileRoute, inclusive = false)
                 }
             )

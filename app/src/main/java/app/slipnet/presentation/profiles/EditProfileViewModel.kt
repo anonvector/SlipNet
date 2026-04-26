@@ -212,7 +212,7 @@ data class EditProfileUiState(
     val sniSpoofTtl: String = "8",
     val fakeDecoyHost: String = "",
     val tcpMaxSeg: String = "0",
-    val fakeSni: String = "",
+    val vlessSni: String = "",
     val chPaddingEnabled: Boolean = false,
     val wsHeaderObfuscation: Boolean = true,
     val wsPaddingEnabled: Boolean = false,
@@ -423,7 +423,7 @@ class EditProfileViewModel @Inject constructor(
                     sniSpoofTtl = profile.sniSpoofTtl.toString(),
                     fakeDecoyHost = profile.fakeDecoyHost,
                     tcpMaxSeg = profile.tcpMaxSeg.toString(),
-                    fakeSni = profile.fakeSni,
+                    vlessSni = profile.vlessSni,
                     chPaddingEnabled = profile.chPaddingEnabled,
                     wsHeaderObfuscation = profile.wsHeaderObfuscation,
                     wsPaddingEnabled = profile.wsPaddingEnabled,
@@ -592,6 +592,23 @@ class EditProfileViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(dnsTransport = transport)
     }
 
+    /**
+     * Apply a transport hint from a BOTH-mode scan. Only overrides when the profile's
+     * current transport is UDP or TCP — leaves DoT/DoH selections untouched since the
+     * scan didn't test them.
+     */
+    fun applyScanTransportHint(hint: String) {
+        val target = when (hint) {
+            "UDP" -> DnsTransport.UDP
+            "TCP" -> DnsTransport.TCP
+            else -> return
+        }
+        val current = _uiState.value.dnsTransport
+        if (current != DnsTransport.UDP && current != DnsTransport.TCP) return
+        if (current == target) return
+        _uiState.value = _uiState.value.copy(dnsTransport = target)
+    }
+
     fun updateDnsttAuthoritative(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(dnsttAuthoritative = enabled)
     }
@@ -650,8 +667,8 @@ class EditProfileViewModel @Inject constructor(
     fun updateTcpMaxSeg(mss: String) {
         _uiState.value = _uiState.value.copy(tcpMaxSeg = mss)
     }
-    fun updateFakeSni(sni: String) {
-        _uiState.value = _uiState.value.copy(fakeSni = sni)
+    fun updateVlessSni(sni: String) {
+        _uiState.value = _uiState.value.copy(vlessSni = sni)
     }
     fun updateChPaddingEnabled(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(chPaddingEnabled = enabled)
@@ -1536,7 +1553,7 @@ class EditProfileViewModel @Inject constructor(
                             else -> raw.coerceIn(40, 1400)
                         }
                     } else 0,
-                    fakeSni = if (state.isVless) state.fakeSni.trim() else "",
+                    vlessSni = if (state.isVless) state.vlessSni.trim() else "",
                     chPaddingEnabled = if (state.isVless) state.chPaddingEnabled else false,
                     wsHeaderObfuscation = if (state.isVless) state.wsHeaderObfuscation else false,
                     wsPaddingEnabled = if (state.isVless) state.wsPaddingEnabled else false
