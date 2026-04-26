@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Language
@@ -115,6 +116,8 @@ fun EditProfileScreen(
     onNavigateBack: () -> Unit,
     onNavigateToScanner: ((Long?) -> Unit)? = null,
     selectedResolvers: String? = null,
+    /** "UDP" / "TCP" / "MIXED" from a BOTH-mode scan, or null when no hint is available. */
+    selectedResolversTransportHint: String? = null,
     viewModel: EditProfileViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -132,6 +135,18 @@ fun EditProfileScreen(
             if (resolvers.isNotBlank()) {
                 viewModel.updateResolvers(resolvers)
             }
+        }
+    }
+
+    // Apply transport hint from BOTH-mode scan. Only acts when the profile's current
+    // transport is UDP/TCP (DoT/DoH choices are left alone). MIXED triggers a warning.
+    LaunchedEffect(selectedResolversTransportHint) {
+        when (selectedResolversTransportHint) {
+            "UDP", "TCP" -> viewModel.applyScanTransportHint(selectedResolversTransportHint)
+            "MIXED" -> snackbarHostState.showSnackbar(
+                "Selected resolvers don't share a transport — pick UDP or TCP manually."
+            )
+            else -> {}
         }
     }
 
@@ -179,9 +194,13 @@ fun EditProfileScreen(
                     }
                 },
                 actions = {
-                    val lockedCanEditDns = uiState.isLocked &&
-                            (uiState.isDnsttOrNoizOrVaydnsBased || uiState.isSlipstreamBased)
-                    if (!uiState.isLocked || lockedCanEditDns) {
+                    val lockedCanEditDns = uiState.isDnsttOrNoizOrVaydnsBased || uiState.isSlipstreamBased
+                    val lockedCanEditCreds = (uiState.useSsh && uiState.sshAuthType == SshAuthType.PASSWORD) ||
+                            uiState.isSocks5 ||
+                            uiState.isNaiveBased ||
+                            (uiState.showConnectionMethod && !uiState.useSsh && !uiState.isNaiveBased)
+                    val lockedCanEdit = uiState.isLocked && (lockedCanEditDns || lockedCanEditCreds)
+                    if (!uiState.isLocked || lockedCanEdit) {
                         if (uiState.isSaving) {
                             CircularProgressIndicator(
                                 modifier = Modifier.padding(16.dp),
@@ -846,7 +865,7 @@ fun EditProfileScreen(
                                     singleLine = true
                                 )
 
-                                // Advanced settings (hidden by default). Client ID Size stays locked.
+                                // Advanced settings (hidden by default)
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -919,8 +938,148 @@ fun EditProfileScreen(
                                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                             singleLine = true
                                         )
+                                        OutlinedTextField(
+                                            value = uiState.vaydnsClientIdSize,
+                                            onValueChange = { viewModel.updateVaydnsClientIdSize(it.filter { c -> c.isDigit() }.take(2)) },
+                                            label = { Text("Client ID Size (bytes)") },
+                                            placeholder = { Text("2 (default)") },
+                                            supportingText = { Text("ClientID length on the wire. Must match server. Ignored when DNSTT compat is on (fixed at 8).") },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            singleLine = true
+                                        )
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // Credentials card — editable username and password (masked)
+                val showSshCreds = uiState.useSsh && uiState.sshAuthType == SshAuthType.PASSWORD
+                val showSocksCreds = uiState.isSocks5 ||
+                        (uiState.showConnectionMethod && !uiState.useSsh && !uiState.isNaiveBased)
+                val showNaiveCreds = uiState.isNaiveBased
+                if (showSshCreds || showSocksCreds || showNaiveCreds) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Key,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "Credentials",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            Text(
+                                text = "You can change the username and password.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            if (showSocksCreds) {
+                                OutlinedTextField(
+                                    value = uiState.socksUsername,
+                                    onValueChange = { viewModel.updateSocksUsername(it) },
+                                    label = { Text("SOCKS5 Username") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                var lockedSocksPasswordVisible by remember { mutableStateOf(false) }
+                                OutlinedTextField(
+                                    value = uiState.socksPassword,
+                                    onValueChange = { viewModel.updateSocksPassword(it) },
+                                    label = { Text("SOCKS5 Password") },
+                                    visualTransformation = if (lockedSocksPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                    trailingIcon = {
+                                        IconButton(onClick = { lockedSocksPasswordVisible = !lockedSocksPasswordVisible }) {
+                                            Text(
+                                                text = if (lockedSocksPasswordVisible) "Hide" else "Show",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+
+                            if (showNaiveCreds) {
+                                OutlinedTextField(
+                                    value = uiState.naiveUsername,
+                                    onValueChange = { viewModel.updateNaiveUsername(it) },
+                                    label = { Text("Proxy Username") },
+                                    isError = uiState.naiveUsernameError != null,
+                                    supportingText = uiState.naiveUsernameError?.let { { Text(it) } },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                OutlinedTextField(
+                                    value = uiState.naivePassword,
+                                    onValueChange = { viewModel.updateNaivePassword(it) },
+                                    label = { Text("Proxy Password") },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    isError = uiState.naivePasswordError != null,
+                                    supportingText = uiState.naivePasswordError?.let { { Text(it) } },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+
+                            if (showSshCreds) {
+                                OutlinedTextField(
+                                    value = uiState.sshUsername,
+                                    onValueChange = { viewModel.updateSshUsername(it) },
+                                    label = { Text("SSH Username") },
+                                    isError = uiState.sshUsernameError != null,
+                                    supportingText = uiState.sshUsernameError?.let { { Text(it) } },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                var lockedSshPasswordVisible by remember { mutableStateOf(false) }
+                                OutlinedTextField(
+                                    value = uiState.sshPassword,
+                                    onValueChange = { viewModel.updateSshPassword(it) },
+                                    label = { Text("SSH Password") },
+                                    visualTransformation = if (lockedSshPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                    trailingIcon = {
+                                        IconButton(onClick = { lockedSshPasswordVisible = !lockedSshPasswordVisible }) {
+                                            Text(
+                                                text = if (lockedSshPasswordVisible) "Hide" else "Show",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    },
+                                    isError = uiState.sshPasswordError != null,
+                                    supportingText = uiState.sshPasswordError?.let { { Text(it) } },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
                             }
                         }
                     }
@@ -1090,13 +1249,23 @@ fun EditProfileScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    var socks5PasswordVisible by remember { mutableStateOf(false) }
                     OutlinedTextField(
                         value = uiState.socksPassword,
                         onValueChange = { viewModel.updateSocksPassword(it) },
                         label = { Text("Password (optional)") },
                         placeholder = { Text("") },
                         singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (socks5PasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { socks5PasswordVisible = !socks5PasswordVisible }) {
+                                Text(
+                                    text = if (socks5PasswordVisible) "Hide" else "Show",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -1169,11 +1338,11 @@ fun EditProfileScreen(
                     // TLS DPI bypass options (only relevant when security=tls)
                     if (uiState.vlessSecurity == "tls") {
                         OutlinedTextField(
-                            value = uiState.fakeSni,
-                            onValueChange = { viewModel.updateFakeSni(it) },
-                            label = { Text("TLS SNI Override") },
-                            placeholder = { Text("") },
-                            supportingText = { Text("Replace SNI hostname in ClientHello (direct servers only — breaks CDN routing)") },
+                            value = uiState.vlessSni,
+                            onValueChange = { viewModel.updateVlessSni(it) },
+                            label = { Text("TLS SNI") },
+                            placeholder = { Text("leave empty to use WS Host") },
+                            supportingText = { Text("Sent in the TLS ClientHello. Must match the CDN cert hostname for CDN routing; on direct servers any hostname works.") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -1901,6 +2070,16 @@ fun EditProfileScreen(
                                 label = { Text("Max Labels") },
                                 placeholder = { Text("unlimited") },
                                 supportingText = { Text("Max data labels in query name. 0 = unlimited.") },
+                                modifier = Modifier.fillMaxWidth(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = uiState.vaydnsClientIdSize,
+                                onValueChange = { viewModel.updateVaydnsClientIdSize(it.filter { c -> c.isDigit() }.take(2)) },
+                                label = { Text("Client ID Size (bytes)") },
+                                placeholder = { Text("2 (default)") },
+                                supportingText = { Text("ClientID length on the wire. Must match server. Ignored when DNSTT compat is on (fixed at 8).") },
                                 modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 singleLine = true

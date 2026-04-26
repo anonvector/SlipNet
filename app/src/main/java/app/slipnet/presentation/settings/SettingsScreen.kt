@@ -141,9 +141,11 @@ fun SettingsScreen(
     var showDnsWorkerDialog by remember { mutableStateOf(false) }
     var showResetSettingsDialog by remember { mutableStateOf(false) }
 
-    // Proxy settings - local state for port text fields to avoid cursor jumps from async DataStore round-trip
+    // Proxy settings - local state for text fields to avoid cursor jumps from async DataStore round-trip
     var proxyPort by remember { mutableStateOf(uiState.proxyListenPort.toString()) }
     var httpProxyPort by remember { mutableStateOf(uiState.httpProxyPort.toString()) }
+    var proxyAuthUsername by remember { mutableStateOf(uiState.proxyAuthUsername) }
+    var proxyAuthPassword by remember { mutableStateOf(uiState.proxyAuthPassword) }
 
     // Sync local state when DataStore values load (initial default → actual saved value)
     LaunchedEffect(uiState.proxyListenPort) {
@@ -151,6 +153,12 @@ fun SettingsScreen(
     }
     LaunchedEffect(uiState.httpProxyPort) {
         httpProxyPort = uiState.httpProxyPort.toString()
+    }
+    LaunchedEffect(uiState.proxyAuthUsername) {
+        if (uiState.proxyAuthUsername != proxyAuthUsername) proxyAuthUsername = uiState.proxyAuthUsername
+    }
+    LaunchedEffect(uiState.proxyAuthPassword) {
+        if (uiState.proxyAuthPassword != proxyAuthPassword) proxyAuthPassword = uiState.proxyAuthPassword
     }
 
     val addressOptions = getAddressOptions()
@@ -362,16 +370,22 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedTextField(
-                            value = uiState.proxyAuthUsername,
-                            onValueChange = { viewModel.setProxyAuthUsername(it) },
+                            value = proxyAuthUsername,
+                            onValueChange = { text ->
+                                proxyAuthUsername = text
+                                viewModel.setProxyAuthUsername(text)
+                            },
                             label = { Text("Username") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                             modifier = Modifier.weight(1f)
                         )
                         OutlinedTextField(
-                            value = uiState.proxyAuthPassword,
-                            onValueChange = { viewModel.setProxyAuthPassword(it) },
+                            value = proxyAuthPassword,
+                            onValueChange = { text ->
+                                proxyAuthPassword = text
+                                viewModel.setProxyAuthPassword(text)
+                            },
                             label = { Text("Password") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),

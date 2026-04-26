@@ -38,12 +38,16 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
@@ -107,6 +111,14 @@ data class DnsScannerUiState(
     val prismPrefilterTimeoutMs: String = "1500",
     // Last scan IPs dialog
     val showLastScanIpsDialog: Boolean = false,
+    /** Transport mode for DNS scan probes: UDP, TCP, or BOTH (UDP and TCP probed in parallel). */
+    val scanTransport: ScanTransportMode = ScanTransportMode.UDP,
+    /**
+     * Per-host transport support from BOTH-mode scans: host -> (udpOk, tcpOk).
+     * Empty outside BOTH mode. Used to render per-row badges and to recommend a
+     * transport when selected resolvers are applied to a profile.
+     */
+    val hostTransportSupport: Map<String, Pair<Boolean, Boolean>> = emptyMap(),
 ) {
     companion object {
         const val MAX_SELECTED_RESOLVERS = 8
@@ -278,6 +290,24 @@ enum class ScanMode {
     SIMPLE,
     PRISM,
     E2E
+}
+
+/**
+ * Transport mode selector for the DNS scanner. BOTH runs a UDP pass first,
+ * then retries only the hosts that didn't pass over TCP.
+ */
+enum class ScanTransportMode(val displayName: String) {
+    UDP("UDP"),
+    TCP("TCP"),
+    BOTH("Both");
+
+    companion object {
+        fun fromName(value: String?): ScanTransportMode = when (value) {
+            "TCP" -> TCP
+            "BOTH" -> BOTH
+            else -> UDP
+        }
+    }
 }
 
 private data class ScannerSettings(
@@ -575,6 +605,8 @@ class DnsScannerViewModel @Inject constructor(
             val prismResponseSize = preferencesDataStore.scannerPrismResponseSize.first()
             val prismPrefilter = preferencesDataStore.scannerPrismPrefilter.first()
             val prismPrefilterTimeoutMs = preferencesDataStore.scannerPrismPrefilterTimeoutMs.first()
+            val transportValue = preferencesDataStore.scannerTransport.first()
+            val scanTransport = ScanTransportMode.fromName(transportValue)
             _uiState.value = _uiState.value.copy(
                 timeoutMs = timeout,
                 concurrency = concurrency,
@@ -586,7 +618,8 @@ class DnsScannerViewModel @Inject constructor(
                 prismPassThreshold = prismPassThreshold,
                 prismResponseSize = prismResponseSize,
                 prismPrefilter = prismPrefilter,
-                prismPrefilterTimeoutMs = prismPrefilterTimeoutMs
+                prismPrefilterTimeoutMs = prismPrefilterTimeoutMs,
+                scanTransport = scanTransport
             )
         } catch (e: Exception) {
             Log.w("DnsScanner", "Failed to load scanner settings", e)
@@ -1020,6 +1053,17 @@ class DnsScannerViewModel @Inject constructor(
     fun updateConcurrency(concurrency: String) {
         _uiState.value = _uiState.value.copy(concurrency = concurrency)
         saveScannerSettings()
+    }
+
+    fun updateScanTransport(mode: ScanTransportMode) {
+        _uiState.value = _uiState.value.copy(scanTransport = mode)
+        viewModelScope.launch {
+            try {
+                preferencesDataStore.setScannerTransport(mode.name)
+            } catch (e: Exception) {
+                Log.w("DnsScanner", "Failed to save scan transport", e)
+            }
+        }
     }
 
     fun updatePrismTimeout(value: String) {
@@ -2015,27 +2059,29 @@ class DnsScannerViewModel @Inject constructor(
                     }
                 }
 
-                scannerRepository.scanResolvers(
+                runScanResolvers(
                     hosts = remainingDnsHosts,
                     port = resumeScanPort,
                     testDomain = state.effectiveTestDomain,
                     timeoutMs = timeout,
                     concurrency = concurrency,
-                    querySize = profile.dnsPayloadSize
-                ).collect { handleResult(it) }
+                    querySize = profile.dnsPayloadSize,
+                    mode = state.scanTransport
+                ) { handleResult(it) }
                 emitState(true, force = true)
 
                 if (focusRangeQueue.isNotEmpty()) {
                     val neighborIps = focusRangeQueue.toList()
                     _uiState.update { s -> s.copy(resolverList = s.resolverList + neighborIps) }
-                    scannerRepository.scanResolvers(
+                    runScanResolvers(
                         hosts = neighborIps,
                         port = resumeScanPort,
                         testDomain = state.effectiveTestDomain,
                         timeoutMs = timeout,
                         concurrency = concurrency,
-                        querySize = profile.dnsPayloadSize
-                    ).collect { handleResult(it) }
+                        querySize = profile.dnsPayloadSize,
+                        mode = state.scanTransport
+                    ) { handleResult(it) }
                 }
 
                 queue.close()
@@ -2119,6 +2165,153 @@ class DnsScannerViewModel @Inject constructor(
             startPassedCount = startPassedCount,
             existingResults = existingResults
         )
+    }
+
+    /**
+     * Run scanResolvers honouring [mode]. For BOTH, runs UDP first; hosts that
+     * don't return WORKING are retried over TCP. Each host's result is passed
+     * to [collector] exactly once (UDP result if WORKING, otherwise the TCP
+     * retry result) so downstream counters are not double-incremented.
+     */
+    private suspend fun runScanResolvers(
+        hosts: List<String>,
+        port: Int,
+        testDomain: String,
+        timeoutMs: Long,
+        concurrency: Int,
+        querySize: Int,
+        mode: ScanTransportMode,
+        collector: suspend (ResolverScanResult) -> Unit
+    ) {
+        when (mode) {
+            ScanTransportMode.UDP, ScanTransportMode.TCP -> {
+                val isTcp = mode == ScanTransportMode.TCP
+                val t = if (isTcp) DnsTransport.TCP else DnsTransport.UDP
+                scannerRepository.scanResolvers(
+                    hosts, port, testDomain, timeoutMs, concurrency, querySize, t
+                ).collect { result ->
+                    // Tag WORKING hits with the single tested transport so the UI can render a badge.
+                    if (result.status == ResolverStatus.WORKING) {
+                        val pair = if (isTcp) false to true else true to false
+                        _uiState.update { s ->
+                            s.copy(hostTransportSupport = s.hostTransportSupport + (result.host to pair))
+                        }
+                    }
+                    collector(result)
+                }
+            }
+            ScanTransportMode.BOTH -> coroutineScope {
+                val udpMap = java.util.concurrent.ConcurrentHashMap<String, ResolverScanResult>()
+                val tcpMap = java.util.concurrent.ConcurrentHashMap<String, ResolverScanResult>()
+                val emitted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+                val collectorLock = Mutex()
+
+                suspend fun maybeEmit(host: String) {
+                    val udp = udpMap[host] ?: return
+                    val tcp = tcpMap[host] ?: return
+                    if (!emitted.add(host)) return
+                    val udpOk = udp.status == ResolverStatus.WORKING
+                    val tcpOk = tcp.status == ResolverStatus.WORKING
+                    // Record per-host transport support so the UI can render badges and
+                    // the profile-apply flow can recommend a transport.
+                    _uiState.update { s ->
+                        s.copy(hostTransportSupport = s.hostTransportSupport + (host to (udpOk to tcpOk)))
+                    }
+                    // Prefer the WORKING result as the carrier (for responseTimeMs, tunnelTestResult, etc.);
+                    // UDP wins the tiebreak so timing is consistent with single-transport UDP scans.
+                    val base = when {
+                        udpOk -> udp
+                        tcpOk -> tcp
+                        else -> udp
+                    }
+                    collectorLock.withLock { collector(base) }
+                }
+
+                val udpJob = launch {
+                    scannerRepository.scanResolvers(
+                        hosts, port, testDomain, timeoutMs, concurrency, querySize, DnsTransport.UDP
+                    ).collect { r ->
+                        udpMap[r.host] = r
+                        maybeEmit(r.host)
+                    }
+                }
+                val tcpJob = launch {
+                    scannerRepository.scanResolvers(
+                        hosts, port, testDomain, timeoutMs, concurrency, querySize, DnsTransport.TCP
+                    ).collect { r ->
+                        tcpMap[r.host] = r
+                        maybeEmit(r.host)
+                    }
+                }
+                udpJob.join()
+                tcpJob.join()
+            }
+        }
+    }
+
+    /**
+     * Wrapper for [ResolverScannerRepository.isResolverAlive] that honours [mode].
+     * BOTH probes UDP and TCP concurrently and returns true if either succeeds.
+     */
+    private suspend fun isResolverAliveWithMode(
+        host: String, port: Int, testDomain: String, timeoutMs: Long, mode: ScanTransportMode
+    ): Boolean = when (mode) {
+        ScanTransportMode.UDP -> scannerRepository.isResolverAlive(host, port, testDomain, timeoutMs, DnsTransport.UDP)
+        ScanTransportMode.TCP -> scannerRepository.isResolverAlive(host, port, testDomain, timeoutMs, DnsTransport.TCP)
+        ScanTransportMode.BOTH -> coroutineScope {
+            val udpD = async { scannerRepository.isResolverAlive(host, port, testDomain, timeoutMs, DnsTransport.UDP) }
+            val tcpD = async { scannerRepository.isResolverAlive(host, port, testDomain, timeoutMs, DnsTransport.TCP) }
+            udpD.await() || tcpD.await()
+        }
+    }
+
+    /**
+     * Prism verification outcome. [passedProbes] is the best count across probed transports.
+     * [udpOk] / [tcpOk] record which transports passed the threshold — non-null only in BOTH mode.
+     */
+    private data class PrismVerifyOutcome(
+        val passedProbes: Int,
+        val udpOk: Boolean? = null,
+        val tcpOk: Boolean? = null
+    )
+
+    /**
+     * Wrapper for [ResolverScannerRepository.verifyResolver] that honours [mode].
+     * BOTH probes UDP and TCP concurrently and reports each transport's result separately.
+     */
+    private suspend fun verifyResolverWithMode(
+        host: String, port: Int, testDomain: String, pubkey: ByteArray, timeoutMs: Long,
+        probeCount: Int, passThreshold: Int, responseSize: Int, mode: ScanTransportMode
+    ): PrismVerifyOutcome = when (mode) {
+        ScanTransportMode.UDP -> PrismVerifyOutcome(
+            scannerRepository.verifyResolver(
+                host, port, testDomain, pubkey, timeoutMs, probeCount, passThreshold, responseSize, DnsTransport.UDP
+            )
+        )
+        ScanTransportMode.TCP -> PrismVerifyOutcome(
+            scannerRepository.verifyResolver(
+                host, port, testDomain, pubkey, timeoutMs, probeCount, passThreshold, responseSize, DnsTransport.TCP
+            )
+        )
+        ScanTransportMode.BOTH -> coroutineScope {
+            val udpD = async {
+                scannerRepository.verifyResolver(
+                    host, port, testDomain, pubkey, timeoutMs, probeCount, passThreshold, responseSize, DnsTransport.UDP
+                )
+            }
+            val tcpD = async {
+                scannerRepository.verifyResolver(
+                    host, port, testDomain, pubkey, timeoutMs, probeCount, passThreshold, responseSize, DnsTransport.TCP
+                )
+            }
+            val udp = udpD.await()
+            val tcp = tcpD.await()
+            PrismVerifyOutcome(
+                passedProbes = maxOf(udp, tcp),
+                udpOk = udp >= passThreshold,
+                tcpOk = tcp >= passThreshold
+            )
+        }
     }
 
     private fun launchScan(
@@ -2220,14 +2413,16 @@ class DnsScannerViewModel @Inject constructor(
                 }
             }
 
-            scannerRepository.scanResolvers(
+            val transport = _uiState.value.scanTransport
+            runScanResolvers(
                 hosts = hosts,
                 port = port,
                 testDomain = testDomain,
                 timeoutMs = timeout,
                 concurrency = concurrency,
-                querySize = querySize
-            ).collect { handleResult(it) }
+                querySize = querySize,
+                mode = transport
+            ) { handleResult(it) }
             emitState(true, force = true)
 
             // Phase 2: scan focus range neighbors
@@ -2236,14 +2431,15 @@ class DnsScannerViewModel @Inject constructor(
                 Log.d("DnsScanner", "Focus range: scanning ${neighborIps.size} neighbor IPs from ${expandedSubnets.size} subnets")
                 // Persist neighbors in resolverList so resume works
                 _uiState.update { s -> s.copy(resolverList = s.resolverList + neighborIps) }
-                scannerRepository.scanResolvers(
+                runScanResolvers(
                     hosts = neighborIps,
                     port = port,
                     testDomain = testDomain,
                     timeoutMs = timeout,
                     concurrency = concurrency,
-                    querySize = querySize
-                ).collect { handleResult(it) }
+                    querySize = querySize,
+                    mode = transport
+                ) { handleResult(it) }
             }
 
             emitState(false, force = true)
@@ -2376,14 +2572,16 @@ class DnsScannerViewModel @Inject constructor(
                 }
             }
 
-            scannerRepository.scanResolvers(
+            val transport = _uiState.value.scanTransport
+            runScanResolvers(
                 hosts = hosts,
                 port = port,
                 testDomain = testDomain,
                 timeoutMs = timeout,
                 concurrency = concurrency,
-                querySize = profile.dnsPayloadSize
-            ).collect { handleResult(it) }
+                querySize = profile.dnsPayloadSize,
+                mode = transport
+            ) { handleResult(it) }
             emitState(true, force = true)
 
             // Phase 2: scan focus range neighbors
@@ -2392,14 +2590,15 @@ class DnsScannerViewModel @Inject constructor(
                 Log.d("DnsScanner", "Focus range: scanning ${neighborIps.size} neighbor IPs")
                 // Persist neighbors in resolverList so resume works
                 _uiState.update { s -> s.copy(resolverList = s.resolverList + neighborIps) }
-                scannerRepository.scanResolvers(
+                runScanResolvers(
                     hosts = neighborIps,
                     port = port,
                     testDomain = testDomain,
                     timeoutMs = timeout,
                     concurrency = concurrency,
-                    querySize = profile.dnsPayloadSize
-                ).collect { handleResult(it) }
+                    querySize = profile.dnsPayloadSize,
+                    mode = transport
+                ) { handleResult(it) }
             }
 
             // DNS scan done — close queue so E2E coroutine finishes
@@ -2571,6 +2770,7 @@ class DnsScannerViewModel @Inject constructor(
 
             // Per-resolver: optional alive check then prism probes, all in one pass.
             val prefilterDomain = testDomain
+            val transport = _uiState.value.scanTransport
             val semaphore = kotlinx.coroutines.sync.Semaphore(concurrency)
             val jobs = hosts.map { host ->
                 launch {
@@ -2579,7 +2779,7 @@ class DnsScannerViewModel @Inject constructor(
                         // Optional pre-filter: skip dead IPs with a quick DNS check
                         if (prefilter) {
                             val pfTimeout = _uiState.value.prismPrefilterTimeoutMs.toLongOrNull()?.coerceAtLeast(200) ?: 1500L
-                            val alive = scannerRepository.isResolverAlive(host, port, prefilterDomain, pfTimeout)
+                            val alive = isResolverAliveWithMode(host, port, prefilterDomain, pfTimeout, transport)
                             if (!alive) {
                                 scannedCount.incrementAndGet()
                                 timeoutCount.incrementAndGet()
@@ -2589,10 +2789,11 @@ class DnsScannerViewModel @Inject constructor(
                         }
 
                         val start = System.currentTimeMillis()
-                        val passedProbes = withTimeoutOrNull(timeout) {
-                            scannerRepository.verifyResolver(host, port, testDomain, pubkey, timeout, probeCount, passThreshold, responseSize)
+                        val probeOutcome = withTimeoutOrNull(timeout) {
+                            verifyResolverWithMode(host, port, testDomain, pubkey, timeout, probeCount, passThreshold, responseSize, transport)
                         }
                         val ms = System.currentTimeMillis() - start
+                        val passedProbes = probeOutcome?.passedProbes
                         val verified = passedProbes != null && passedProbes >= passThreshold
                         scannedCount.incrementAndGet()
                         if (verified) {
@@ -2605,6 +2806,20 @@ class DnsScannerViewModel @Inject constructor(
                                 prismPassedProbes = passedProbes!!,
                                 prismTotalProbes = probeCount
                             ))
+                            // Tag transport support for the badge. BOTH mode reports both flags;
+                            // single-transport modes tag only the transport that was actually probed.
+                            val pair: Pair<Boolean, Boolean> = when (transport) {
+                                ScanTransportMode.BOTH -> {
+                                    val udpOk = probeOutcome!!.udpOk ?: false
+                                    val tcpOk = probeOutcome.tcpOk ?: false
+                                    udpOk to tcpOk
+                                }
+                                ScanTransportMode.TCP -> false to true
+                                ScanTransportMode.UDP -> true to false
+                            }
+                            _uiState.update { s ->
+                                s.copy(hostTransportSupport = s.hostTransportSupport + (host to pair))
+                            }
                         } else {
                             timeoutCount.incrementAndGet()
                         }
@@ -3046,6 +3261,27 @@ class DnsScannerViewModel @Inject constructor(
     fun getSelectedResolversString(): String {
         val port = _uiState.value.scanPort.toIntOrNull()?.coerceIn(1, 65535) ?: 53
         return _uiState.value.selectedResolvers.joinToString(",") { "$it:$port" }
+    }
+
+    /**
+     * Transport recommendation for the selected resolvers. Returns:
+     *  - "UDP" / "TCP" when a BOTH-mode scan proved every selected resolver works on that transport,
+     *  - "MIXED" when the selection contains resolvers with disjoint transports,
+     *  - null when the scan wasn't in BOTH mode or the data is unavailable.
+     */
+    fun getRecommendedTransportHint(): String? {
+        val state = _uiState.value
+        if (state.scanTransport != ScanTransportMode.BOTH) return null
+        val selected = state.selectedResolvers
+        if (selected.isEmpty()) return null
+        val support = state.hostTransportSupport
+        val entries = selected.mapNotNull { support[it] }
+        if (entries.isEmpty()) return null
+        val allUdp = entries.all { it.first }
+        if (allUdp) return "UDP"
+        val allTcp = entries.all { it.second }
+        if (allTcp) return "TCP"
+        return "MIXED"
     }
 
     fun clearError() {

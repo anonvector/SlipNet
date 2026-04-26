@@ -124,7 +124,7 @@ fun DnsScannerScreen(
     profileId: Long? = null,
     onNavigateBack: () -> Unit,
     onNavigateToResults: () -> Unit,
-    onResolversSelected: (String) -> Unit,
+    onResolversSelected: (String, String?) -> Unit,
     viewModel: DnsScannerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -318,6 +318,7 @@ fun DnsScannerScreen(
                 prismResponseSize = uiState.prismResponseSize,
                 prismPrefilter = uiState.prismPrefilter,
                 prismPrefilterTimeoutMs = uiState.prismPrefilterTimeoutMs,
+                scanTransport = uiState.scanTransport,
                 onTestDomainChange = { viewModel.updateTestDomain(it) },
                 onScanPortChange = { viewModel.updateScanPort(it) },
                 onTimeoutChange = { viewModel.updateTimeout(it) },
@@ -334,7 +335,8 @@ fun DnsScannerScreen(
                 onPrismResponseSizeChange = { viewModel.updatePrismResponseSize(it) },
                 onPrismPrefilterChange = { viewModel.updatePrismPrefilter(it) },
                 onPrismPrefilterTimeoutChange = { viewModel.updatePrismPrefilterTimeout(it) },
-                onResetPrismSettings = { viewModel.resetPrismSettings() }
+                onResetPrismSettings = { viewModel.resetPrismSettings() },
+                onScanTransportChange = { viewModel.updateScanTransport(it) }
             )
 
             // Resolver List
@@ -388,7 +390,10 @@ fun DnsScannerScreen(
                     onToggleSelection = { viewModel.toggleResolverSelection(it) },
                     onApply = {
                         viewModel.saveRecentDns()
-                        onResolversSelected(viewModel.getSelectedResolversString())
+                        onResolversSelected(
+                            viewModel.getSelectedResolversString(),
+                            viewModel.getRecommendedTransportHint()
+                        )
                     }
                 )
             }
@@ -656,6 +661,7 @@ private fun ConfigurationSection(
     prismResponseSize: String = "0",
     prismPrefilter: Boolean = false,
     prismPrefilterTimeoutMs: String = "1500",
+    scanTransport: ScanTransportMode = ScanTransportMode.UDP,
     onTestDomainChange: (String) -> Unit,
     onScanPortChange: (String) -> Unit,
     onTimeoutChange: (String) -> Unit,
@@ -672,7 +678,8 @@ private fun ConfigurationSection(
     onPrismResponseSizeChange: (String) -> Unit = {},
     onPrismPrefilterChange: (Boolean) -> Unit = {},
     onPrismPrefilterTimeoutChange: (String) -> Unit = {},
-    onResetPrismSettings: () -> Unit = {}
+    onResetPrismSettings: () -> Unit = {},
+    onScanTransportChange: (ScanTransportMode) -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -836,6 +843,32 @@ private fun ConfigurationSection(
                         modifier = Modifier.weight(0.8f),
                         shape = RoundedCornerShape(12.dp)
                     )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Transport",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    ScanTransportMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = scanTransport == mode,
+                            onClick = { onScanTransportChange(mode) },
+                            label = { Text(mode.displayName) },
+                            leadingIcon = if (scanTransport == mode) {
+                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                            } else null,
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.primary,
+                                selectedLeadingIconColor = MaterialTheme.colorScheme.primary
+                            )
+                        )
+                    }
                 }
             }
 

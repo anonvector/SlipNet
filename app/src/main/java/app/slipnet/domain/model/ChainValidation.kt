@@ -38,7 +38,7 @@ object ChainValidation {
     val CAN_BE_INTERMEDIATE = setOf(
         TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS, TunnelType.SLIPSTREAM,
         TunnelType.NAIVE, TunnelType.SNOWFLAKE, TunnelType.SOCKS5,
-        TunnelType.SSH
+        TunnelType.SSH, TunnelType.DOH
     )
 
     /** Tunnel types that can serve as the final (innermost) layer. */
@@ -58,6 +58,10 @@ object ChainValidation {
         TunnelType.NAIVE -> LayerOutput.SOCKS5
         TunnelType.SNOWFLAKE -> LayerOutput.SOCKS5
         TunnelType.SOCKS5 -> LayerOutput.SOCKS5
+        // DohBridge is itself a SOCKS5 server: CONNECTs are TCP-forwarded
+        // with DoH name resolution, so the next layer (e.g. Tor) can CONNECT
+        // through it to reach bridges/CDN endpoints that local DNS can't resolve.
+        TunnelType.DOH -> LayerOutput.SOCKS5
         else -> null
     }
 
@@ -68,8 +72,14 @@ object ChainValidation {
         TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS -> input == LayerOutput.SOCKS5  // needs SOCKS5 for resolver bypass
         TunnelType.NAIVE -> true  // NaiveProxy outbound is routed through VPN/previous layer
         TunnelType.SLIPSTREAM -> false  // Slipstream connects to its own server directly
-        TunnelType.DOH -> false
-        TunnelType.SNOWFLAKE -> false
+        // DoH can route its upstream HTTPS through a previous SOCKS5 layer
+        // (e.g. Snowflake/Tor), giving DoH-over-Tor.
+        TunnelType.DOH -> input == LayerOutput.SOCKS5
+        // Tor can route its own connections (and PTs: meek/obfs4/webtunnel)
+        // through a previous SOCKS5 layer via torrc Socks5Proxy and
+        // TOR_PT_PROXY, giving Tor-over-DoH for regions where direct access
+        // to bridge endpoints is blocked but a DoH resolver is still reachable.
+        TunnelType.SNOWFLAKE -> input == LayerOutput.SOCKS5
         else -> false
     }
 

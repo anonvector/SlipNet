@@ -8,6 +8,7 @@ import app.slipnet.domain.model.ResolverMode
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
+import app.slipnet.util.BundleCrypto
 import app.slipnet.util.LockPasswordUtil
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -19,6 +20,9 @@ sealed class ImportResult {
     ) : ImportResult()
 
     data class Error(val message: String) : ImportResult()
+
+    /** Input contains an encrypted bundle; caller must prompt for a password and retry. */
+    data object NeedsPassword : ImportResult()
 }
 
 /**
@@ -92,6 +96,7 @@ class ConfigImporter @Inject constructor() {
     companion object {
         private const val SCHEME = "slipnet://"
         private const val ENCRYPTED_SCHEME = "slipnet-enc://"
+        private const val BUNDLE_ENCRYPTED_SCHEME = "slipnet-bundle-enc://"
         private const val MODE_SLIPSTREAM = "ss"
         private const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         private const val MODE_DNSTT = "dnstt"
@@ -128,12 +133,38 @@ class ConfigImporter @Inject constructor() {
         private const val V16_FIELD_COUNT = 36
         private const val V17_FIELD_COUNT = 38
         private const val V18_FIELD_COUNT = 41
-        private const val CURRENT_MAX_VERSION = 26
+        private const val CURRENT_MAX_VERSION = 28
         private const val VLESS_SCHEME = "vless://"
     }
 
-    fun parseAndImport(input: String, localDeviceId: String = ""): ImportResult {
-        val lines = input.trim().lines().filter { it.isNotBlank() }
+    fun parseAndImport(
+        input: String,
+        localDeviceId: String = "",
+        bundlePassword: String? = null
+    ): ImportResult {
+        val trimmedInput = input.trim()
+
+        // Password-encrypted bundle: the whole input is one base64 blob.
+        // We unwrap it here and let the normal line-loop parse the decrypted
+        // multi-line bundle below.
+        val expanded = if (trimmedInput.startsWith(BUNDLE_ENCRYPTED_SCHEME, ignoreCase = true)) {
+            if (bundlePassword.isNullOrEmpty()) return ImportResult.NeedsPassword
+            val encoded = trimmedInput.substring(BUNDLE_ENCRYPTED_SCHEME.length)
+            val encryptedBytes = try {
+                Base64.decode(encoded, Base64.NO_WRAP)
+            } catch (e: Exception) {
+                return ImportResult.Error("Failed to decode encrypted bundle")
+            }
+            try {
+                BundleCrypto.decrypt(encryptedBytes, bundlePassword)
+            } catch (e: BundleCrypto.DecryptionException) {
+                return ImportResult.Error(e.message ?: "Failed to decrypt bundle")
+            }
+        } else {
+            trimmedInput
+        }
+
+        val lines = expanded.lines().filter { it.isNotBlank() }
 
         if (lines.isEmpty()) {
             return ImportResult.Error("No profiles found in input")
@@ -277,12 +308,13 @@ class ConfigImporter @Inject constructor() {
             "25" -> parseProfileV25(fields, lineNum)
             "26" -> parseProfileV26(fields, lineNum)
             "27" -> parseProfileV27(fields, lineNum)
+            "28" -> parseProfileV28(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 27) {
-                    parseProfileV27(fields, lineNum)
+                if (versionNum != null && versionNum > 28) {
+                    parseProfileV28(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -2269,8 +2301,11 @@ class ConfigImporter @Inject constructor() {
                 return ProfileParseResult.Error("Line $lineNum: Invalid VLESS UUID")
             }
 
-            // domain = CDN routing domain (WS Host header + default TLS SNI)
-            // fakeSni = TLS SNI override for DPI evasion (sent in fragmented ClientHello)
+            // domain  = WS Host header (routing hostname, used as SNI when vlessSni is empty)
+            // vlessSni = explicit TLS SNI — only stored when the URI's sni=
+            //            differs from host= (legitimate CDN setups where the
+            //            cert hostname ≠ the origin routing hostname, or a
+            //            DPI-evasion decoy on direct servers).
             val profile = ServerProfile(
                 name = profileName,
                 domain = wsHost,
@@ -2284,7 +2319,7 @@ class ConfigImporter @Inject constructor() {
                 sniFragmentEnabled = fragmentEnabled,
                 sniFragmentStrategy = fragmentStrategy,
                 sniFragmentDelayMs = fragmentDelay,
-                fakeSni = if (sni != wsHost) sni else ""
+                vlessSni = if (sni != wsHost) sni else ""
             )
 
             return ProfileParseResult.Success(profile)
@@ -2316,8 +2351,12 @@ class ConfigImporter @Inject constructor() {
         val sniFragmentStrategy = if (fields.size > 69 && fields[69].isNotBlank()) fields[69] else "sni_split"
         // SNI fragment delay (position 70)
         val sniFragmentDelayMs = if (fields.size > 70) fields[70].toIntOrNull() ?: 100 else 100
-        // Fake SNI (position 71)
-        val fakeSni = if (fields.size > 71) fields[71] else ""
+        // Legacy "fake SNI" field (position 71). v25–v27 used one SNI field
+        // that got overloaded by the URI importer — any sni= that differed
+        // from host= was stuffed here. Map it to the single vlessSni going
+        // forward. Only VLESS profiles ever populated position 71, so this is
+        // a no-op for other tunnel types.
+        val legacyFakeSni = if (fields.size > 71) fields[71] else ""
 
         val profile = baseResult.profile.copy(
             vlessUuid = vlessUuid,
@@ -2329,7 +2368,7 @@ class ConfigImporter @Inject constructor() {
             sniFragmentEnabled = sniFragmentEnabled,
             sniFragmentStrategy = sniFragmentStrategy,
             sniFragmentDelayMs = sniFragmentDelayMs,
-            fakeSni = fakeSni
+            vlessSni = legacyFakeSni
         )
 
         return ProfileParseResult.Success(profile)
@@ -2385,6 +2424,22 @@ class ConfigImporter @Inject constructor() {
             tcpMaxSeg = tcpMaxSeg
         )
         return ProfileParseResult.Success(profile)
+    }
+
+    // v28 moves the SNI to a dedicated trailing field (position 78) so legacy
+    // position 71 (the old conflated "fake SNI" slot) is deprecated. When
+    // present, position 78 wins over anything parseProfileV25 pulled from
+    // position 71. Older exports without field 78 keep working via v25's
+    // legacy mapping.
+    private fun parseProfileV28(fields: List<String>, lineNum: Int): ProfileParseResult {
+        val baseResult = parseProfileV27(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        return if (fields.size > 78) {
+            ProfileParseResult.Success(baseResult.profile.copy(vlessSni = fields[78]))
+        } else {
+            baseResult
+        }
     }
 
     private fun parseResolvers(resolversStr: String): List<DnsResolver> {

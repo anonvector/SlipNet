@@ -90,12 +90,12 @@ fun EditChainScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                "Layers (outermost first)",
+                "Layers",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                "Traffic flows: first layer \u2192 ... \u2192 last layer \u2192 Internet",
+                "Top layer reaches the Internet. Bottom layer receives your apps.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
