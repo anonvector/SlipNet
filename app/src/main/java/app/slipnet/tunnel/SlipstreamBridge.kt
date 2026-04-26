@@ -257,10 +257,7 @@ object SlipstreamBridge {
     @Synchronized
     fun stopClient() {
         if (!isLibraryLoaded) return
-        if (!isNativeRunning()) {
-            Log.d(TAG, "Slipstream client already stopped")
-            return
-        }
+        if (!isNativeRunning()) return
 
         val port = currentPort
         Log.i(TAG, "Stopping slipstream client on port $port")

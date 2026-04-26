@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class, ChainEntity::class],
-    version = 38,
+    version = 39,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -451,6 +451,22 @@ abstract class SlipNetDatabase : RoomDatabase() {
         val MIGRATION_37_38 = object : Migration(37, 38) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE server_profiles ADD COLUMN tcp_max_seg INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        // Splits the legacy single `fake_sni` column into two fields:
+        //   vless_sni — authoritative CDN SNI (may differ from WS Host legitimately)
+        //   fake_sni  — DPI-evasion override that *replaces* the real SNI
+        // Old imports stuffed any URI `sni=` that differed from `host=` into
+        // `fake_sni`, which incorrectly activated the "breaks CDN routing"
+        // override path. Migrate by copying existing fake_sni values into the
+        // new vless_sni column for VLESS profiles so legitimate CDN configs
+        // start working, and clear fake_sni so the override is no longer active
+        // on those profiles.
+        val MIGRATION_38_39 = object : Migration(38, 39) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN vless_sni TEXT NOT NULL DEFAULT ''")
+                db.execSQL("UPDATE server_profiles SET vless_sni = fake_sni, fake_sni = '' WHERE tunnel_type = 'vless' AND fake_sni != ''")
             }
         }
 

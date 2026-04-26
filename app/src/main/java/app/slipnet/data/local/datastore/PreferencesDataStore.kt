@@ -9,9 +9,12 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import app.slipnet.domain.model.DnsResolver
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -112,6 +115,7 @@ class PreferencesDataStore @Inject constructor(
         val SCANNER_PRISM_RESPONSE_SIZE = stringPreferencesKey("scanner_prism_response_size")
         val SCANNER_PRISM_PREFILTER = booleanPreferencesKey("scanner_prism_prefilter")
         val SCANNER_PRISM_PREFILTER_TIMEOUT_MS = stringPreferencesKey("scanner_prism_prefilter_timeout_ms")
+        val SCANNER_TRANSPORT = stringPreferencesKey("scanner_transport")
         // DNS Scanner Resolver List Selection Keys
         val SCANNER_LIST_SOURCE = stringPreferencesKey("scanner_list_source")
         val SCANNER_COUNTRY = stringPreferencesKey("scanner_country")
@@ -730,6 +734,26 @@ class PreferencesDataStore @Inject constructor(
     }
 
     /**
+     * Parsed Global DNS override list. Empty when the override is disabled or
+     * the list is blank. Single source of truth for the parsing — call sites
+     * (Connect path, ping flow) should not duplicate this string-splitting
+     * logic. Format: comma- or newline-separated `host[:port]`, port defaults
+     * to 53.
+     */
+    suspend fun parsedGlobalResolvers(): List<DnsResolver> = parsedGlobalResolversFlow.first()
+
+    /** Reactive variant of [parsedGlobalResolvers]; emits whenever the user toggles the override or edits the list. */
+    val parsedGlobalResolversFlow: Flow<List<DnsResolver>> =
+        combine(globalResolverEnabled, globalResolverList) { enabled, list ->
+            if (!enabled) emptyList()
+            else list.split(",", "\n").map { it.trim() }.filter { it.isNotBlank() }
+                .map { entry ->
+                    val parts = entry.split(":")
+                    DnsResolver(host = parts[0], port = parts.getOrNull(1)?.toIntOrNull() ?: 53)
+                }
+        }
+
+    /**
      * Returns the effective primary remote DNS server IP.
      * "8.8.8.8" for default mode, or the custom IP when custom mode is selected.
      */
@@ -800,6 +824,21 @@ class PreferencesDataStore @Inject constructor(
 
     val scannerPrismPrefilterTimeoutMs: Flow<String> = dataStore.data.map { prefs ->
         prefs[Keys.SCANNER_PRISM_PREFILTER_TIMEOUT_MS] ?: "1500"
+    }
+
+    /** DNS transport used by the scanner. Valid values: "UDP", "TCP", "BOTH". */
+    val scannerTransport: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.SCANNER_TRANSPORT] ?: "UDP"
+    }
+
+    suspend fun setScannerTransport(value: String) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SCANNER_TRANSPORT] = when (value) {
+                "TCP" -> "TCP"
+                "BOTH" -> "BOTH"
+                else -> "UDP"
+            }
+        }
     }
 
     suspend fun saveScannerSettings(

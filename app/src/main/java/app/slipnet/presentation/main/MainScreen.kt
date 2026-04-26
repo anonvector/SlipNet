@@ -29,6 +29,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -136,6 +138,7 @@ import app.slipnet.presentation.common.components.AboutDialogContent
 import app.slipnet.presentation.common.components.ProfileListItem
 import app.slipnet.presentation.common.components.QrCodeDialog
 import app.slipnet.presentation.common.icons.TorIcon
+import app.slipnet.presentation.common.icons.VlessIcon
 import app.slipnet.presentation.home.DebugLogSheet
 import app.slipnet.presentation.scanner.QrScannerActivity
 import androidx.compose.material.icons.filled.Timer
@@ -201,6 +204,7 @@ fun MainScreen(
     var showOverflowMenu by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf("") }
+    var showExportAllEncryptedDialog by remember { mutableStateOf(false) }
     var showAddMenu by remember { mutableStateOf(false) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
     var showDeleteDuplicatesDialog by remember { mutableStateOf(false) }
@@ -473,7 +477,7 @@ fun MainScreen(
                         ) {
                             DropdownMenuItem(
                                 text = {
-                                    Text(if (uiState.isPingRunning) "Stop Reachability Test" else "Test Server Reachability")
+                                    Text(if (uiState.isPingRunning) "Stop Real Ping" else "Real Ping")
                                 },
                                 onClick = {
                                     showOverflowMenu = false
@@ -483,7 +487,7 @@ fun MainScreen(
                             )
                             DropdownMenuItem(
                                 text = {
-                                    Text(if (uiState.isPingRunning) "Stop Ping" else "Ping Servers")
+                                    Text(if (uiState.isPingRunning) "Stop Simple Ping" else "Simple Ping")
                                 },
                                 onClick = {
                                     showOverflowMenu = false
@@ -518,6 +522,14 @@ fun MainScreen(
                                     viewModel.exportAllProfiles()
                                 },
                                 enabled = uiState.profiles.isNotEmpty()
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Export All (Encrypted)") },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    showExportAllEncryptedDialog = true
+                                },
+                                enabled = uiState.profiles.any { !it.isLocked }
                             )
                             DropdownMenuItem(
                                 text = { Text("Import Profiles") },
@@ -703,17 +715,49 @@ fun MainScreen(
                             viewModel.moveProfile(from.index, to.index)
                         }
 
-                        LazyColumn(
-                            state = lazyListState,
-                            contentPadding = PaddingValues(
-                                start = 16.dp, end = 16.dp,
-                                top = 8.dp,
-                                bottom = 200.dp + navBarPadding.calculateBottomPadding()
-                            ),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            // Pinned indicator: always visible (above the scrollable list) so
+                            // users see the active Global DNS context even after scrolling.
+                            if (uiState.pingingViaGlobalDns.isNotEmpty()) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                                        .background(
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                                            RoundedCornerShape(8.dp)
+                                        )
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Dns,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = "Pinging via Global DNS: " +
+                                            uiState.pingingViaGlobalDns.joinToString { "${it.host}:${it.port}" },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2
+                                    )
+                                }
+                            }
+
+                            LazyColumn(
+                                state = lazyListState,
+                                contentPadding = PaddingValues(
+                                    start = 16.dp, end = 16.dp,
+                                    top = 8.dp,
+                                    bottom = 200.dp + navBarPadding.calculateBottomPadding()
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                items(
                                 items = uiState.profiles,
                                 key = { it.id }
                             ) { profile ->
@@ -753,12 +797,15 @@ fun MainScreen(
                                             exportLockMode = "qr"
                                         },
                                         onPinClick = { viewModel.togglePinProfile(profile) },
+                                        onPingClick = { viewModel.pingSingleProfile(profile) },
+                                        isPingRunning = uiState.isPingRunning,
                                         modifier = Modifier
                                             .longPressDraggableHandle()
                                             .shadow(elevation, RoundedCornerShape(12.dp))
                                             .zIndex(if (isDragging) 1f else 0f)
                                     )
                                 }
+                            }
                             }
                         }
                     }
@@ -861,7 +908,7 @@ fun MainScreen(
                         }
                     )
                     AddMenuOption(
-                        icon = Icons.Default.Language,
+                        icon = VlessIcon,
                         title = "VLESS",
                         description = "VLESS over WebSocket (CDN)",
                         onClick = {
@@ -1383,6 +1430,166 @@ fun MainScreen(
                 }
             )
         }
+    }
+
+    // Password prompt for encrypted export — mirrors the single-profile lock dialog.
+    if (showExportAllEncryptedDialog) {
+        var pw by remember { mutableStateOf("") }
+        var pwVisible by remember { mutableStateOf(false) }
+        var hideRes by remember { mutableStateOf(false) }
+        var expiry by remember { mutableStateOf(false) }
+        var expiryDays by remember { mutableStateOf("30") }
+        var allowSharing by remember { mutableStateOf(false) }
+        var deviceId by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showExportAllEncryptedDialog = false },
+            title = { Text("Encrypted Export") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
+                    OutlinedTextField(
+                        value = pw,
+                        onValueChange = { pw = it },
+                        label = { Text("Lock Password") },
+                        visualTransformation = if (pwVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { pwVisible = !pwVisible }) {
+                                Icon(
+                                    imageVector = if (pwVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (pwVisible) "Hide password" else "Show password"
+                                )
+                            }
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Hide DNS resolver", style = MaterialTheme.typography.bodyMedium)
+                        Switch(checked = hideRes, onCheckedChange = { hideRes = it })
+                    }
+                    if (hideRes) {
+                        Text(
+                            text = "Resolver addresses will be hidden. Old app versions won't be able to import this bundle.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Set expiration", style = MaterialTheme.typography.bodyMedium)
+                        Switch(checked = expiry, onCheckedChange = { expiry = it })
+                    }
+                    if (expiry) {
+                        OutlinedTextField(
+                            value = expiryDays,
+                            onValueChange = { expiryDays = it.filter { c -> c.isDigit() } },
+                            label = { Text("Expires in (days)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Allow re-sharing", style = MaterialTheme.typography.bodyMedium)
+                        Switch(checked = allowSharing, onCheckedChange = { allowSharing = it })
+                    }
+                    OutlinedTextField(
+                        value = deviceId,
+                        onValueChange = { deviceId = it },
+                        label = { Text("Target Device ID (optional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "Device ID can be found in Settings on the target device",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val expiryMs = if (expiry) {
+                            val days = expiryDays.toLongOrNull() ?: 30
+                            System.currentTimeMillis() + days * 24 * 60 * 60 * 1000L
+                        } else 0L
+                        viewModel.exportAllProfilesEncrypted(
+                            password = pw,
+                            expirationDate = expiryMs,
+                            allowSharing = allowSharing,
+                            boundDeviceId = deviceId,
+                            hideResolvers = hideRes
+                        )
+                        showExportAllEncryptedDialog = false
+                    },
+                    enabled = pw.isNotBlank()
+                ) { Text("Export") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExportAllEncryptedDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // Password prompt for encrypted import (the user pasted a slipnet-bundle-enc:// URI)
+    uiState.pendingEncryptedImport?.let { encryptedInput ->
+        var pw by remember { mutableStateOf("") }
+        var pwVisible by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelEncryptedImport() },
+            title = { Text("Encrypted Bundle") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "This bundle is password-protected. Enter the password to decrypt.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedTextField(
+                        value = pw,
+                        onValueChange = { pw = it },
+                        label = { Text("Password") },
+                        singleLine = true,
+                        visualTransformation = if (pwVisible) {
+                            androidx.compose.ui.text.input.VisualTransformation.None
+                        } else {
+                            androidx.compose.ui.text.input.PasswordVisualTransformation()
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { pwVisible = !pwVisible }) {
+                                Icon(
+                                    if (pwVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (pwVisible) "Hide password" else "Show password"
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { viewModel.parseImportConfig(encryptedInput, pw) },
+                    enabled = pw.isNotEmpty()
+                ) { Text("Decrypt") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelEncryptedImport() }) { Text("Cancel") }
+            }
+        )
     }
 
     // Import input dialog

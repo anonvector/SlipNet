@@ -4,6 +4,7 @@ import android.util.Base64
 import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
+import app.slipnet.util.BundleCrypto
 import app.slipnet.util.LockPasswordUtil
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,7 +26,9 @@ class ConfigExporter @Inject constructor() {
     companion object {
         const val SCHEME = "slipnet://"
         const val ENCRYPTED_SCHEME = "slipnet-enc://"
-        const val VERSION = "27"
+        /** Scheme for password-encrypted multi-profile bundles (see [exportAllProfilesEncrypted]). */
+        const val BUNDLE_ENCRYPTED_SCHEME = "slipnet-bundle-enc://"
+        const val VERSION = "28"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -85,6 +88,47 @@ class ConfigExporter @Inject constructor() {
     fun exportAllProfiles(profiles: List<ServerProfile>): String {
         val exportable = profiles.filter { !it.isLocked }
         return exportable.joinToString("\n") { encodeProfile(it) }
+    }
+
+    /**
+     * Export all unlocked profiles into one password-encrypted bundle.
+     *
+     * When any of [expirationDate], [allowSharing], or [boundDeviceId] is set
+     * (or when [hideResolvers] is true), each inner profile is also marked
+     * locked with the same hashed password — giving per-profile enforcement
+     * after the bundle is decrypted.
+     */
+    fun exportAllProfilesEncrypted(
+        profiles: List<ServerProfile>,
+        password: String,
+        expirationDate: Long = 0,
+        allowSharing: Boolean = false,
+        boundDeviceId: String = "",
+        hideResolvers: Boolean = false
+    ): String {
+        require(password.isNotEmpty()) { "Password must not be empty" }
+        val exportable = profiles.filter { !it.isLocked }
+        require(exportable.isNotEmpty()) { "No exportable profiles" }
+        val lockForEnforcement =
+            expirationDate > 0 || allowSharing || boundDeviceId.isNotEmpty() || hideResolvers
+        val prepared = if (lockForEnforcement) {
+            val hash = LockPasswordUtil.hashPassword(password)
+            exportable.map { profile ->
+                profile.copy(
+                    isLocked = true,
+                    lockPasswordHash = hash,
+                    expirationDate = expirationDate,
+                    allowSharing = allowSharing,
+                    boundDeviceId = boundDeviceId
+                )
+            }
+        } else {
+            exportable
+        }
+        val bundle = prepared.joinToString("\n") { encodeProfile(it, hideResolvers) }
+        val encrypted = BundleCrypto.encrypt(bundle, password)
+        val encoded = Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        return "$BUNDLE_ENCRYPTED_SCHEME$encoded"
     }
 
     /** Strip the field delimiter so user-supplied strings can't shift field positions. */
@@ -202,7 +246,11 @@ class ConfigExporter @Inject constructor() {
             if (profile.sniFragmentEnabled) "1" else "0",
             sanitize(profile.sniFragmentStrategy),
             profile.sniFragmentDelayMs.toString(),
-            sanitize(profile.fakeSni),
+            // v25–v27 held the SNI here. v28 moves it to the trailing vlessSni
+            // field so position 71 stays empty in all new exports. Kept in the
+            // layout so v27 readers can still parse v28 output (they'd just
+            // see SNI="", falling back to domain — usually fine).
+            "",
             // v26: DPI evasion options
             if (profile.chPaddingEnabled) "1" else "0",
             if (profile.wsHeaderObfuscation) "1" else "0",
@@ -212,7 +260,11 @@ class ConfigExporter @Inject constructor() {
             // v27: Decoy hostname for `fake` strategy (empty = use built-in default)
             sanitize(profile.fakeDecoyHost),
             // v27: TCP MSS override on CDN socket (0 = auto, 40..1400 = explicit, <0 = force-disable)
-            profile.tcpMaxSeg.toString()
+            profile.tcpMaxSeg.toString(),
+            // v28: Single TLS SNI for VLESS. Empty = the bridge falls back to
+            // profile.domain (the WS Host). Replaces the legacy position-71
+            // field that v25–v27 used.
+            sanitize(profile.vlessSni)
         ).joinToString(FIELD_DELIMITER)
     }
 

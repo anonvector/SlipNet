@@ -491,20 +491,9 @@ class SlipNetVpnService : VpnService() {
                 Log.i(TAG, "Starting VPN with tunnel type: $currentTunnelType")
 
                 // Global resolver override: replace profile resolvers with user's global list
-                val globalResolverOverride: List<app.slipnet.domain.model.DnsResolver>? = if (preferencesDataStore.globalResolverEnabled.first()) {
-                    val globalList = preferencesDataStore.globalResolverList.first()
-                    val parsed = globalList.split(",", "\n").map { it.trim() }.filter { it.isNotBlank() }
-                        .map { entry ->
-                            val parts = entry.split(":")
-                            val host = parts[0]
-                            val port = parts.getOrNull(1)?.toIntOrNull() ?: 53
-                            app.slipnet.domain.model.DnsResolver(host = host, port = port)
-                        }
-                    if (parsed.isNotEmpty()) {
-                        Log.i(TAG, "Using global DNS resolver override: ${parsed.joinToString { "${it.host}:${it.port}" }}")
-                        parsed
-                    } else null
-                } else null
+                val globalResolverOverride: List<app.slipnet.domain.model.DnsResolver>? =
+                    preferencesDataStore.parsedGlobalResolvers().takeIf { it.isNotEmpty() }
+                        ?.also { Log.i(TAG, "Using global DNS resolver override: ${it.joinToString { r -> "${r.host}:${r.port}" }}") }
 
                 // Extract global DNS IP for hostname resolution (bypasses ISP DNS filtering)
                 val globalDnsIp = globalResolverOverride?.firstOrNull()?.host?.takeIf {
@@ -862,6 +851,29 @@ class SlipNetVpnService : VpnService() {
                 return
             }
 
+            // For Snowflake, wait for Tor to finish bootstrapping. Without this,
+            // the chain only checks that TorSocksBridge's listener is open, which
+            // happens before Tor has reached any relay — the UI flips to
+            // "Connected" while Tor is still stalled on PT/bridge contact.
+            if (profile.tunnelType == TunnelType.SNOWFLAKE) {
+                Log.i(TAG, "Chain layer $i: waiting for Tor to bootstrap...")
+                if (!waitForTorReady(maxWaitMs = 300000)) {
+                    connectionManager.onVpnError(
+                        "Tor failed to bootstrap within timeout " +
+                        "(${SnowflakeBridge.torBootstrapProgress}%)"
+                    )
+                    for (layer in startedLayers.reversed()) stopLayer(layer)
+                    activeChainLayers = emptyList()
+                    currentChainId = -1
+                    vpnInterface?.close()
+                    vpnInterface = null
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return
+                }
+                Log.i(TAG, "Chain layer $i: Tor bootstrapped")
+            }
+
             // For Slipstream, wait for QUIC handshake
             if (profile.tunnelType == TunnelType.SLIPSTREAM) {
                 if (!waitForQuicReady(maxAttempts = 50, delayMs = 200)) {
@@ -1149,10 +1161,52 @@ class SlipNetVpnService : VpnService() {
             TunnelType.SNOWFLAKE -> {
                 val ptPort = internalPortBase + 1
                 val torPort = internalPortBase
-                vpnRepository.startSnowflakeProxy(profile, ptPort, torPort, layerPort)
+                // If the previous layer provides SOCKS5 (e.g. a DoH layer),
+                // route Tor + lyrebird PTs through it so bridge/CDN contact
+                // rides that layer instead of going direct.
+                val upstream = if (prevPort > 0 && prevLayerType != null &&
+                    app.slipnet.domain.model.ChainValidation.outputType(prevLayerType) ==
+                    app.slipnet.domain.model.LayerOutput.SOCKS5
+                ) {
+                    java.net.InetSocketAddress(prevHost, prevPort).also {
+                        Log.i(TAG, "Snowflake[$layerIndex]: routing upstream through SOCKS5 $it")
+                    }
+                } else null
+                // The built-in Snowflake Go client ignores TOR_PT_PROXY, so chaining
+                // it behind another SOCKS5 layer gives no censorship benefit — the
+                // broker contact still goes direct. Surface this as a hard error
+                // instead of letting Tor stall forever on unreachable brokers.
+                if (upstream != null) {
+                    val lines = profile.torBridgeLines.trim()
+                    val isBuiltIn = lines.isBlank() || lines == "SNOWFLAKE_AMP" || lines == "SMART"
+                    if (isBuiltIn) {
+                        return Result.failure(RuntimeException(
+                            "Built-in Snowflake cannot be chained behind another layer. " +
+                            "Use an obfs4/meek_lite/webtunnel bridge line for ${profile.name}, " +
+                            "or remove the preceding layer."
+                        ))
+                    }
+                }
+                vpnRepository.startSnowflakeProxy(profile, ptPort, torPort, layerPort, upstream)
             }
             TunnelType.DOH -> {
-                vpnRepository.startDohProxy(profile)
+                // DoH is final-only in chains. If the previous layer provides
+                // SOCKS5 (e.g. Snowflake/Tor), thread it through so DoH HTTPS
+                // and TCP passthrough ride the outer circuit.
+                val upstream = if (prevPort > 0 && prevLayerType != null &&
+                    app.slipnet.domain.model.ChainValidation.outputType(prevLayerType) ==
+                    app.slipnet.domain.model.LayerOutput.SOCKS5
+                ) {
+                    java.net.InetSocketAddress(prevHost, prevPort).also {
+                        Log.i(TAG, "DoH[$layerIndex]: routing upstream through SOCKS5 $it")
+                    }
+                } else null
+                vpnRepository.startDohProxy(
+                    profile = profile,
+                    portOverride = layerPort,
+                    hostOverride = layerHost,
+                    upstreamSocksAddr = upstream
+                )
             }
             TunnelType.SOCKS5 -> {
                 val socksInstance = Socks5ProxyBridge.createInstance("chain-socks5-$layerIndex")
@@ -3006,7 +3060,7 @@ class SlipNetVpnService : VpnService() {
                     sniSpoofTtl = profile.sniSpoofTtl,
                     fakeDecoyHost = profile.fakeDecoyHost,
                     tcpMaxSeg = profile.tcpMaxSeg,
-                    fakeSni = profile.fakeSni,
+                    vlessSni = profile.vlessSni,
                     chPaddingEnabled = profile.chPaddingEnabled,
                     wsHeaderObfuscation = profile.wsHeaderObfuscation,
                     wsPaddingEnabled = profile.wsPaddingEnabled
@@ -3072,7 +3126,7 @@ class SlipNetVpnService : VpnService() {
                 sniSpoofTtl = profile.sniSpoofTtl,
                 fakeDecoyHost = profile.fakeDecoyHost,
                 tcpMaxSeg = profile.tcpMaxSeg,
-                fakeSni = profile.fakeSni,
+                vlessSni = profile.vlessSni,
                 chPaddingEnabled = profile.chPaddingEnabled,
                 wsHeaderObfuscation = profile.wsHeaderObfuscation,
                 wsPaddingEnabled = profile.wsPaddingEnabled

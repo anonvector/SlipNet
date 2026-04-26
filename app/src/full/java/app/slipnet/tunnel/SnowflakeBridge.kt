@@ -7,6 +7,7 @@ import snowflake.SnowflakeClient
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -73,13 +74,19 @@ object SnowflakeBridge {
      * @param torSocksPort Port for Tor SOCKS5 listener
      * @param listenHost Local host (default: 127.0.0.1)
      * @param bridgeLines Custom bridge lines (one per line). Empty = use built-in Snowflake.
+     * @param upstreamSocksAddr Optional SOCKS5 proxy for all outbound connections
+     *        (Tor's own + lyrebird PTs). Set when this layer is chained behind
+     *        a DoH/SOCKS5 layer so bridge contact rides that layer instead of
+     *        going direct. Not plumbed into the built-in Snowflake Go client;
+     *        use a bridge line (obfs4/meek_lite/webtunnel) when chaining.
      */
     fun startClient(
         context: Context,
         snowflakePort: Int,
         torSocksPort: Int,
         listenHost: String = "127.0.0.1",
-        bridgeLines: String = ""
+        bridgeLines: String = "",
+        upstreamSocksAddr: InetSocketAddress? = null
     ): Result<Unit> {
         val isDirect = bridgeLines.trim() == "DIRECT"
         val isAmp = bridgeLines.trim() == "SNOWFLAKE_AMP"
@@ -100,6 +107,13 @@ object SnowflakeBridge {
         }
         if (isDirect) Log.i(TAG, "  Direct connection (no bridges)")
         Log.i(TAG, "  Tor SOCKS5: $listenHost:$torSocksPort")
+        if (upstreamSocksAddr != null) {
+            Log.i(TAG, "  Upstream SOCKS5: $upstreamSocksAddr")
+            if (useSnowflakePt) {
+                Log.w(TAG, "  Built-in Snowflake PT ignores upstream SOCKS5; " +
+                    "use a meek_lite/obfs4/webtunnel bridge line to chain through it")
+            }
+        }
         Log.i(TAG, "========================================")
 
         stopClient()
@@ -164,7 +178,7 @@ object SnowflakeBridge {
                     ))
                 Log.i(TAG, "PT binary: $ptBinaryPath (size=${File(ptBinaryPath).length()})")
 
-                val result = startLyrebird(context, ptBinaryPath, lyrebirdTransports)
+                val result = startLyrebird(context, ptBinaryPath, lyrebirdTransports, upstreamSocksAddr)
                 if (result.isFailure) {
                     return result
                 }
@@ -194,7 +208,8 @@ object SnowflakeBridge {
                 torSocksPort = torSocksPort,
                 snowflakePort = snowflakePort,
                 bridgeLines = bridgeLines,
-                lyrebirdMethods = lyrebirdMethods
+                lyrebirdMethods = lyrebirdMethods,
+                upstreamSocksAddr = upstreamSocksAddr
             )
 
             // Start Tor process
@@ -256,7 +271,8 @@ object SnowflakeBridge {
     private fun startLyrebird(
         context: Context,
         ptBinaryPath: String,
-        transports: List<String>
+        transports: List<String>,
+        upstreamSocksAddr: InetSocketAddress? = null
     ): Result<Unit> {
         lyrebirdCmethods.clear()
 
@@ -275,6 +291,16 @@ object SnowflakeBridge {
             put("TOR_PT_STATE_LOCATION", ptStateDir.absolutePath + "/")
             // Exit when stdin is closed (parent dies)
             put("TOR_PT_EXIT_ON_STDIN_CLOSE", "1")
+            // PT spec: TOR_PT_PROXY tells the transport to relay its outbound
+            // traffic through the given SOCKS5. Lyrebird honors this for
+            // meek_lite/obfs4/webtunnel, so a DoH layer providing SOCKS5 can
+            // carry bridge/CDN connections when direct contact is blocked.
+            if (upstreamSocksAddr != null) {
+                val host = upstreamSocksAddr.hostString
+                val port = upstreamSocksAddr.port
+                put("TOR_PT_PROXY", "socks5://$host:$port")
+                Log.i(TAG, "Lyrebird: TOR_PT_PROXY=socks5://$host:$port")
+            }
         }
 
         val process: Process
@@ -516,7 +542,8 @@ object SnowflakeBridge {
         torSocksPort: Int,
         snowflakePort: Int,
         bridgeLines: String = "",
-        lyrebirdMethods: Map<String, String> = emptyMap()
+        lyrebirdMethods: Map<String, String> = emptyMap(),
+        upstreamSocksAddr: InetSocketAddress? = null
     ): String {
         val torrcFile = File(torDataDir, "torrc")
         val isDirect = bridgeLines.trim() == "DIRECT"
@@ -527,6 +554,24 @@ object SnowflakeBridge {
             val transport = cleaned.split("\\s+".toRegex()).firstOrNull()?.lowercase() ?: ""
             transport in listOf("webtunnel", "meek_lite")
         }
+
+        // Whether the final torrc will contain a ClientTransportPlugin line.
+        // Tor rejects `Socks5Proxy` + `ClientTransportPlugin` together (it treats
+        // the combination as an "external proxy with another proxy type" and
+        // refuses to start), so we only emit `Socks5Proxy` when no PT is in use.
+        // When a PT is in use, lyrebird's `TOR_PT_PROXY` env handles upstream
+        // routing for meek/obfs4/webtunnel traffic, and Tor's own fetches ride
+        // through the bridge anyway.
+        val willEmitClientTransportPlugin = !isDirect && (
+            bridgeLines.isBlank() ||
+                bridgeLines.trim() == "SNOWFLAKE_AMP" ||
+                bridgeLines.trim() == "SMART" ||
+                bridgeLines.lines().any { line ->
+                    val cleaned = if (line.trim().lowercase().startsWith("bridge ")) line.trim().substring(7).trim() else line.trim()
+                    val transport = cleaned.split("\\s+".toRegex()).firstOrNull()?.lowercase() ?: ""
+                    transport in listOf("snowflake", "obfs4", "webtunnel", "meek_lite")
+                }
+        )
 
         // Common torrc settings (UseBridges omitted for direct mode)
         val common = buildString {
@@ -556,6 +601,32 @@ object SnowflakeBridge {
             appendLine("ClientUseIPv6 1")
             appendLine("ClientPreferIPv6ORPort auto")
             appendLine("SafeLogging 0")
+
+            // --- Iran / heavily-censored network tuning ---
+            // Minimize flash storage writes on mobile: Tor caches stay in RAM
+            // and only flush to disk on clean shutdown. Saves battery and wear
+            // on devices that spend most of their time backgrounded.
+            appendLine("AvoidDiskWrites 1")
+            // Default is 24h: Tor shuts down after a day of inactivity and
+            // re-bootstraps on next launch. For Iran users where bootstrap can
+            // take minutes over Snowflake/WebTunnel, 4 weeks avoids the
+            // "reopened app, have to wait again" case.
+            appendLine("DormantClientTimeout 2419200")
+            // Skip the 6s stagger before first authority contact. Consensus
+            // download is the long pole on censored networks; we want it ASAP.
+            appendLine("ClientBootstrapConsensusAuthorityDownloadInitialDelay 0")
+            // Force full connection padding. "auto" already enables it for
+            // bridge clients, but making it explicit guards against any future
+            // default change and makes the wire footprint less distinctive.
+            appendLine("ConnectionPadding 1")
+            appendLine("ReducedConnectionPadding 0")
+            // When chained behind a SOCKS5 layer (e.g. DoH), route Tor's own
+            // outbound connections through it. Skipped when a PT is configured
+            // because Tor rejects Socks5Proxy + ClientTransportPlugin together;
+            // in that case lyrebird's TOR_PT_PROXY env var covers PT traffic.
+            if (upstreamSocksAddr != null && !willEmitClientTransportPlugin) {
+                appendLine("Socks5Proxy ${upstreamSocksAddr.hostString}:${upstreamSocksAddr.port}")
+            }
         }.trim()
 
         // Transport-specific lines

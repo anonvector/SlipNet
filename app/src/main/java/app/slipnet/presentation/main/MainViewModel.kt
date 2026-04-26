@@ -8,6 +8,7 @@ import app.slipnet.data.export.ImportResult
 import app.slipnet.data.local.datastore.PreferencesDataStore
 import app.slipnet.domain.model.ChainValidation
 import app.slipnet.domain.model.ConnectionState
+import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.PingResult
 import app.slipnet.domain.model.ProfileChain
 import app.slipnet.domain.model.ServerProfile
@@ -69,6 +70,8 @@ data class MainUiState(
     val error: String? = null,
     val exportedJson: String? = null,
     val importPreview: ImportPreview? = null,
+    /** Input awaiting a password to decrypt (user pasted a slipnet-bundle-enc:// URI). */
+    val pendingEncryptedImport: String? = null,
     val qrCodeData: QrCodeData? = null,
     val showFirstLaunchAbout: Boolean = false,
     val trafficStats: TrafficStats = TrafficStats.EMPTY,
@@ -80,6 +83,13 @@ data class MainUiState(
     // Ping results per profile ID
     val pingResults: Map<Long, PingResult> = emptyMap(),
     val isPingRunning: Boolean = false,
+    /**
+     * Resolvers used by the *current* on-screen ping results when the Global
+     * DNS override was active. Set when a ping starts; cleared by
+     * [MainViewModel.clearPingResults]. Empty otherwise — the indicator only
+     * appears alongside actual ping activity, not whenever Global DNS is on.
+     */
+    val pingingViaGlobalDns: List<DnsResolver> = emptyList(),
     val sleepTimerRemainingSeconds: Int = 0,
     // Update checker
     val availableUpdate: app.slipnet.util.AppUpdate? = null,
@@ -261,6 +271,7 @@ class MainViewModel @Inject constructor(
             }
         }
     }
+
 
     private fun checkFirstLaunch() {
         viewModelScope.launch {
@@ -555,21 +566,54 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(exportedJson = json)
     }
 
+    fun exportAllProfilesEncrypted(
+        password: String,
+        expirationDate: Long = 0,
+        allowSharing: Boolean = false,
+        boundDeviceId: String = "",
+        hideResolvers: Boolean = false
+    ) {
+        val profiles = _uiState.value.profiles.filter { !it.isLocked }
+        if (profiles.isEmpty()) {
+            _uiState.value = _uiState.value.copy(error = "No exportable profiles")
+            return
+        }
+        try {
+            val encrypted = configExporter.exportAllProfilesEncrypted(
+                profiles, password, expirationDate, allowSharing, boundDeviceId, hideResolvers
+            )
+            _uiState.value = _uiState.value.copy(exportedJson = encrypted)
+        } catch (e: Exception) {
+            _uiState.value = _uiState.value.copy(error = "Failed to encrypt: ${e.message}")
+        }
+    }
+
     fun clearExportedJson() {
         _uiState.value = _uiState.value.copy(exportedJson = null)
     }
 
-    fun parseImportConfig(json: String) {
-        when (val result = configImporter.parseAndImport(json, connectionManager.getDeviceId())) {
+    fun parseImportConfig(json: String, bundlePassword: String? = null) {
+        val result = configImporter.parseAndImport(
+            json, connectionManager.getDeviceId(), bundlePassword
+        )
+        when (result) {
             is ImportResult.Success -> {
                 _uiState.value = _uiState.value.copy(
-                    importPreview = ImportPreview(result.profiles, result.warnings)
+                    importPreview = ImportPreview(result.profiles, result.warnings),
+                    pendingEncryptedImport = null
                 )
             }
             is ImportResult.Error -> {
                 _uiState.value = _uiState.value.copy(error = result.message)
             }
+            ImportResult.NeedsPassword -> {
+                _uiState.value = _uiState.value.copy(pendingEncryptedImport = json)
+            }
         }
+    }
+
+    fun cancelEncryptedImport() {
+        _uiState.value = _uiState.value.copy(pendingEncryptedImport = null)
     }
 
     fun confirmImport() {
@@ -649,7 +693,7 @@ class MainViewModel @Inject constructor(
 
     fun getDeviceId(): String = connectionManager.getDeviceId()
 
-    // ── Test Server Reachability ────────────────────────────────────────
+    // ── Real Ping (full E2E tunnel handshake) ───────────────────────────
 
     companion object {
         /** Tunnel types that use DNS tunneling and support E2E testing */
@@ -692,6 +736,9 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(pingResults = initial, isPingRunning = true)
 
         pingJob = viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                pingingViaGlobalDns = preferencesDataStore.parsedGlobalResolvers()
+            )
             try {
                 val tcpProfiles = profiles.filter {
                     it.tunnelType !in skipped && it.tunnelType !in E2E_TUNNEL_TYPES
@@ -751,6 +798,9 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(pingResults = initial, isPingRunning = true)
 
         pingJob = viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                pingingViaGlobalDns = preferencesDataStore.parsedGlobalResolvers()
+            )
             try {
                 val jobs = profiles.filter { it.tunnelType !in skipped }.map { profile ->
                     launch {
@@ -772,12 +822,22 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private fun getSimplePingTarget(profile: ServerProfile): Pair<String, Int>? {
+    private suspend fun getSimplePingTarget(profile: ServerProfile): Pair<String, Int>? {
         // Try direct TCP target first
         getTcpTarget(profile)?.let { return it }
-        // For DNS-tunneled profiles, ping the first resolver
-        val resolver = profile.resolvers.firstOrNull() ?: return null
+        // For DNS-tunneled profiles, ping the first resolver — honoring the
+        // global DNS override so the test mirrors what Connect actually uses.
+        val resolver = effectiveResolvers(profile).firstOrNull() ?: return null
         return resolver.host to resolver.port
+    }
+
+    /**
+     * Resolvers that Connect would actually use for [profile]: the user's
+     * Global DNS override list when enabled and non-empty, otherwise the
+     * profile's own resolvers.
+     */
+    private suspend fun effectiveResolvers(profile: ServerProfile): List<DnsResolver> {
+        return preferencesDataStore.parsedGlobalResolvers().ifEmpty { profile.resolvers }
     }
 
     private suspend fun pingTcp(host: String, port: Int): PingResult {
@@ -809,6 +869,9 @@ class MainViewModel @Inject constructor(
         )
 
         viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                pingingViaGlobalDns = preferencesDataStore.parsedGlobalResolvers()
+            )
             val result = if (profile.tunnelType in E2E_TUNNEL_TYPES) {
                 testProfileE2e(profile)
             } else {
@@ -827,7 +890,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun clearPingResults() {
-        _uiState.value = _uiState.value.copy(pingResults = emptyMap())
+        _uiState.value = _uiState.value.copy(pingResults = emptyMap(), pingingViaGlobalDns = emptyList())
     }
 
     /**
@@ -854,7 +917,9 @@ class MainViewModel @Inject constructor(
      * performs a handshake and HTTP/SSH verification, then reports total latency.
      */
     private suspend fun testProfileE2e(profile: ServerProfile): PingResult {
-        if (profile.resolvers.isEmpty()) return PingResult.Error("No resolver")
+        // Honor Global DNS override so the test mirrors what Connect uses.
+        val resolvers = effectiveResolvers(profile)
+        if (resolvers.isEmpty()) return PingResult.Error("No resolver")
 
         // Try resolvers in order — if the first is geo-blocked / rate-limited
         // right now, the profile can still work through a later one, so we
@@ -865,11 +930,11 @@ class MainViewModel @Inject constructor(
         // skipped once the budget is exhausted.
         val budgetStart = System.currentTimeMillis()
         var lastError = "Failed"
-        for ((index, resolver) in profile.resolvers.withIndex()) {
+        for ((index, resolver) in resolvers.withIndex()) {
             val elapsed = System.currentTimeMillis() - budgetStart
             val remainingBudget = E2E_TOTAL_BUDGET_MS - elapsed
             if (remainingBudget <= 1000L) {
-                lastError = "Timeout (${index} of ${profile.resolvers.size} resolvers tried)"
+                lastError = "Timeout (${index} of ${resolvers.size} resolvers tried)"
                 break
             }
             val perResolverTimeout = minOf(E2E_TIMEOUT_MS, remainingBudget)
@@ -894,7 +959,7 @@ class MainViewModel @Inject constructor(
                     // fetching gstatic.com over a 12s budget.
                     fullVerification = false
                 ) { phase ->
-                    val prefix = if (profile.resolvers.size > 1) "[${index + 1}/${profile.resolvers.size}] " else ""
+                    val prefix = if (resolvers.size > 1) "[${index + 1}/${resolvers.size}] " else ""
                     _uiState.value = _uiState.value.copy(
                         pingResults = _uiState.value.pingResults + (profile.id to PingResult.Testing(prefix + phase))
                     )
