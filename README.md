@@ -81,22 +81,9 @@ SlipNet supports multiple tunnel types with optional SSH chaining:
 
 ## Server Setup
 
-To use this client, you must have a compatible server. Please configure your server using one of the following deployment scripts:
+To use this client, you must run a compatible server. The official, supported way is **SlipGate** — a one-command Linux installer that sets up every protocol SlipNet supports (DNSTT, NoizDNS, VayDNS, Slipstream, SSH, NaiveProxy, VLESS).
 
-**NoizDNS (recommended for censored networks):**
-[**noizdns-deploy**](https://github.com/anonvector/noizdns-deploy) — One-click NoizDNS server with interactive management menu. Auto-detects both DNSTT and NoizDNS clients.
-
-**DNSTT + Slipstream (combined):**
-[**dnstm**](https://github.com/net2share/dnstm) — DNS Tunnel Manager supporting both Slipstream and DNSTT with SOCKS5, SSH, and Shadowsocks backends
-
-**DNSTT**:
-[**dnstt-deploy**](https://github.com/bugfloyd/dnstt-deploy)
-
-**Slipstream:**
-[**slipstream-rust-deploy**](https://github.com/AliRezaBeigy/slipstream-rust-deploy)
-
-**NaiveProxy:**
-[**slipgate**](https://github.com/anonvector/slipgate)
+[**SlipGate**](https://github.com/anonvector/slipgate) — one-command server installer with interactive management menu
 
 ## Screenshots
 
