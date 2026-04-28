@@ -12,7 +12,15 @@ A fast, modern VPN client featuring DNS tunneling with support for multiple prot
 
 > **This is a legitimate source-available anti-censorship tool** designed to help users in countries with internet censorship access the free internet. It is comparable to [Tor](https://www.torproject.org/), [Psiphon](https://psiphon.ca/), [Outline VPN](https://getoutline.org/) (Google Jigsaw), and [dnstt](https://www.bamsoftware.com/software/dnstt/). This project does not target, exploit, or attack any systems — it is a client-side privacy tool used voluntarily by end users.
 
-## Donate
+## User Guide
+
+Full step-by-step user guide (installation, profiles, scanner, troubleshooting, sharing & backup, security notes) — available in English and Persian:
+
+- [English (PDF)](docs/SlipNet_User_Guide_EN.pdf)
+- [فارسی (PDF)](docs/SlipNet_User_Guide_FA.pdf)
+- [Markdown source (EN + FA)](docs/USER_GUIDE.md)
+
+## Donations
 
 If you want to support development:
 
@@ -598,3 +606,4 @@ This project is **not authorized** for distribution on any application store, ma
 
 - [slipstream-rust](https://github.com/Mygod/slipstream-rust) - Rust QUIC tunneling library
 - [Stream-Gate](https://github.com/free-mba/Stream-Gate) - DNS tunnel scanning method
+- [VayDNS](https://github.com/net2share/vaydns) - Optimized DNS tunnel with configurable wire format
