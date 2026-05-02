@@ -8,6 +8,10 @@
   <img src="imgs/icon.png" alt="SlipNet Logo" width="200">
 </p>
 
+<p align="center">
+  <a href="https://oosmetrics.com/repo/anonvector/SlipNet"><img src="https://api.oosmetrics.com/api/v1/badge/achievement/c36a7332-cc55-4dfc-8b48-49678a659abe.svg" alt="oosmetrics"></a>
+</p>
+
 A fast, modern VPN client featuring DNS tunneling with support for multiple protocols. Available as an Android app (Jetpack Compose + Kotlin) and a cross-platform CLI client (Go).
 
 > **This is a legitimate source-available anti-censorship tool** designed to help users in countries with internet censorship access the free internet. It is comparable to [Tor](https://www.torproject.org/), [Psiphon](https://psiphon.ca/), [Outline VPN](https://getoutline.org/) (Google Jigsaw), and [dnstt](https://www.bamsoftware.com/software/dnstt/). This project does not target, exploit, or attack any systems — it is a client-side privacy tool used voluntarily by end users.
