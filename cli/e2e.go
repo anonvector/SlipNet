@@ -242,6 +242,23 @@ func testResolverE2E(parentCtx context.Context, resolverIP string, localPort int
 			case <-connDone:
 			}
 		}()
+		// Send a client identification string before reading. The DNS-tunnel
+		// client opens its upstream smux stream lazily on first client write
+		// — without this, the auth server never connects to the SSH server,
+		// no banner ever arrives, and the probe times out. This matches what
+		// `ssh.NewClientConn` does in the connect-mode path.
+		if _, werr := conn.Write([]byte("SSH-2.0-SlipNet_E2E\r\n")); werr != nil {
+			close(connDone)
+			conn.Close()
+			result.HTTPMs = time.Since(sshStart).Milliseconds()
+			result.TotalMs = time.Since(totalStart).Milliseconds()
+			if ctx.Err() != nil {
+				result.Error = "cancelled"
+			} else {
+				result.Error = fmt.Sprintf("ssh write ident: %v", werr)
+			}
+			return result
+		}
 		buf := make([]byte, 256)
 		n, err := conn.Read(buf)
 		close(connDone)
