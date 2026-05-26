@@ -119,6 +119,9 @@ data class DnsScannerUiState(
      * transport when selected resolvers are applied to a profile.
      */
     val hostTransportSupport: Map<String, Pair<Boolean, Boolean>> = emptyMap(),
+    // Saved DNS pool (explicitly saved by user from results screen)
+    val savedPoolLabel: String? = null,
+    val savedPoolSize: Int = 0,
 ) {
     companion object {
         const val MAX_SELECTED_RESOLVERS = 8
@@ -237,6 +240,8 @@ data class DnsScannerUiState(
     /** True when there are any last-scan results to load. */
     val hasLastScanIps: Boolean
         get() = lastScanWorkingIps.isNotEmpty()
+
+    val hasSavedPool: Boolean get() = savedPoolLabel != null && savedPoolSize > 0
 }
 
 enum class ListSource {
@@ -495,6 +500,7 @@ class DnsScannerViewModel @Inject constructor(
         loadProfile()
         observeVpnState()
         observeScanServiceState()
+        observeSavedPool()
     }
 
     /**
@@ -1143,6 +1149,53 @@ class DnsScannerViewModel @Inject constructor(
             selectedResolvers = emptySet(),
             showLastScanIpsDialog = false
         )
+    }
+
+    // --- Saved DNS pool ---
+
+    private fun observeSavedPool() {
+        viewModelScope.launch {
+            preferencesDataStore.savedDnsPoolLabel.collect { label ->
+                if (label != null) {
+                    val count = withContext(Dispatchers.IO) {
+                        preferencesDataStore.getSavedDnsPoolCount()
+                    }
+                    _uiState.update { it.copy(savedPoolLabel = label, savedPoolSize = count) }
+                } else {
+                    _uiState.update { it.copy(savedPoolLabel = null, savedPoolSize = 0) }
+                }
+            }
+        }
+    }
+
+    fun saveToPool(ips: List<String>, label: String) {
+        if (ips.isEmpty()) return
+        viewModelScope.launch {
+            preferencesDataStore.saveDnsPool(ips, label)
+            _uiState.update { it.copy(savedPoolLabel = label, savedPoolSize = ips.size) }
+        }
+    }
+
+    fun loadSavedPool() {
+        viewModelScope.launch {
+            val ips = withContext(Dispatchers.IO) {
+                preferencesDataStore.getSavedDnsPool()
+            } ?: return@launch
+            clearSavedSession()
+            e2eJob?.cancel()
+            simpleModeE2eJob?.cancel()
+            _uiState.update {
+                it.copy(
+                    resolverList = ips,
+                    listSource = ListSource.IMPORTED,
+                    scannerState = ScannerState(),
+                    selectedResolvers = emptySet(),
+                    e2eScannerState = E2eScannerState(),
+                    simpleModeE2eState = SimpleModeE2eState()
+                )
+            }
+            saveListSelection()
+        }
     }
 
     fun updateSelectedCountry(country: GeoBypassCountry) {
