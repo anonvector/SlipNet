@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
@@ -227,16 +228,18 @@ fun EditProfileScreen(
                 CircularProgressIndicator()
             }
         } else if (uiState.isLocked) {
-            // Locked profile view
+            // Locked profile view — only the header is in a Card; the rest of
+            // the sections (DNS, Credentials) match the non-locked screen's
+            // flat titleMedium-header style.
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // Profile info card
+                // Header card: name + tunnel type + locked-state info rows
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -282,7 +285,6 @@ fun EditProfileScreen(
 
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-                        // Info rows
                         if (uiState.expirationDate > 0) {
                             val isExpired = System.currentTimeMillis() > uiState.expirationDate
                             val dateStr = java.text.SimpleDateFormat("MMM dd, yyyy HH:mm", java.util.Locale.getDefault())
@@ -301,6 +303,19 @@ fun EditProfileScreen(
                                 value = "Bound"
                             )
                         }
+                        val displayUsername = when {
+                            uiState.useSsh && uiState.sshUsername.isNotBlank() -> uiState.sshUsername
+                            uiState.isNaiveBased && uiState.naiveUsername.isNotBlank() -> uiState.naiveUsername
+                            uiState.socksUsername.isNotBlank() -> uiState.socksUsername
+                            else -> null
+                        }
+                        if (displayUsername != null) {
+                            LockedInfoRow(
+                                icon = Icons.Default.Person,
+                                label = "Username",
+                                value = displayUsername
+                            )
+                        }
                         LockedInfoRow(
                             icon = Icons.Default.Share,
                             label = "Re-sharing",
@@ -309,48 +324,30 @@ fun EditProfileScreen(
                     }
                 }
 
-                // DNS settings card
+                // DNS settings section
                 if (uiState.isDnsttOrNoizOrVaydnsBased || uiState.isSlipstreamBased) {
-                    Card(
+                    Text(
+                        text = "DNS Settings",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    Text(
+                        text = "You can change DNS settings. Other profile details are locked.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                        ),
-                        shape = RoundedCornerShape(16.dp)
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Column(
-                            modifier = Modifier.padding(20.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.Dns,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = "DNS Settings",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-
-                            Text(
-                                text = "You can change DNS settings. Other profile details are locked.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
 
                             // DNS Transport selector (DNSTT-based profiles only)
                             if (uiState.isDnsttOrNoizOrVaydnsBased) {
                                 Text(
-                                    text = "Transport",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    text = "DNS Transport",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.padding(top = 8.dp)
                                 )
 
                                 Row(
@@ -361,20 +358,16 @@ fun EditProfileScreen(
                                         if (uiState.dnsTransport == transport) {
                                             Button(
                                                 onClick = { },
-                                                modifier = Modifier.weight(1f),
-                                                shape = RoundedCornerShape(10.dp),
-                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                                                modifier = Modifier.weight(1f)
                                             ) {
-                                                Text(transport.displayName, style = MaterialTheme.typography.labelMedium)
+                                                Text(transport.displayName)
                                             }
                                         } else {
                                             OutlinedButton(
                                                 onClick = { viewModel.updateDnsTransport(transport) },
-                                                modifier = Modifier.weight(1f),
-                                                shape = RoundedCornerShape(10.dp),
-                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                                                modifier = Modifier.weight(1f)
                                             ) {
-                                                Text(transport.displayName, style = MaterialTheme.typography.labelMedium)
+                                                Text(transport.displayName)
                                             }
                                         }
                                     }
@@ -444,6 +437,25 @@ fun EditProfileScreen(
                                             isError = uiState.resolversError != null,
                                             supportingText = {
                                                 Text(uiState.resolversError ?: if (isDoT) "IP or domain (host:853)" else "IP or domain (host:port)")
+                                            },
+                                            trailingIcon = {
+                                                IconButton(
+                                                    onClick = { viewModel.autoDetectResolver() },
+                                                    enabled = !uiState.isAutoDetecting
+                                                ) {
+                                                    if (uiState.isAutoDetecting) {
+                                                        CircularProgressIndicator(
+                                                            modifier = Modifier.size(18.dp),
+                                                            strokeWidth = 2.dp
+                                                        )
+                                                    } else {
+                                                        Text(
+                                                            text = "Local",
+                                                            style = MaterialTheme.typography.labelMedium,
+                                                            color = MaterialTheme.colorScheme.primary
+                                                        )
+                                                    }
+                                                }
                                             },
                                             singleLine = true,
                                             modifier = Modifier.fillMaxWidth(),
@@ -522,8 +534,9 @@ fun EditProfileScreen(
                                 }
                             }
 
-                            // DNS Query Size (locked profiles, not for VayDNS — it uses QNAME length instead)
-                            if (uiState.isDnsttOrNoizOrVaydnsBased && !uiState.isVaydnsBased) {
+                            // DNS Query Size (locked profiles, not for VayDNS — it uses QNAME length instead).
+                            // Hidden when Auto is on.
+                            if (uiState.isDnsttOrNoizOrVaydnsBased && !uiState.isVaydnsBased && !uiState.dnsAutoTune) {
                                 var showMtuDialogLocked by remember { mutableStateOf(false) }
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                 Row(
@@ -658,6 +671,34 @@ fun EditProfileScreen(
                                 }
                             }
 
+                            // Auto toggle for DNSTT/NoizDNS (locked) — sits below DNS Query Size.
+                            // Hidden when Authoritative is on (probe would be a no-op).
+                            if (uiState.isDnsttOrNoizBased && !uiState.dnsttAuthoritative) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Auto-tune",
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+                                        Text(
+                                            text = "Probe resolver at connect time to pick query length",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = uiState.dnsAutoTune,
+                                        onCheckedChange = { viewModel.updateDnsAutoTune(it) }
+                                    )
+                                }
+                            }
+
                             // Stealth mode (locked profiles, NoizDNS only)
                             if (uiState.isNoizdnsBased) {
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -728,8 +769,34 @@ fun EditProfileScreen(
                                     }
                                 }
 
-                                // QNAME Length
+                                // Auto toggle (locked, VayDNS) — sits below Record Type.
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Auto-tune",
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+                                        Text(
+                                            text = "Probe resolver at connect time to pick query length and rate limit",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = uiState.dnsAutoTune,
+                                        onCheckedChange = { viewModel.updateDnsAutoTune(it) }
+                                    )
+                                }
+
+                                // QNAME Length — hidden when Auto is on.
                                 var showQnameDialogLocked by remember { mutableStateOf(false) }
+                                if (!uiState.dnsAutoTune) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -853,17 +920,20 @@ fun EditProfileScreen(
                                         }
                                     )
                                 }
+                                } // end if (!uiState.dnsAutoTune)
 
-                                // Rate limit
-                                OutlinedTextField(
-                                    value = uiState.vaydnsRps,
-                                    onValueChange = { viewModel.updateVaydnsRps(it.filter { c -> c.isDigit() || c == '.' }.take(6)) },
-                                    label = { Text("Query Rate Limit (q/s)") },
-                                    supportingText = { Text("Max DNS queries per second. 0 = unlimited.") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                    singleLine = true
-                                )
+                                // Rate limit — hidden when Auto is on.
+                                if (!uiState.dnsAutoTune) {
+                                    OutlinedTextField(
+                                        value = uiState.vaydnsRps,
+                                        onValueChange = { viewModel.updateVaydnsRps(it.filter { c -> c.isDigit() || c == '.' }.take(6)) },
+                                        label = { Text("Query Rate Limit (q/s)") },
+                                        supportingText = { Text("Max DNS queries per second. 0 = unlimited.") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                        singleLine = true
+                                    )
+                                }
 
                                 // Advanced settings (hidden by default)
                                 Row(
@@ -951,48 +1021,30 @@ fun EditProfileScreen(
                                     }
                                 }
                             }
-                        }
                     }
                 }
 
-                // Credentials card — editable username and password (masked)
+                // Credentials section — editable username and password (masked)
                 val showSshCreds = uiState.useSsh && uiState.sshAuthType == SshAuthType.PASSWORD
                 val showSocksCreds = uiState.isSocks5 ||
                         (uiState.showConnectionMethod && !uiState.useSsh && !uiState.isNaiveBased)
                 val showNaiveCreds = uiState.isNaiveBased
                 if (showSshCreds || showSocksCreds || showNaiveCreds) {
-                    Card(
+                    Text(
+                        text = "Credentials",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    Text(
+                        text = "You can change the username and password.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                        ),
-                        shape = RoundedCornerShape(16.dp)
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Column(
-                            modifier = Modifier.padding(20.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.Key,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = "Credentials",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                            Text(
-                                text = "You can change the username and password.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
 
                             if (showSocksCreds) {
                                 OutlinedTextField(
@@ -1081,7 +1133,6 @@ fun EditProfileScreen(
                                     shape = RoundedCornerShape(12.dp)
                                 )
                             }
-                        }
                     }
                 }
 
@@ -1694,6 +1745,25 @@ fun EditProfileScreen(
                                 supportingText = {
                                     Text(uiState.resolversError ?: if (isDoT) "IP or domain (host:853)" else "IP or domain (host:port)")
                                 },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = { viewModel.autoDetectResolver() },
+                                        enabled = !uiState.isAutoDetecting
+                                    ) {
+                                        if (uiState.isAutoDetecting) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(18.dp),
+                                                strokeWidth = 2.dp
+                                            )
+                                        } else {
+                                            Text(
+                                                text = "Local",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -1764,6 +1834,7 @@ fun EditProfileScreen(
                             onSpreadCountChange = { viewModel.updateRrSpreadCount(it) }
                         )
                     }
+
                 }
 
                 // Authoritative Mode toggle (DNSTT/NoizDNS only — VayDNS has no authoritative mode)
@@ -1835,8 +1906,42 @@ fun EditProfileScreen(
                     }
                 }
 
-                // VayDNS: QNAME length slider (controls query size on the wire)
-                if (uiState.isVaydnsBased) {
+                // Auto-tune DNS query parameters (DNSTT/NoizDNS/VayDNS).
+                // Hidden when Authoritative is on — probe would be a no-op there.
+                val autoToggleVisible = uiState.isDnsttOrNoizOrVaydnsBased &&
+                    !(uiState.isDnsttOrNoizBased && uiState.dnsttAuthoritative)
+                if (autoToggleVisible) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Auto-tune",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = if (uiState.isVaydnsBased)
+                                    "Probe resolver at connect time to pick query length and rate limit"
+                                else
+                                    "Probe resolver at connect time to pick query length",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = uiState.dnsAutoTune,
+                            onCheckedChange = { viewModel.updateDnsAutoTune(it) }
+                        )
+                    }
+                }
+
+                // VayDNS: QNAME length slider (controls query size on the wire).
+                // Hidden when Auto is on — value is probed at connect time.
+                if (uiState.isVaydnsBased && !uiState.dnsAutoTune) {
                     var showQnameDialog by remember { mutableStateOf(false) }
                     Row(
                         modifier = Modifier
@@ -1987,8 +2092,8 @@ fun EditProfileScreen(
                     }
                 }
 
-                // VayDNS: Query rate limit
-                if (uiState.isVaydnsBased) {
+                // VayDNS: Query rate limit. Hidden when Auto is on.
+                if (uiState.isVaydnsBased && !uiState.dnsAutoTune) {
                     OutlinedTextField(
                         value = uiState.vaydnsRps,
                         onValueChange = { viewModel.updateVaydnsRps(it.filter { c -> c.isDigit() || c == '.' }.take(6)) },
@@ -2088,8 +2193,8 @@ fun EditProfileScreen(
                     }
                 }
 
-                // DNS MTU selector (DNSTT/NoizDNS only)
-                if (uiState.isDnsttOrNoizBased) {
+                // DNS MTU selector (DNSTT/NoizDNS only). Hidden when Auto is on.
+                if (uiState.isDnsttOrNoizBased && !uiState.dnsAutoTune) {
                     var showMtuDialog by remember { mutableStateOf(false) }
                     Row(
                         modifier = Modifier
@@ -2294,11 +2399,11 @@ fun EditProfileScreen(
 
                     // Bridge type selector — vertical radio list
                     val bridgeOptions = listOf(
-                        TorBridgeType.SNOWFLAKE to Pair("Snowflake (built-in)", "Disguises your traffic as a video call"),
                         TorBridgeType.SNOWFLAKE_AMP to Pair("Snowflake (AMP)", "Uses Google AMP cache for rendezvous"),
                         TorBridgeType.DIRECT to Pair("Direct", "Connect directly without bridges (easiest to block)"),
                         TorBridgeType.OBFS4 to Pair("obfs4 (built-in)", "Disguises your traffic as random data"),
                         TorBridgeType.MEEK_AZURE to Pair("Meek (Azure)", "Disguises your traffic as cloud service requests"),
+                        TorBridgeType.SNOWFLAKE to Pair("Snowflake (built-in)", "Disguises your traffic as a video call"),
                         TorBridgeType.SMART to Pair("Smart Connect", "Automatically tries transports until one works"),
                         TorBridgeType.CUSTOM to Pair(
                             "Manual selection",
