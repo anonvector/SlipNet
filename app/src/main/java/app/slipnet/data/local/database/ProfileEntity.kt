@@ -60,9 +60,6 @@ data class ProfileEntity(
     val dnsttPublicKey: String = "",
 
     // SSH tunnel fields
-    @ColumnInfo(name = "ssh_enabled", defaultValue = "0")
-    val sshEnabled: Boolean = false,
-
     @ColumnInfo(name = "ssh_username", defaultValue = "")
     val sshUsername: String = "",
 
@@ -71,9 +68,6 @@ data class ProfileEntity(
 
     @ColumnInfo(name = "ssh_port", defaultValue = "22")
     val sshPort: Int = 22,
-
-    @ColumnInfo(name = "forward_dns_through_ssh", defaultValue = "0")
-    val forwardDnsThroughSsh: Boolean = false,
 
     @ColumnInfo(name = "ssh_host", defaultValue = "127.0.0.1")
     val sshHost: String = "127.0.0.1",
@@ -251,14 +245,6 @@ data class ProfileEntity(
     @ColumnInfo(name = "vless_sni", defaultValue = "")
     val vlessSni: String = "",
 
-    // Legacy column retained for Room schema compatibility only.
-    // Prior versions conflated "real SNI" and "DPI-evasion SNI override" into
-    // this one field; v39 migrated the real values into vless_sni and cleared
-    // this column. Kept nullable-empty going forward; drop in a future table
-    // recreation migration when convenient.
-    @ColumnInfo(name = "fake_sni", defaultValue = "")
-    val fakeSni: String = "",
-
     @ColumnInfo(name = "fake_decoy_host", defaultValue = "")
     val fakeDecoyHost: String = "",
 
@@ -273,5 +259,10 @@ data class ProfileEntity(
     val wsHeaderObfuscation: Boolean = false,
 
     @ColumnInfo(name = "ws_padding_enabled", defaultValue = "0")
-    val wsPaddingEnabled: Boolean = false
+    val wsPaddingEnabled: Boolean = false,
+
+    // When true, the DNS query length (and, for VayDNS, the rate limit) are
+    // probed at connect time instead of read from the user-set fields.
+    @ColumnInfo(name = "dns_auto_tune", defaultValue = "0")
+    val dnsAutoTune: Boolean = false
 )
