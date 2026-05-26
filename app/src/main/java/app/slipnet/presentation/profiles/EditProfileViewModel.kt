@@ -153,6 +153,10 @@ data class EditProfileUiState(
     val boundDeviceId: String = "",
     // NoizDNS stealth mode
     val noizdnsStealth: Boolean = false,
+    // When true, DNS query length and (for VayDNS) rate limit are probed at
+    // connect time instead of read from dnsPayloadSize / vaydnsMaxQnameLen /
+    // vaydnsRps. Applies to DNSTT/NoizDNS/VayDNS.
+    val dnsAutoTune: Boolean = false,
     // DNS query payload size (default 100, 0 = full capacity)
     val dnsPayloadSize: Int = 100,
     // Hidden resolvers (imported profile had resolvers hidden by exporter)
@@ -373,6 +377,7 @@ class EditProfileViewModel @Inject constructor(
                     torBridgeLines = profile.torBridgeLines,
                     dnsttAuthoritative = profile.dnsttAuthoritative,
                     noizdnsStealth = profile.noizdnsStealth,
+                    dnsAutoTune = profile.dnsAutoTune,
                     dnsPayloadSize = profile.dnsPayloadSize,
                     vaydnsDnsttCompat = profile.vaydnsDnsttCompat,
                     vaydnsRecordType = profile.vaydnsRecordType,
@@ -611,6 +616,10 @@ class EditProfileViewModel @Inject constructor(
 
     fun updateDnsttAuthoritative(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(dnsttAuthoritative = enabled)
+    }
+
+    fun updateDnsAutoTune(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(dnsAutoTune = enabled)
     }
 
     fun updateNaivePort(port: String) {
@@ -1499,6 +1508,7 @@ class EditProfileViewModel @Inject constructor(
                     torBridgeLines = if (state.isSnowflake) state.torBridgeLines.trim() else "",
                     dnsttAuthoritative = if (state.isDnsttOrNoizBased) state.dnsttAuthoritative else false,
                     noizdnsStealth = if (state.isNoizdnsBased) state.noizdnsStealth else false,
+                    dnsAutoTune = if (state.isDnsttOrNoizOrVaydnsBased) state.dnsAutoTune else false,
                     dnsPayloadSize = if (state.isDnsttOrNoizOrVaydnsBased) state.dnsPayloadSize else 0,
                     naivePort = if (state.isNaiveBased) (state.naivePort.toIntOrNull() ?: 443) else 443,
                     naiveUsername = if (state.isNaiveBased) state.naiveUsername.trim() else "",
@@ -1718,7 +1728,7 @@ class EditProfileViewModel @Inject constructor(
     }
 
     companion object {
-        const val MAX_RESOLVERS = 8
+        const val MAX_RESOLVERS = 10
         private const val BRIDGES_PER_TYPE = 2
 
         // Moat API (Tor bridge distribution)
