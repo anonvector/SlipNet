@@ -731,8 +731,7 @@ class ResolverScannerRepositoryImpl @Inject constructor(
             val parentDomain = getParentDomain(testDomain)
             val randSub = generateRandomSubdomain()
             val query = "$randSub.$parentDomain"
-            performDnsQuery(host, port, query, DNS_TYPE_A, timeoutMs, transport)
-            true
+            performDnsQuery(host, port, query, DNS_TYPE_A, timeoutMs, transport).success
         } catch (_: Exception) {
             false
         }
