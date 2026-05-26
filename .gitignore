@@ -121,3 +121,6 @@ cli/embedded/slipstream-client.gz
 cli/slipnet
 cli/slipnet-cli
 cli/slipnet.exe
+
+# Claude Code local config
+.claude/
