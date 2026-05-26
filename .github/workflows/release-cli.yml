@@ -1,9 +1,6 @@
 name: v2.5.0 CLI Build
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:
