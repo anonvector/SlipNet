@@ -90,6 +90,11 @@ class PreferencesDataStore @Inject constructor(
         // Global DNS Resolver Override
         val GLOBAL_RESOLVER_ENABLED = booleanPreferencesKey("global_resolver_enabled")
         val GLOBAL_RESOLVER_LIST = stringPreferencesKey("global_resolver_list")
+        // Global DNS Pool (shared candidate list scanned at connect time on
+        // DNSTT/NoizDNS/VayDNS profiles — top 10 lowest-latency win).
+        val DNS_POOL_ENABLED = booleanPreferencesKey("dns_pool_enabled")
+        val DNS_POOL_TEXT = stringPreferencesKey("dns_pool_text")
+        val DNS_POOL_FULL_VERIFICATION = booleanPreferencesKey("dns_pool_full_verification")
         // DNS Leak Prevention
         val PREVENT_DNS_FALLBACK = booleanPreferencesKey("prevent_dns_fallback")
         // Notification Traffic Counter
@@ -124,6 +129,7 @@ class PreferencesDataStore @Inject constructor(
         // Update Checker Keys
         val SKIPPED_UPDATE_VERSION = stringPreferencesKey("skipped_update_version")
         val LAST_UPDATE_CHECK_TIME = longPreferencesKey("last_update_check_time")
+        val SAVED_DNS_POOL_LABEL = stringPreferencesKey("saved_dns_pool_label")
     }
 
     // Auto-connect on boot
@@ -733,6 +739,32 @@ class PreferencesDataStore @Inject constructor(
         dataStore.edit { it[Keys.GLOBAL_RESOLVER_LIST] = list }
     }
 
+    // --- Global DNS Pool (shared across DNSTT/NoizDNS/VayDNS profiles) ---
+
+    val dnsPoolEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.DNS_POOL_ENABLED] ?: false
+    }
+
+    val dnsPoolText: Flow<String> = dataStore.data.map { prefs ->
+        prefs[Keys.DNS_POOL_TEXT] ?: ""
+    }
+
+    suspend fun setDnsPoolEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.DNS_POOL_ENABLED] = enabled }
+    }
+
+    suspend fun setDnsPoolText(text: String) {
+        dataStore.edit { it[Keys.DNS_POOL_TEXT] = text }
+    }
+
+    val dnsPoolFullVerification: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[Keys.DNS_POOL_FULL_VERIFICATION] ?: false
+    }
+
+    suspend fun setDnsPoolFullVerification(enabled: Boolean) {
+        dataStore.edit { it[Keys.DNS_POOL_FULL_VERIFICATION] = enabled }
+    }
+
     /**
      * Parsed Global DNS override list. Empty when the override is disabled or
      * the list is blank. Single source of truth for the parsing — call sites
@@ -898,6 +930,34 @@ class PreferencesDataStore @Inject constructor(
             prefs[Keys.SCANNER_SAMPLE_COUNT] = sampleCount
             prefs[Keys.SCANNER_CUSTOM_RANGE] = customRange
         }
+    }
+
+    // Saved DNS Pool (file-based — persists across scan sessions)
+    private val savedDnsPoolFile: File
+        get() = File(context.filesDir, "dns_pool.txt")
+
+    val savedDnsPoolLabel: Flow<String?> = dataStore.data.map { prefs ->
+        prefs[Keys.SAVED_DNS_POOL_LABEL]
+    }
+
+    suspend fun saveDnsPool(ips: List<String>, label: String) = withContext(Dispatchers.IO) {
+        savedDnsPoolFile.writeText(ips.joinToString("\n"))
+        dataStore.edit { prefs -> prefs[Keys.SAVED_DNS_POOL_LABEL] = label }
+    }
+
+    suspend fun getSavedDnsPool(): List<String>? = withContext(Dispatchers.IO) {
+        if (!savedDnsPoolFile.exists()) return@withContext null
+        savedDnsPoolFile.readLines().filter { it.isNotBlank() }.takeIf { it.isNotEmpty() }
+    }
+
+    suspend fun getSavedDnsPoolCount(): Int = withContext(Dispatchers.IO) {
+        if (!savedDnsPoolFile.exists()) 0
+        else savedDnsPoolFile.readLines().count { it.isNotBlank() }
+    }
+
+    suspend fun clearSavedDnsPool() = withContext(Dispatchers.IO) {
+        savedDnsPoolFile.delete()
+        dataStore.edit { prefs -> prefs.remove(Keys.SAVED_DNS_POOL_LABEL) }
     }
 
     // Scan Session (file-based — can be large with 10K+ resolvers)
