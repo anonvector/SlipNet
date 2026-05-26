@@ -80,16 +80,25 @@ build_openssl() {
 
     make clean 2>/dev/null || true
 
+    # Use neutral --prefix/--openssldir/--libdir so the build-machine path is
+    # not baked into OPENSSLDIR/ENGINESDIR/MODULESDIR in the compiled binary.
+    # Install via DESTDIR then copy the needed headers and static libs to $OUTPUT.
     ./Configure "$TARGET" \
         -D__ANDROID_API__=$ANDROID_API \
-        --prefix="$OUTPUT" \
-        --openssldir="$OUTPUT" \
+        --prefix=/usr/local \
+        --openssldir=/etc/ssl \
+        --libdir=lib \
         no-shared \
         no-tests \
         no-ui-console
 
     make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-    make install_sw
+    local DESTDIR_TMP="$OUTPUT/destdir"
+    make install_sw DESTDIR="$DESTDIR_TMP"
+    mkdir -p "$OUTPUT/lib" "$OUTPUT/include"
+    cp -rp "$DESTDIR_TMP/usr/local/include/." "$OUTPUT/include/"
+    find "$DESTDIR_TMP/usr/local/lib" -name "*.a" -exec cp {} "$OUTPUT/lib/" \;
+    rm -rf "$DESTDIR_TMP"
 
     echo "OpenSSL for $ABI installed to $OUTPUT"
 }
