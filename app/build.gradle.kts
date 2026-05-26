@@ -14,8 +14,8 @@ plugins {
 }
 
 val minSdkVersion = 24
-val appVersionName = "2.5.3"
-val appVersionCode = 77
+val appVersionName = "2.5.5-beta2"
+val appVersionCode = 79
 val cargoProfile = (findProperty("CARGO_PROFILE") as String?) ?: run {
     val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
     if (isRelease) "release" else "debug"
@@ -360,6 +360,12 @@ cargo {
 
         // Pass config encryption key to Rust build.rs for obfuscation
         spec.environment("CONFIG_ENCRYPTION_KEY", configEncryptionKey)
+
+        // Remap the build-machine home directory out of Rust panic strings.
+        // CARGO_ENCODED_RUSTFLAGS is appended to rustflags in .cargo/config.toml
+        // so the link-arg flags there are preserved.
+        val homeDir = System.getProperty("user.home")
+        spec.environment("CARGO_ENCODED_RUSTFLAGS", "--remap-path-prefix=${homeDir}=~")
 
         val toolchainPrebuilt = android.ndkDirectory
             .resolve("toolchains/llvm/prebuilt")
