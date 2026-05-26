@@ -2915,7 +2915,7 @@ class SlipNetVpnService : VpnService() {
 
     /**
      * Smart Connect: tries multiple Tor transports sequentially until one works.
-     * Transport sequence: Direct → Snowflake → obfs4 → Meek Azure.
+     * Transport sequence: Direct → obfs4 → Meek Azure → Snowflake.
      * On reconnect, SMART profiles fall back to built-in Snowflake (SnowflakeBridge
      * treats "SMART" sentinel as built-in Snowflake).
      */
@@ -3188,9 +3188,9 @@ class SlipNetVpnService : VpnService() {
         data class SmartTransport(val label: String, val bridgeLines: String, val timeoutMs: Long)
         val transports = listOf(
             SmartTransport("Direct", "DIRECT", 30000),
-            SmartTransport("Snowflake", "", 60000),
             SmartTransport("obfs4", app.slipnet.presentation.profiles.EditProfileViewModel.DEFAULT_OBFS4_BRIDGES, 60000),
-            SmartTransport("Meek Azure", app.slipnet.presentation.profiles.EditProfileViewModel.DEFAULT_MEEK_BRIDGE, 60000)
+            SmartTransport("Meek Azure", app.slipnet.presentation.profiles.EditProfileViewModel.DEFAULT_MEEK_BRIDGE, 60000),
+            SmartTransport("Snowflake", "", 60000)
         )
 
         val notificationManager = getSystemService(NotificationManager::class.java)
@@ -3330,6 +3330,7 @@ class SlipNetVpnService : VpnService() {
         // Mark connection as successful for auto-reconnect eligibility
         connectionWasSuccessful = true
         autoReconnectAttempt = 0
+        vpnRepository.setAutoReconnect(false)
         connectionEstablishedAt = System.currentTimeMillis()
 
         // Clear boot-triggered state — connection succeeded, normal auto-reconnect takes over
@@ -4722,6 +4723,7 @@ class SlipNetVpnService : VpnService() {
                 resetZeroThroughputCounter = true
             } finally {
                 isReconnecting = false
+                vpnRepository.setAutoReconnect(false)
             }
         }
     }
@@ -5138,7 +5140,7 @@ class SlipNetVpnService : VpnService() {
                         // Redundant updates cause notification reordering on MIUI/HyperOS.
                         val newTotal = current.totalBytes
                         val newSpeed = upSpeed + downSpeed
-                        if (newTotal != lastNotifTotalBytes || (newSpeed > 0) != (lastNotifHadSpeed)) {
+                        if (showTrafficInNotification && (newTotal != lastNotifTotalBytes || (newSpeed > 0) != (lastNotifHadSpeed))) {
                             lastNotifTotalBytes = newTotal
                             lastNotifHadSpeed = newSpeed > 0
                             val notification = notificationHelper.createVpnNotification(
@@ -5184,6 +5186,7 @@ class SlipNetVpnService : VpnService() {
         isAutoReconnecting = false
         autoReconnectAttempt = 0
         connectionWasSuccessful = false
+        vpnRepository.setAutoReconnect(false)
 
         // Cancel boot retry
         bootRetryJob?.cancel()
@@ -5191,6 +5194,10 @@ class SlipNetVpnService : VpnService() {
         isBootTriggered = false
         bootRetryAttempt = 0
         unregisterBootNetworkCallback()
+
+        // Cancel any in-progress DNS pool scan so it stops immediately
+        // instead of running each probe to its 8 s timeout.
+        vpnRepository.cancelPoolScan()
 
         // Cancel any in-progress connection attempt
         connectJob?.cancel()
@@ -5262,6 +5269,9 @@ class SlipNetVpnService : VpnService() {
             val delayMs = SEAMLESS_RECONNECT_DELAYS_MS[delayIdx]
             Log.i(TAG, "Attempting seamless reconnect ($seamlessReconnectAttempts/$maxSeamless) in ${delayMs}ms: $reason")
             delay(delayMs)
+            // Skip the DNS pool scan during seamless reconnect — the resolvers
+            // are already validated and saved from the initial connect.
+            vpnRepository.setAutoReconnect(true)
             handleNetworkChange("tunnel recovery: $reason")
             return
         }
@@ -5358,6 +5368,10 @@ class SlipNetVpnService : VpnService() {
                 return@launch
             }
             isAutoReconnecting = false
+            // Tell the repo this is an auto-reconnect so the DNS-pool feature
+            // reuses the resolvers already on the profile instead of running
+            // a fresh E2E scan on every network blip.
+            vpnRepository.setAutoReconnect(true)
             connect(profileId)
         }
     }
@@ -5590,6 +5604,8 @@ class SlipNetVpnService : VpnService() {
         isAutoReconnecting = false
         autoReconnectAttempt = 0
         connectionWasSuccessful = false
+        vpnRepository.setAutoReconnect(false)
+        vpnRepository.cancelPoolScan()
         connectJob?.cancel()
         connectJob = null
         reconnectDebounceJob?.cancel()
@@ -5681,6 +5697,10 @@ class SlipNetVpnService : VpnService() {
         autoReconnectJob?.cancel()
         autoReconnectJob = null
         isAutoReconnecting = false
+        vpnRepository.setAutoReconnect(false)
+
+        // Cancel any in-progress DNS pool scan
+        vpnRepository.cancelPoolScan()
 
         // Cancel any pending reconnect / network-loss timer
         reconnectDebounceJob?.cancel()
