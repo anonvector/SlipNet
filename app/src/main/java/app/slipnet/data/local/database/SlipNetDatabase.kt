@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class, ChainEntity::class],
-    version = 39,
+    version = 42,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -469,6 +469,166 @@ abstract class SlipNetDatabase : RoomDatabase() {
                 db.execSQL("UPDATE server_profiles SET vless_sni = fake_sni, fake_sni = '' WHERE tunnel_type = 'vless' AND fake_sni != ''")
             }
         }
+
+        val MIGRATION_39_40 = object : Migration(39, 40) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN dns_auto_tune INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_40_41 = object : Migration(40, 41) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // dns_pool / dns_pool_enabled were briefly here for the
+                // per-profile DNS pool; that feature became a global Settings
+                // pref before shipping, so this migration is now a no-op.
+            }
+        }
+
+        // Drops three legacy/redundant columns via table recreation:
+        //   fake_sni            — cleared by v39 migration, never read since
+        //   ssh_enabled         — derived from tunnel_type, never read back
+        //   forward_dns_through_ssh — old removed feature, always written false
+        val MIGRATION_41_42 = object : Migration(41, 42) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE server_profiles_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        name TEXT NOT NULL,
+                        domain TEXT NOT NULL DEFAULT '',
+                        resolvers_json TEXT NOT NULL DEFAULT '[]',
+                        authoritative_mode INTEGER NOT NULL,
+                        keep_alive_interval INTEGER NOT NULL,
+                        congestion_control TEXT NOT NULL,
+                        gso_enabled INTEGER NOT NULL,
+                        tcp_listen_port INTEGER NOT NULL,
+                        tcp_listen_host TEXT NOT NULL,
+                        socks_username TEXT NOT NULL DEFAULT '',
+                        socks_password TEXT NOT NULL DEFAULT '',
+                        is_active INTEGER NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        tunnel_type TEXT NOT NULL DEFAULT 'slipstream',
+                        dnstt_public_key TEXT NOT NULL DEFAULT '',
+                        ssh_username TEXT NOT NULL DEFAULT '',
+                        ssh_password TEXT NOT NULL DEFAULT '',
+                        ssh_port INTEGER NOT NULL DEFAULT 22,
+                        ssh_host TEXT NOT NULL DEFAULT '127.0.0.1',
+                        doh_url TEXT NOT NULL DEFAULT '',
+                        last_connected_at INTEGER NOT NULL DEFAULT 0,
+                        dns_transport TEXT NOT NULL DEFAULT 'udp',
+                        ssh_auth_type TEXT NOT NULL DEFAULT 'password',
+                        ssh_private_key TEXT NOT NULL DEFAULT '',
+                        ssh_key_passphrase TEXT NOT NULL DEFAULT '',
+                        tor_bridge_lines TEXT NOT NULL DEFAULT '',
+                        sort_order INTEGER NOT NULL DEFAULT 0,
+                        dnstt_authoritative INTEGER NOT NULL DEFAULT 0,
+                        naive_port INTEGER NOT NULL DEFAULT 443,
+                        naive_username TEXT NOT NULL DEFAULT '',
+                        naive_password TEXT NOT NULL DEFAULT '',
+                        is_locked INTEGER NOT NULL DEFAULT 0,
+                        lock_password_hash TEXT NOT NULL DEFAULT '',
+                        expiration_date INTEGER NOT NULL DEFAULT 0,
+                        allow_sharing INTEGER NOT NULL DEFAULT 0,
+                        bound_device_id TEXT NOT NULL DEFAULT '',
+                        noizdns_stealth INTEGER NOT NULL DEFAULT 0,
+                        dns_payload_size INTEGER NOT NULL DEFAULT 0,
+                        resolvers_hidden INTEGER NOT NULL DEFAULT 0,
+                        default_resolvers_json TEXT NOT NULL DEFAULT '[]',
+                        socks5_server_port INTEGER NOT NULL DEFAULT 1080,
+                        vaydns_dnstt_compat INTEGER NOT NULL DEFAULT 0,
+                        vaydns_record_type TEXT NOT NULL DEFAULT 'txt',
+                        vaydns_max_qname_len INTEGER NOT NULL DEFAULT 101,
+                        vaydns_rps REAL NOT NULL DEFAULT 0.0,
+                        vaydns_idle_timeout INTEGER NOT NULL DEFAULT 0,
+                        vaydns_keepalive INTEGER NOT NULL DEFAULT 0,
+                        vaydns_udp_timeout INTEGER NOT NULL DEFAULT 0,
+                        vaydns_max_num_labels INTEGER NOT NULL DEFAULT 0,
+                        vaydns_clientid_size INTEGER NOT NULL DEFAULT 0,
+                        is_pinned INTEGER NOT NULL DEFAULT 0,
+                        ssh_tls_enabled INTEGER NOT NULL DEFAULT 0,
+                        ssh_tls_sni TEXT NOT NULL DEFAULT '',
+                        ssh_http_proxy_host TEXT NOT NULL DEFAULT '',
+                        ssh_http_proxy_port INTEGER NOT NULL DEFAULT 8080,
+                        ssh_http_proxy_custom_host TEXT NOT NULL DEFAULT '',
+                        ssh_ws_enabled INTEGER NOT NULL DEFAULT 0,
+                        ssh_ws_path TEXT NOT NULL DEFAULT '/',
+                        ssh_ws_use_tls INTEGER NOT NULL DEFAULT 1,
+                        ssh_ws_custom_host TEXT NOT NULL DEFAULT '',
+                        ssh_payload TEXT NOT NULL DEFAULT '',
+                        resolver_mode TEXT NOT NULL DEFAULT 'fanout',
+                        rr_spread_count INTEGER NOT NULL DEFAULT 3,
+                        vless_uuid TEXT NOT NULL DEFAULT '',
+                        vless_security TEXT NOT NULL DEFAULT 'tls',
+                        vless_transport TEXT NOT NULL DEFAULT 'ws',
+                        vless_ws_path TEXT NOT NULL DEFAULT '/',
+                        cdn_ip TEXT NOT NULL DEFAULT '',
+                        cdn_port INTEGER NOT NULL DEFAULT 443,
+                        sni_fragment_enabled INTEGER NOT NULL DEFAULT 1,
+                        sni_fragment_strategy TEXT NOT NULL DEFAULT 'sni_split',
+                        sni_fragment_delay_ms INTEGER NOT NULL DEFAULT 100,
+                        sni_spoof_ttl INTEGER NOT NULL DEFAULT 8,
+                        vless_sni TEXT NOT NULL DEFAULT '',
+                        fake_decoy_host TEXT NOT NULL DEFAULT '',
+                        tcp_max_seg INTEGER NOT NULL DEFAULT 0,
+                        ch_padding_enabled INTEGER NOT NULL DEFAULT 0,
+                        ws_header_obfuscation INTEGER NOT NULL DEFAULT 0,
+                        ws_padding_enabled INTEGER NOT NULL DEFAULT 0,
+                        dns_auto_tune INTEGER NOT NULL DEFAULT 0
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO server_profiles_new (
+                        id, name, domain, resolvers_json, authoritative_mode,
+                        keep_alive_interval, congestion_control, gso_enabled,
+                        tcp_listen_port, tcp_listen_host, socks_username, socks_password,
+                        is_active, created_at, updated_at, tunnel_type, dnstt_public_key,
+                        ssh_username, ssh_password, ssh_port, ssh_host, doh_url,
+                        last_connected_at, dns_transport, ssh_auth_type, ssh_private_key,
+                        ssh_key_passphrase, tor_bridge_lines, sort_order, dnstt_authoritative,
+                        naive_port, naive_username, naive_password, is_locked, lock_password_hash,
+                        expiration_date, allow_sharing, bound_device_id, noizdns_stealth,
+                        dns_payload_size, resolvers_hidden, default_resolvers_json,
+                        socks5_server_port, vaydns_dnstt_compat, vaydns_record_type,
+                        vaydns_max_qname_len, vaydns_rps, vaydns_idle_timeout, vaydns_keepalive,
+                        vaydns_udp_timeout, vaydns_max_num_labels, vaydns_clientid_size,
+                        is_pinned, ssh_tls_enabled, ssh_tls_sni, ssh_http_proxy_host,
+                        ssh_http_proxy_port, ssh_http_proxy_custom_host, ssh_ws_enabled,
+                        ssh_ws_path, ssh_ws_use_tls, ssh_ws_custom_host, ssh_payload,
+                        resolver_mode, rr_spread_count, vless_uuid, vless_security,
+                        vless_transport, vless_ws_path, cdn_ip, cdn_port,
+                        sni_fragment_enabled, sni_fragment_strategy, sni_fragment_delay_ms,
+                        sni_spoof_ttl, vless_sni, fake_decoy_host, tcp_max_seg,
+                        ch_padding_enabled, ws_header_obfuscation, ws_padding_enabled, dns_auto_tune
+                    )
+                    SELECT
+                        id, name, domain, resolvers_json, authoritative_mode,
+                        keep_alive_interval, congestion_control, gso_enabled,
+                        tcp_listen_port, tcp_listen_host, socks_username, socks_password,
+                        is_active, created_at, updated_at, tunnel_type, dnstt_public_key,
+                        ssh_username, ssh_password, ssh_port, ssh_host, doh_url,
+                        last_connected_at, dns_transport, ssh_auth_type, ssh_private_key,
+                        ssh_key_passphrase, tor_bridge_lines, sort_order, dnstt_authoritative,
+                        naive_port, naive_username, naive_password, is_locked, lock_password_hash,
+                        expiration_date, allow_sharing, bound_device_id, noizdns_stealth,
+                        dns_payload_size, resolvers_hidden, default_resolvers_json,
+                        socks5_server_port, vaydns_dnstt_compat, vaydns_record_type,
+                        vaydns_max_qname_len, vaydns_rps, vaydns_idle_timeout, vaydns_keepalive,
+                        vaydns_udp_timeout, vaydns_max_num_labels, vaydns_clientid_size,
+                        is_pinned, ssh_tls_enabled, ssh_tls_sni, ssh_http_proxy_host,
+                        ssh_http_proxy_port, ssh_http_proxy_custom_host, ssh_ws_enabled,
+                        ssh_ws_path, ssh_ws_use_tls, ssh_ws_custom_host, ssh_payload,
+                        resolver_mode, rr_spread_count, vless_uuid, vless_security,
+                        vless_transport, vless_ws_path, cdn_ip, cdn_port,
+                        sni_fragment_enabled, sni_fragment_strategy, sni_fragment_delay_ms,
+                        sni_spoof_ttl, vless_sni, fake_decoy_host, tcp_max_seg,
+                        ch_padding_enabled, ws_header_obfuscation, ws_padding_enabled, dns_auto_tune
+                    FROM server_profiles
+                """.trimIndent())
+                db.execSQL("DROP TABLE server_profiles")
+                db.execSQL("ALTER TABLE server_profiles_new RENAME TO server_profiles")
+            }
+        }
+
 
     }
 }
