@@ -44,6 +44,9 @@ class VpnConnectionManager @Inject constructor(
 
     val trafficStats: StateFlow<TrafficStats> = vpnRepository.trafficStats
 
+    /** Distilled DNS-pool scan progress (per-profile pool feature). */
+    val dnsPoolScanState: StateFlow<app.slipnet.tunnel.DnsPoolScanState> = vpnRepository.dnsPoolScanState
+
     private var pendingProfile: ServerProfile? = null
     private var pendingChain: ProfileChain? = null
 
@@ -173,8 +176,17 @@ class VpnConnectionManager @Inject constructor(
         // Reset repository state without going through the full disconnect flow
         // (which would redundantly stop tunnels and emit Disconnecting state that
         // can race with a new Connecting state if the user reconnects quickly).
-        vpnRepository.updateConnectionState(ConnectionState.Disconnected)
-        _connectionState.value = ConnectionState.Disconnected
+        //
+        // Preserve an Error state from onVpnError (or a direct push like the
+        // DNS pool exhaustion path) — the service teardown immediately follows
+        // any connect-time failure, and blanket-resetting here would replace a
+        // useful error message with a blank "Not Connected" before the user
+        // gets to read it.
+        val current = _connectionState.value
+        if (current !is ConnectionState.Error) {
+            vpnRepository.updateConnectionState(ConnectionState.Disconnected)
+            _connectionState.value = ConnectionState.Disconnected
+        }
         _dnsWarning.value = null
         pendingProfile = null
     }
