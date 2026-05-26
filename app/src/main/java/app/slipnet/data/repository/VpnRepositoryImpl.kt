@@ -9,8 +9,11 @@ import app.slipnet.domain.model.TrafficStats
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.TunnelType
+import app.slipnet.domain.repository.ResolverScannerRepository
 import app.slipnet.domain.repository.VpnRepository
 import app.slipnet.tunnel.DnsDoHProxy
+import app.slipnet.tunnel.DnsPoolScanState
+import app.slipnet.tunnel.DnsPoolScanner
 import app.slipnet.tunnel.DnsttBridge
 import app.slipnet.tunnel.VaydnsBridge
 import app.slipnet.tunnel.DohBridge
@@ -46,7 +49,9 @@ import javax.inject.Singleton
 @Singleton
 class VpnRepositoryImpl @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
-    private val preferencesDataStore: PreferencesDataStore
+    private val preferencesDataStore: PreferencesDataStore,
+    private val resolverScanner: ResolverScannerRepository,
+    private val profileRepository: app.slipnet.domain.repository.ProfileRepository
 ) : VpnRepository {
     companion object {
         private const val TAG = "VpnRepositoryImpl"
@@ -201,6 +206,34 @@ class VpnRepositoryImpl @Inject constructor(
     private val _trafficStats = MutableStateFlow(TrafficStats.EMPTY)
     override val trafficStats: StateFlow<TrafficStats> = _trafficStats.asStateFlow()
 
+    private val _dnsPoolScanState = MutableStateFlow(DnsPoolScanState())
+    /** Distilled DNS-pool scan progress, observed by the main screen. */
+    val dnsPoolScanState: StateFlow<DnsPoolScanState> = _dnsPoolScanState.asStateFlow()
+
+    /**
+     * Set by [SlipNetVpnService] for connects that are part of an automatic
+     * reconnect cycle (network drop, tunnel stall, kill switch). When true,
+     * [applyDnsPoolIfEnabled] skips the scan and reuses the resolvers
+     * already in the profile.
+     */
+    @Volatile private var isAutoReconnect: Boolean = false
+    fun setAutoReconnect(active: Boolean) { isAutoReconnect = active }
+
+    /**
+     * Job for the in-flight DNS pool scan (if any). Tracked so the service
+     * can [cancelPoolScan] when the user disconnects mid-scan — short-
+     * circuiting the per-probe 8 s timeouts that
+     * `testResolverE2eIsolated` would otherwise run to completion.
+     */
+    @Volatile private var poolScanJob: kotlinx.coroutines.Job? = null
+    fun cancelPoolScan() {
+        poolScanJob?.cancel()
+        poolScanJob = null
+        if (_dnsPoolScanState.value.isRunning) {
+            _dnsPoolScanState.value = DnsPoolScanState(isRunning = false)
+        }
+    }
+
     private var prevBytesSent = 0L
     private var prevBytesReceived = 0L
     private var prevTimestamp = 0L
@@ -287,12 +320,32 @@ class VpnRepositoryImpl @Inject constructor(
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
+        val poolResult = applyDnsPoolIfEnabled(profile, resolverOverride)
+        if (poolResult.isFailure) {
+            val msg = poolResult.exceptionOrNull()?.message ?: "DNS pool scan failed"
+            Log.e(TAG, "Pool scan failed: $msg")
+            connectedProfile = null
+            return@withContext Result.failure(Exception(msg))
+        }
+        val effectiveOverride = poolResult.getOrNull() ?: resolverOverride
+
         // Format DNS server address based on transport type.
         // Resolve domain names to IPs — Go on Android cannot resolve hostnames.
-        val dnsServer = formatDnsServerAddress(profile, resolverOverride)
+        val dnsServer = formatDnsServerAddress(profile, effectiveOverride)
 
         val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
         val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
+
+        val tunedPayload = if (profile.dnsAutoTune) {
+            val r = app.slipnet.tunnel.DnsResolverProber.probe(
+                resolvers = dnsServer,
+                tunnelDomain = profile.domain,
+                recordType = "txt",
+                authoritative = profile.dnsttAuthoritative,
+            )
+            Log.i(TAG, "[Auto] DNSTT probed: qname=${r.maxQnameLen} payload=${r.maxPayload} probed=${r.probed}")
+            r.maxPayload
+        } else profile.dnsPayloadSize
 
         val result = DnsttBridge.startClient(
             dnsServer = dnsServer,
@@ -301,7 +354,7 @@ class VpnRepositoryImpl @Inject constructor(
             listenPort = proxyPort,
             listenHost = proxyHost,
             authoritativeMode = profile.dnsttAuthoritative,
-            maxPayload = profile.dnsPayloadSize,
+            maxPayload = tunedPayload,
             socksProxyAddr = socksProxyAddr,
             socksProxyUser = socksProxyUser,
             socksProxyPass = socksProxyPass,
@@ -337,11 +390,31 @@ class VpnRepositoryImpl @Inject constructor(
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
+        val poolResult = applyDnsPoolIfEnabled(profile, resolverOverride)
+        if (poolResult.isFailure) {
+            val msg = poolResult.exceptionOrNull()?.message ?: "DNS pool scan failed"
+            Log.e(TAG, "Pool scan failed: $msg")
+            connectedProfile = null
+            return@withContext Result.failure(Exception(msg))
+        }
+        val effectiveOverride = poolResult.getOrNull() ?: resolverOverride
+
         // Resolve domain names to IPs — Go on Android cannot resolve hostnames.
-        val dnsServer = formatDnsServerAddress(profile, resolverOverride)
+        val dnsServer = formatDnsServerAddress(profile, effectiveOverride)
 
         val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
         val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
+
+        val tunedNoizPayload = if (profile.dnsAutoTune) {
+            val r = app.slipnet.tunnel.DnsResolverProber.probe(
+                resolvers = dnsServer,
+                tunnelDomain = profile.domain,
+                recordType = "txt",
+                authoritative = profile.dnsttAuthoritative,
+            )
+            Log.i(TAG, "[Auto] NoizDNS probed: qname=${r.maxQnameLen} payload=${r.maxPayload} probed=${r.probed}")
+            r.maxPayload
+        } else profile.dnsPayloadSize
 
         val result = DnsttBridge.startClient(
             dnsServer = dnsServer,
@@ -352,7 +425,7 @@ class VpnRepositoryImpl @Inject constructor(
             authoritativeMode = profile.dnsttAuthoritative,
             noizMode = true,
             stealthMode = profile.noizdnsStealth,
-            maxPayload = profile.dnsPayloadSize,
+            maxPayload = tunedNoizPayload,
             socksProxyAddr = socksProxyAddr,
             socksProxyUser = socksProxyUser,
             socksProxyPass = socksProxyPass,
@@ -384,11 +457,34 @@ class VpnRepositoryImpl @Inject constructor(
     ): Result<Unit> = withContext(Dispatchers.IO) {
         connectedProfile = profile
 
+        val poolResult = applyDnsPoolIfEnabled(profile, resolverOverride)
+        if (poolResult.isFailure) {
+            val msg = poolResult.exceptionOrNull()?.message ?: "DNS pool scan failed"
+            Log.e(TAG, "Pool scan failed: $msg")
+            connectedProfile = null
+            return@withContext Result.failure(Exception(msg))
+        }
+        val effectiveOverride = poolResult.getOrNull() ?: resolverOverride
+
         // Resolve domain names to IPs — Go on Android cannot resolve hostnames.
-        val dnsServer = formatDnsServerAddress(profile, resolverOverride)
+        val dnsServer = formatDnsServerAddress(profile, effectiveOverride)
 
         val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
         val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
+
+        var tunedQname = profile.vaydnsMaxQnameLen
+        var tunedRps = profile.vaydnsRps
+        if (profile.dnsAutoTune) {
+            val r = app.slipnet.tunnel.DnsResolverProber.probe(
+                resolvers = dnsServer,
+                tunnelDomain = profile.domain,
+                recordType = profile.vaydnsRecordType,
+                authoritative = false,  // VayDNS has no authoritative mode
+            )
+            Log.i(TAG, "[Auto] VayDNS probed: qname=${r.maxQnameLen} rps=${r.rpsLimit} probed=${r.probed} rec=${profile.vaydnsRecordType}")
+            tunedQname = r.maxQnameLen
+            tunedRps = r.rpsLimit
+        }
 
         val result = VaydnsBridge.startClient(
             dnsServer = dnsServer,
@@ -399,8 +495,8 @@ class VpnRepositoryImpl @Inject constructor(
             dnsttCompat = profile.vaydnsDnsttCompat,
             maxPayload = 0,
             recordType = profile.vaydnsRecordType,
-            maxQnameLen = profile.vaydnsMaxQnameLen,
-            rps = profile.vaydnsRps,
+            maxQnameLen = tunedQname,
+            rps = tunedRps,
             idleTimeout = profile.vaydnsIdleTimeout,
             keepalive = profile.vaydnsKeepalive,
             udpTimeout = profile.vaydnsUdpTimeout,
@@ -426,6 +522,101 @@ class VpnRepositoryImpl @Inject constructor(
      * Start the DoH SOCKS5 proxy. Call this AFTER establishing the VPN interface.
      * DNS queries are encrypted via HTTPS; all other traffic flows directly.
      */
+    /**
+     * If the global DNS pool is enabled, scan the pool on every connect and
+     * persist the top 10 lowest-latency entries into `profile.resolvers` so
+     * the editor and auto-reconnect can reuse them.
+     *
+     * Pool source is the global Settings → DNS pool (shared across all
+     * DNSTT/NoizDNS/VayDNS profiles). Only the connected profile's
+     * `resolvers` are updated.
+     *
+     * Returns:
+     *   - `Result.success(list)` — pool produced this resolver override; use it
+     *   - `Result.success(null)` — no override (pool disabled / explicit override
+     *     present / auto-reconnect / cancelled) — caller should proceed with its
+     *     normal resolver path
+     *   - `Result.failure(...)` — **pool is enabled and the scan yielded zero
+     *     working resolvers**. Caller must surface this as a connect error
+     *     instead of silently falling back to the bridge's hardcoded 8.8.8.8.
+     */
+    private suspend fun applyDnsPoolIfEnabled(
+        profile: ServerProfile,
+        explicitOverride: List<DnsResolver>?
+    ): Result<List<DnsResolver>?> {
+        if (explicitOverride != null) return Result.success(null)
+        if (!preferencesDataStore.dnsPoolEnabled.first()) return Result.success(null)
+        if (isAutoReconnect) {
+            Log.i(TAG, "[Pool] auto-reconnect — reusing ${profile.resolvers.size} existing resolvers, skipping scan")
+            return Result.success(null)
+        }
+        if (profile.dnsTransport == DnsTransport.DOT || profile.dnsTransport == DnsTransport.DOH) {
+            Log.i(TAG, "[Pool] skipping pool scan — profile uses ${profile.dnsTransport.displayName}, pool scan requires UDP/TCP")
+            return Result.success(null)
+        }
+        val poolEntries = DnsPoolScanner.parsePool(preferencesDataStore.dnsPoolText.first())
+        if (poolEntries.isEmpty()) return Result.success(null)
+        val fullVerification = preferencesDataStore.dnsPoolFullVerification.first()
+
+        _dnsPoolScanState.value = DnsPoolScanState(
+            isRunning = true,
+            total = poolEntries.size,
+        )
+        return try {
+            val top = DnsPoolScanner.scan(
+                scanner = resolverScanner,
+                profile = profile,
+                entries = poolEntries,
+                fullVerification = fullVerification,
+                onProgress = { probed, alive, verified ->
+                    _dnsPoolScanState.value = _dnsPoolScanState.value.copy(
+                        probed = probed,
+                        alive = alive,
+                        verified = verified,
+                    )
+                },
+                // The scanner runs probes on a detached SupervisorJob — by
+                // exposing it here we let [cancelPoolScan] tear it down on
+                // user disconnect even though scan() itself returns as soon
+                // as the 8th success arrives. (If we don't capture it, the
+                // background probe cleanup keeps running but is unreachable
+                // until it finishes naturally — fine but wasteful.)
+                onJobStart = { job -> poolScanJob = job }
+            )
+            if (top.isEmpty()) {
+                Log.w(TAG, "[Pool] scan yielded no working resolvers — failing connect")
+                val msg = "No working DNS resolver found in pool (${poolEntries.size} entries scanned)"
+                // Push Error directly into the connection flow so the main
+                // screen exits "Connecting…" the instant the scan ends — don't
+                // rely on the caller's failure-path plumbing alone, which has
+                // multiple variants (single connect / chain layer / SSH-wrapped)
+                // and would otherwise leave the UI stuck if any one swallows
+                // the Result.failure.
+                _connectionState.value = ConnectionState.Error(msg)
+                return Result.failure(Exception(msg))
+            }
+            val topResolvers = top.map { (e, _) -> DnsResolver(host = e.host, port = e.port) }
+            // Persist asynchronously so the tunnel handshake doesn't wait on
+            // a Room write. The connect is using `topResolvers` already, so
+            // a slow/failed write doesn't affect this connect — only the
+            // value shown in the editor on next open.
+            scope.launch {
+                try {
+                    profileRepository.updateProfile(profile.copy(resolvers = topResolvers))
+                    Log.i(TAG, "[Pool] persisted ${topResolvers.size} top resolvers into profile")
+                } catch (e: Exception) {
+                    Log.w(TAG, "[Pool] failed to persist top resolvers", e)
+                }
+            }
+            Result.success(topResolvers)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            Log.i(TAG, "[Pool] scan cancelled (user disconnect)")
+            Result.success(null)
+        } finally {
+            _dnsPoolScanState.value = DnsPoolScanState(isRunning = false)
+        }
+    }
+
     /**
      * Format the DNS server address string for the Go bridge, resolving any
      * domain names to numeric IPs (Go on Android cannot resolve hostnames).
