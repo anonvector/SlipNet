@@ -94,7 +94,9 @@ data class MainUiState(
     // Update checker
     val availableUpdate: app.slipnet.util.AppUpdate? = null,
     // DNS warning
-    val dnsWarning: String? = null
+    val dnsWarning: String? = null,
+    // DNS pool scan progress (per-profile pool feature)
+    val dnsPoolScan: app.slipnet.tunnel.DnsPoolScanState = app.slipnet.tunnel.DnsPoolScanState()
 )
 
 @HiltViewModel
@@ -126,6 +128,7 @@ class MainViewModel @Inject constructor(
     init {
         observeConnectionState()
         observeDnsWarning()
+        observeDnsPoolScan()
         observeProfiles()
         observeChains()
         observeProxyOnlyMode()
@@ -173,6 +176,14 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             connectionManager.dnsWarning.collect { warning ->
                 _uiState.value = _uiState.value.copy(dnsWarning = warning)
+            }
+        }
+    }
+
+    private fun observeDnsPoolScan() {
+        viewModelScope.launch {
+            connectionManager.dnsPoolScanState.collect { state ->
+                _uiState.value = _uiState.value.copy(dnsPoolScan = state)
             }
         }
     }
@@ -567,7 +578,8 @@ class MainViewModel @Inject constructor(
     }
 
     fun exportAllProfilesEncrypted(
-        password: String,
+        bundlePassword: String,
+        profilePassword: String = "",
         expirationDate: Long = 0,
         allowSharing: Boolean = false,
         boundDeviceId: String = "",
@@ -580,7 +592,13 @@ class MainViewModel @Inject constructor(
         }
         try {
             val encrypted = configExporter.exportAllProfilesEncrypted(
-                profiles, password, expirationDate, allowSharing, boundDeviceId, hideResolvers
+                profiles,
+                bundlePassword,
+                profilePassword,
+                expirationDate,
+                allowSharing,
+                boundDeviceId,
+                hideResolvers
             )
             _uiState.value = _uiState.value.copy(exportedJson = encrypted)
         } catch (e: Exception) {
