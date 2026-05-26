@@ -55,6 +55,8 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.CloudOff
@@ -288,7 +290,12 @@ fun ScanResultsScreen(
         }
     }
 
-    // Dialog for choosing which IPs to copy/export
+    // Prism passed IPs for the save/copy/export dialog
+    val prismPassedIps = remember(throttledResults) {
+        throttledResults.filter { it.prismVerified == true }.map { it.host }
+    }
+
+    // Dialog for choosing which IPs to copy/export/save
     if (pendingAction != null) {
         val action = pendingAction
         val selectedIps = uiState.selectedResolvers.toList()
@@ -303,29 +310,74 @@ fun ScanResultsScreen(
             performExport(context, ips, scope, snackbarHostState)
         }
 
+        fun doSave(ips: List<String>, label: String) {
+            pendingAction = null
+            viewModel.saveToPool(ips, label)
+            scope.launch {
+                snackbarHostState.currentSnackbarData?.dismiss()
+                launch { snackbarHostState.showSnackbar("Saved ${ips.size} IPs to pool") }
+                delay(1800)
+                snackbarHostState.currentSnackbarData?.dismiss()
+            }
+        }
+
+        val isSave = action == "save"
+        val titleText = when (action) {
+            "copy" -> "Copy IPs"
+            "save" -> "Save to Pool"
+            else -> "Export IPs"
+        }
+        val promptText = when (action) {
+            "copy" -> "Which IPs do you want to copy?"
+            "save" -> "Choose which IPs to save as the resolver pool:"
+            else -> "Which IPs do you want to export?"
+        }
+
         AlertDialog(
             onDismissRequest = { pendingAction = null },
-            title = { Text(if (action == "copy") "Copy IPs" else "Export IPs") },
-            text = { Text("Which IPs do you want to ${if (action == "copy") "copy" else "export"}?") },
+            title = { Text(titleText) },
+            text = { Text(promptText) },
             confirmButton = {
                 Column(horizontalAlignment = Alignment.End) {
+                    if (uiState.scanMode == ScanMode.PRISM && prismPassedIps.isNotEmpty()) {
+                        TextButton(onClick = {
+                            when (action) {
+                                "copy" -> doCopy(prismPassedIps)
+                                "save" -> doSave(prismPassedIps, "Prism Passed")
+                                else -> doExport(prismPassedIps)
+                            }
+                        }) {
+                            Text("Prism passed (${prismPassedIps.size})")
+                        }
+                    }
                     if (hasE2eResults && visibleE2eIps.isNotEmpty()) {
                         TextButton(onClick = {
-                            if (action == "copy") doCopy(visibleE2eIps) else doExport(visibleE2eIps)
+                            when (action) {
+                                "copy" -> doCopy(visibleE2eIps)
+                                "save" -> doSave(visibleE2eIps, "E2E Passed")
+                                else -> doExport(visibleE2eIps)
+                            }
                         }) {
                             Text("E2E passed (${visibleE2eIps.size})")
                         }
                     }
                     if (visibleStage1Ips.isNotEmpty()) {
                         TextButton(onClick = {
-                            if (action == "copy") doCopy(visibleStage1Ips) else doExport(visibleStage1Ips)
+                            when (action) {
+                                "copy" -> doCopy(visibleStage1Ips)
+                                "save" -> doSave(visibleStage1Ips, "Stage 1 Working")
+                                else -> doExport(visibleStage1Ips)
+                            }
                         }) {
                             Text("Stage 1 working (${visibleStage1Ips.size})")
                         }
                     }
-                    if (selectedIps.isNotEmpty()) {
+                    if (!isSave && selectedIps.isNotEmpty()) {
                         TextButton(onClick = {
-                            if (action == "copy") doCopy(selectedIps) else doExport(selectedIps)
+                            when (action) {
+                                "copy" -> doCopy(selectedIps)
+                                else -> doExport(selectedIps)
+                            }
                         }) {
                             Text("Selected only (${selectedIps.size})")
                         }
@@ -366,28 +418,57 @@ fun ScanResultsScreen(
                             )
                         }
                     }
-                    if ((visibleStage1Ips.isNotEmpty() || visibleE2eIps.isNotEmpty()) && isIdle) {
-                        IconButton(
-                            onClick = {
-                                when {
-                                    hasE2eResults || uiState.selectedResolvers.isNotEmpty() -> pendingAction = "copy"
-                                    visibleStage1Ips.isNotEmpty() -> copyIpsToClipboard(visibleStage1Ips)
-                                    else -> copyIpsToClipboard(visibleE2eIps)
-                                }
+                    val hasAnyResults = visibleStage1Ips.isNotEmpty() || visibleE2eIps.isNotEmpty() ||
+                        (uiState.scanMode == ScanMode.PRISM && prismPassedIps.isNotEmpty())
+                    if (hasAnyResults && isIdle) {
+                        var showOverflowMenu by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { showOverflowMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More options")
                             }
-                        ) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy visible IPs")
-                        }
-                        IconButton(
-                            onClick = {
-                                when {
-                                    hasE2eResults || uiState.selectedResolvers.isNotEmpty() -> pendingAction = "export"
-                                    visibleStage1Ips.isNotEmpty() -> performExport(context, visibleStage1Ips, scope, snackbarHostState)
-                                    else -> performExport(context, visibleE2eIps, scope, snackbarHostState)
-                                }
+                            DropdownMenu(
+                                expanded = showOverflowMenu,
+                                onDismissRequest = { showOverflowMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Copy") },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        when {
+                                            hasE2eResults || uiState.selectedResolvers.isNotEmpty() -> pendingAction = "copy"
+                                            visibleStage1Ips.isNotEmpty() -> copyIpsToClipboard(visibleStage1Ips)
+                                            else -> copyIpsToClipboard(visibleE2eIps)
+                                        }
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Share") },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        when {
+                                            hasE2eResults || uiState.selectedResolvers.isNotEmpty() -> pendingAction = "export"
+                                            visibleStage1Ips.isNotEmpty() -> performExport(context, visibleStage1Ips, scope, snackbarHostState)
+                                            else -> performExport(context, visibleE2eIps, scope, snackbarHostState)
+                                        }
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Save to pool") },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        pendingAction = "save"
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    }
+                                )
                             }
-                        ) {
-                            Icon(Icons.Default.Share, contentDescription = "Export DNS list")
                         }
                     }
                     if (canApply && uiState.selectedResolvers.isNotEmpty()) {

@@ -46,6 +46,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -300,7 +301,6 @@ fun DnsScannerScreen(
             ConfigurationSection(
                 testDomain = uiState.testDomain,
                 isProfileLocked = isProfileLocked,
-                dnsTransport = uiState.profile?.dnsTransport ?: DnsTransport.UDP,
                 scanPort = uiState.scanPort,
                 timeoutMs = uiState.timeoutMs,
                 concurrency = uiState.concurrency,
@@ -319,6 +319,7 @@ fun DnsScannerScreen(
                 prismPrefilter = uiState.prismPrefilter,
                 prismPrefilterTimeoutMs = uiState.prismPrefilterTimeoutMs,
                 scanTransport = uiState.scanTransport,
+                profileDnsTransport = uiState.profile?.dnsTransport,
                 onTestDomainChange = { viewModel.updateTestDomain(it) },
                 onScanPortChange = { viewModel.updateScanPort(it) },
                 onTimeoutChange = { viewModel.updateTimeout(it) },
@@ -375,7 +376,10 @@ fun DnsScannerScreen(
                 onLoadIrDnsLiteCidrInfo = { viewModel.loadIrDnsLiteCidrInfo() },
                 onLoadIrDnsLiteRange = { viewModel.loadIrDnsLiteRangeList() },
                 hasLastScanIps = uiState.hasLastScanIps,
-                onLoadLastScanIps = { viewModel.showLastScanIpsDialog() }
+                onLoadLastScanIps = { viewModel.showLastScanIpsDialog() },
+                savedPoolSize = uiState.savedPoolSize,
+                savedPoolLabel = uiState.savedPoolLabel,
+                onLoadSavedPool = { viewModel.loadSavedPool() }
             )
 
             // Recent DNS
@@ -643,7 +647,6 @@ private fun ScanModeToggle(
 private fun ConfigurationSection(
     testDomain: String,
     isProfileLocked: Boolean = false,
-    dnsTransport: DnsTransport = DnsTransport.UDP,
     scanPort: String,
     timeoutMs: String,
     concurrency: String,
@@ -662,6 +665,7 @@ private fun ConfigurationSection(
     prismPrefilter: Boolean = false,
     prismPrefilterTimeoutMs: String = "1500",
     scanTransport: ScanTransportMode = ScanTransportMode.UDP,
+    profileDnsTransport: DnsTransport? = null,
     onTestDomainChange: (String) -> Unit,
     onScanPortChange: (String) -> Unit,
     onTimeoutChange: (String) -> Unit,
@@ -870,6 +874,30 @@ private fun ConfigurationSection(
                         )
                     }
                 }
+
+                val profileTcpBased = profileDnsTransport != null && profileDnsTransport != DnsTransport.UDP
+                val scanTcpBased = scanTransport == ScanTransportMode.TCP
+                val transportMismatch = scanTransport != ScanTransportMode.BOTH &&
+                    profileDnsTransport != null && scanTcpBased != profileTcpBased
+                AnimatedVisibility(visible = transportMismatch) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Warning,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.tertiary
+                        )
+                        Text(
+                            text = "Profile uses ${profileDnsTransport?.displayName} — E2E will test with ${profileDnsTransport?.displayName}, stage 1 with ${scanTransport.displayName}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                }
             }
 
             if (scanMode == ScanMode.PRISM) {
@@ -993,25 +1021,6 @@ private fun ConfigurationSection(
 
             // DNS-specific options — hidden in E2E mode since there's no DNS scan phase
             if (scanMode != ScanMode.E2E) {
-                if (dnsTransport == DnsTransport.TCP) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.Dns,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "Scanning over TCP",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1195,7 +1204,10 @@ private fun ResolverListSection(
     onLoadIrDnsLiteCidrInfo: () -> Unit,
     onLoadIrDnsLiteRange: () -> Unit,
     hasLastScanIps: Boolean = false,
-    onLoadLastScanIps: () -> Unit = {}
+    onLoadLastScanIps: () -> Unit = {},
+    savedPoolSize: Int = 0,
+    savedPoolLabel: String? = null,
+    onLoadSavedPool: () -> Unit = {}
 ) {
     var activePanel by remember {
         mutableStateOf(
@@ -2296,6 +2308,24 @@ private fun ResolverListSection(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text("Load Last Scan IPs")
+                    }
+                }
+
+                // Saved Pool button — show when user has explicitly saved a pool
+                AnimatedVisibility(visible = savedPoolSize > 0 && !isLoading && activePanel == ResolverPanel.NONE) {
+                    OutlinedButton(
+                        onClick = onLoadSavedPool,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Storage,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        val label = if (savedPoolLabel != null) "$savedPoolLabel" else "Saved Pool"
+                        Text("$label ($savedPoolSize IPs)")
                     }
                 }
             }
