@@ -137,7 +137,7 @@ build_abi() {
 
     # Clang wrapper for armv7 embeds -march=armv7-a etc., so ARCH_FLAGS is a
     # belt-and-suspenders for sub-projects that build assembly files.
-    local CFLAGS_COMMON="-O2 -fPIC -fstack-protector-strong -D_FORTIFY_SOURCE=2 $ARCH_FLAGS"
+    local CFLAGS_COMMON="-O2 -fPIC -fstack-protector-strong -D_FORTIFY_SOURCE=2 $ARCH_FLAGS -ffile-prefix-map=$WORK/tor=tor -ffile-prefix-map=$BUILD_DIR=."
     local LDFLAGS_COMMON="-Wl,-z,max-page-size=$PAGE_SIZE -Wl,-z,common-page-size=$PAGE_SIZE -Wl,-z,relro -Wl,-z,now"
 
     export CFLAGS="$CFLAGS_COMMON"
@@ -161,15 +161,29 @@ build_abi() {
     # --- OpenSSL ---
     echo "==> [$ABI] Building OpenSSL"
     local O="$WORK/openssl"
+    # OpenSSL bakes CFLAGS into a "compiler:" string in the binary.
+    # Omit -ffile-prefix-map (which contains $BUILD_DIR with the real username)
+    # and clear CPPFLAGS (which contains -I$PREFIX/include) so that string
+    # stays clean.  The neutral --prefix/--openssldir/--libdir ensure
+    # OPENSSLDIR/ENGINESDIR/MODULESDIR don't embed the real build path either.
+    # Headers and static libs are installed via DESTDIR then copied to $PREFIX.
+    local CFLAGS_OPENSSL="-O2 -fPIC -fstack-protector-strong -D_FORTIFY_SOURCE=2 $ARCH_FLAGS"
     mkdir -p "$O" && tar -xzf "$SRC_DIR/openssl-$OPENSSL_VERSION.tar.gz" -C "$O" --strip-components=1
     ( cd "$O"
+      export CPPFLAGS=""
+      # Override the global CFLAGS (which contains -ffile-prefix-map with the
+      # real build path) so it does not appear in OpenSSL's "compiler:" string.
+      export CFLAGS="$CFLAGS_OPENSSL"
       ./Configure "$OPENSSL_TARGET" \
           -D__ANDROID_API__="$API_LEVEL" \
           no-shared no-tests no-docs no-ui-console no-engine no-dso \
-          --prefix="$PREFIX" --openssldir="$PREFIX/ssl" \
-          $CFLAGS_COMMON $LDFLAGS_COMMON
+          --prefix=/usr/local --openssldir=/etc/ssl --libdir=lib \
+          $CFLAGS_OPENSSL $LDFLAGS_COMMON
       make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" build_libs
-      make install_dev
+      make install_dev DESTDIR="$O/destdir"
+      cp -rp "$O/destdir/usr/local/include/." "$PREFIX/include/"
+      cp -p  "$O/destdir/usr/local/lib/libssl.a"    "$PREFIX/lib/"
+      cp -p  "$O/destdir/usr/local/lib/libcrypto.a" "$PREFIX/lib/"
     )
 
     # --- xz (liblzma) ---
@@ -245,7 +259,10 @@ EOF
       # rather than the host system's pkg-config path.
       export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
       export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
-      ./configure --host="$TARGET_HOST" --prefix="$PREFIX" \
+      # Use a neutral --prefix/--sysconfdir so the developer's build path is not
+      # baked into Tor's default config file paths (torrc, torrc-defaults).
+      # The actual deps (libevent, openssl, zlib) are still found via $PREFIX.
+      ./configure --host="$TARGET_HOST" --prefix=/usr/local --sysconfdir=/etc \
           --disable-asciidoc --disable-systemd \
           --disable-tool-name-check \
           --disable-module-relay --disable-module-dirauth \
