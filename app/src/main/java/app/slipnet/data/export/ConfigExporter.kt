@@ -93,26 +93,37 @@ class ConfigExporter @Inject constructor() {
     /**
      * Export all unlocked profiles into one password-encrypted bundle.
      *
-     * When any of [expirationDate], [allowSharing], or [boundDeviceId] is set
-     * (or when [hideResolvers] is true), each inner profile is also marked
-     * locked with the same hashed password — giving per-profile enforcement
-     * after the bundle is decrypted.
+     * [bundlePassword] decrypts the outer bundle. [profilePassword], when non-empty,
+     * is hashed into each inner profile's lock so the per-profile password can
+     * differ from the bundle password. When [profilePassword] is empty, the
+     * bundle password is reused as the per-profile lock password (legacy single-
+     * password behavior).
+     *
+     * Each inner profile is marked locked when any of [profilePassword],
+     * [expirationDate], [allowSharing], [boundDeviceId], or [hideResolvers]
+     * indicates per-profile enforcement is wanted.
      */
     fun exportAllProfilesEncrypted(
         profiles: List<ServerProfile>,
-        password: String,
+        bundlePassword: String,
+        profilePassword: String = "",
         expirationDate: Long = 0,
         allowSharing: Boolean = false,
         boundDeviceId: String = "",
         hideResolvers: Boolean = false
     ): String {
-        require(password.isNotEmpty()) { "Password must not be empty" }
+        require(bundlePassword.isNotEmpty()) { "Bundle password must not be empty" }
         val exportable = profiles.filter { !it.isLocked }
         require(exportable.isNotEmpty()) { "No exportable profiles" }
         val lockForEnforcement =
-            expirationDate > 0 || allowSharing || boundDeviceId.isNotEmpty() || hideResolvers
+            profilePassword.isNotEmpty() ||
+                expirationDate > 0 ||
+                allowSharing ||
+                boundDeviceId.isNotEmpty() ||
+                hideResolvers
         val prepared = if (lockForEnforcement) {
-            val hash = LockPasswordUtil.hashPassword(password)
+            val lockPassword = if (profilePassword.isNotEmpty()) profilePassword else bundlePassword
+            val hash = LockPasswordUtil.hashPassword(lockPassword)
             exportable.map { profile ->
                 profile.copy(
                     isLocked = true,
@@ -126,7 +137,7 @@ class ConfigExporter @Inject constructor() {
             exportable
         }
         val bundle = prepared.joinToString("\n") { encodeProfile(it, hideResolvers) }
-        val encrypted = BundleCrypto.encrypt(bundle, password)
+        val encrypted = BundleCrypto.encrypt(bundle, bundlePassword)
         val encoded = Base64.encodeToString(encrypted, Base64.NO_WRAP)
         return "$BUNDLE_ENCRYPTED_SCHEME$encoded"
     }

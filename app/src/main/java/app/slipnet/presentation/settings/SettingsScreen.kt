@@ -3,10 +3,14 @@ package app.slipnet.presentation.settings
 import android.content.Intent
 import android.net.Uri
 import android.os.PowerManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material3.CircularProgressIndicator
 import android.provider.Settings
 import app.slipnet.BuildConfig
 import app.slipnet.presentation.common.components.AboutDialogContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -80,6 +84,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -96,12 +101,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.filled.AltRoute
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Numbers
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -136,6 +151,7 @@ fun SettingsScreen(
     var showAboutDialog by remember { mutableStateOf(false) }
     var showRemoteDnsDialog by remember { mutableStateOf(false) }
     var showGlobalResolverDialog by remember { mutableStateOf(false) }
+    var showDnsPoolDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
     var showBandwidthLimitDialog by remember { mutableStateOf(false) }
     var showDnsWorkerDialog by remember { mutableStateOf(false) }
@@ -445,6 +461,103 @@ fun SettingsScreen(
                 }
             }
 
+            // DNS Settings
+            SettingsSection(
+                title = "DNS",
+                subtitle = "Changes apply on next connection"
+            ) {
+                // The override only actually applies when the toggle is on AND
+                // the IP list is non-empty (matches SlipNetVpnService's
+                // `parsedGlobalResolvers().takeIf { it.isNotEmpty() }`). When
+                // active, the pool scan is short-circuited in applyDnsPoolIfEnabled.
+                val overrideActive = uiState.globalResolverEnabled &&
+                    uiState.globalResolverList.isNotBlank()
+
+                // Global resolver override
+                SwitchSettingItem(
+                    icon = Icons.Default.AltRoute,
+                    title = "Global resolver override",
+                    description = if (uiState.globalResolverEnabled) {
+                        uiState.globalResolverList.ifBlank { "No IPs set — tap Edit IPs below" }
+                    } else {
+                        "Force a fixed resolver list across all profiles"
+                    },
+                    checked = uiState.globalResolverEnabled,
+                    onCheckedChange = { viewModel.setGlobalResolverEnabled(it) }
+                )
+                if (uiState.globalResolverEnabled) {
+                    IndentedSettingItem(
+                        icon = Icons.Default.Edit,
+                        title = "Edit IPs",
+                        description = uiState.globalResolverList.ifBlank { "Tap to set resolver IPs" },
+                        onClick = { showGlobalResolverDialog = true }
+                    )
+                }
+
+                // DNS pool — muted when the override is actually active
+                SwitchSettingItem(
+                    icon = Icons.Default.AutoAwesome,
+                    title = "DNS pool",
+                    description = "Auto-pick the fastest resolvers on each connect",
+                    checked = uiState.dnsPoolEnabled,
+                    onCheckedChange = { viewModel.setDnsPoolEnabled(it) },
+                    inactive = overrideActive
+                )
+                if (uiState.dnsPoolEnabled) {
+                    IndentedSettingItem(
+                        icon = Icons.Default.Edit,
+                        title = "Edit pool",
+                        description = "Tap to manage the candidate list",
+                        onClick = { showDnsPoolDialog = true },
+                        inactive = overrideActive
+                    )
+                    SwitchSettingItem(
+                        icon = Icons.Default.VerifiedUser,
+                        title = "HTTP/SSH verification",
+                        description = if (uiState.dnsPoolFullVerification)
+                            "Verifies real traffic through tunnel — 18s timeout per resolver"
+                        else
+                            "Handshake-only — faster scan, 10s timeout per resolver",
+                        checked = uiState.dnsPoolFullVerification,
+                        onCheckedChange = { viewModel.setDnsPoolFullVerification(it) },
+                        inactive = overrideActive
+                    )
+                }
+
+                // Conflict notice — only when override is *actually* active
+                if (overrideActive && uiState.dnsPoolEnabled) {
+                    InfoNoticeRow(
+                        text = "Override active — pool is ignored."
+                    )
+                }
+
+                // Remote DNS server (always shown — system-level fallback)
+                ClickableSettingItem(
+                    icon = Icons.Default.Dns,
+                    title = "Remote DNS server",
+                    description = if (uiState.remoteDnsMode == "custom") {
+                        val primary = uiState.customRemoteDns.ifBlank { "8.8.8.8" }
+                        val fallback = uiState.customRemoteDnsFallback.ifBlank { "1.1.1.1" }
+                        "Custom ($primary, $fallback)"
+                    } else {
+                        "Default (8.8.8.8, 1.1.1.1)"
+                    },
+                    onClick = { showRemoteDnsDialog = true }
+                )
+
+                SettingsDivider()
+
+                ClickableSettingItem(
+                    icon = Icons.Default.Hub,
+                    title = "DNS workers",
+                    description = buildString {
+                        append("${uiState.dnsWorkerMode.displayName} (DNSTT/Slipstream, SSH always uses 5)")
+                        if (uiState.dnsWorkerMode.poolSize >= 3) append(" — may increase data usage")
+                    },
+                    onClick = { showDnsWorkerDialog = true }
+                )
+            }
+
             // Network Settings
             SettingsSection(
                 title = "Network",
@@ -498,57 +611,6 @@ fun SettingsScreen(
                         modifier = Modifier.padding(start = 56.dp, end = 16.dp, bottom = 8.dp)
                     )
                 }
-            }
-
-            // DNS Settings
-            SettingsSection(
-                title = "DNS",
-                subtitle = "Changes apply on next connection"
-            ) {
-                SwitchSettingItem(
-                    icon = Icons.Default.Sync,
-                    title = "Global DNS resolver override",
-                    description = if (uiState.globalResolverEnabled) {
-                        val list = uiState.globalResolverList.ifBlank { "Not set" }
-                        "Active: $list"
-                    } else {
-                        "Use profile resolvers (default)"
-                    },
-                    checked = uiState.globalResolverEnabled,
-                    onCheckedChange = { viewModel.setGlobalResolverEnabled(it) }
-                )
-                if (uiState.globalResolverEnabled) {
-                    ClickableSettingItem(
-                        icon = Icons.Default.Hub,
-                        title = "Global resolver IPs",
-                        description = uiState.globalResolverList.ifBlank { "Tap to set resolver IPs" },
-                        onClick = { showGlobalResolverDialog = true }
-                    )
-                }
-                ClickableSettingItem(
-                    icon = Icons.Default.Public,
-                    title = "Remote DNS server",
-                    description = if (uiState.remoteDnsMode == "custom") {
-                        val primary = uiState.customRemoteDns.ifBlank { "8.8.8.8" }
-                        val fallback = uiState.customRemoteDnsFallback.ifBlank { "1.1.1.1" }
-                        "Custom ($primary, $fallback)"
-                    } else {
-                        "Default (8.8.8.8, 1.1.1.1)"
-                    },
-                    onClick = { showRemoteDnsDialog = true }
-                )
-
-                SettingsDivider()
-
-                ClickableSettingItem(
-                    icon = Icons.Default.Hub,
-                    title = "DNS workers",
-                    description = buildString {
-                        append("${uiState.dnsWorkerMode.displayName} (DNSTT/Slipstream, SSH always uses 5)")
-                        if (uiState.dnsWorkerMode.poolSize >= 3) append(" — may increase data usage")
-                    },
-                    onClick = { showDnsWorkerDialog = true }
-                )
             }
 
             // Split Tunneling Settings
@@ -1207,7 +1269,7 @@ fun SettingsScreen(
         val ipPattern = remember { Regex("""^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$""") }
         val entries = resolverText.split(",", "\n").map { it.trim() }.filter { it.isNotBlank() }
         val resolverCount = entries.size
-        val tooMany = resolverCount > 8
+        val tooMany = resolverCount > 10
         val invalidEntries = entries.filter { !ipPattern.matches(it) }
         val hasInvalid = invalidEntries.isNotEmpty()
         AlertDialog(
@@ -1216,7 +1278,7 @@ fun SettingsScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Enter DNS resolver IPs, one per line or comma-separated (max 8). These override the resolvers in all DNS tunnel profiles and are used to resolve SSH hostnames.",
+                        "Enter DNS resolver IPs, one per line or comma-separated (max 10). These override the resolvers in all DNS tunnel profiles and are used to resolve SSH hostnames.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     OutlinedTextField(
@@ -1230,7 +1292,7 @@ fun SettingsScreen(
                     )
                     if (tooMany) {
                         Text(
-                            "Maximum 8 resolvers ($resolverCount entered)",
+                            "Maximum 10 resolvers ($resolverCount entered)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )
@@ -1263,6 +1325,18 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { showGlobalResolverDialog = false }) { Text("Cancel") }
             }
+        )
+    }
+
+    // DNS Pool Dialog
+    if (showDnsPoolDialog) {
+        DnsPoolDialog(
+            initialText = uiState.dnsPoolText,
+            onSave = { text ->
+                viewModel.setDnsPoolText(text)
+                showDnsPoolDialog = false
+            },
+            onDismiss = { showDnsPoolDialog = false }
         )
     }
 
@@ -1666,11 +1740,13 @@ private fun SwitchSettingItem(
     title: String,
     description: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    inactive: Boolean = false,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .alpha(if (inactive) 0.5f else 1f)
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1740,6 +1816,77 @@ private fun ClickableSettingItem(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+@Composable
+private fun IndentedSettingItem(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    onClick: () -> Unit,
+    inactive: Boolean = false,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 40.dp)
+            .alpha(if (inactive) 0.5f else 1f)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .padding(vertical = 6.dp, horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp)
+        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 12.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            modifier = Modifier.size(18.dp)
+        )
+    }
+}
+
+@Composable
+private fun InfoNoticeRow(text: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 40.dp, top = 4.dp, bottom = 8.dp, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Default.Info,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+            modifier = Modifier.size(16.dp)
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 8.dp)
+        )
     }
 }
 
@@ -2445,4 +2592,204 @@ private fun DonateCard() {
             }
         )
     }
+}
+
+@Composable
+private fun DnsPoolDialog(
+    initialText: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val max = app.slipnet.tunnel.DnsPoolScanner.MAX_POOL_SIZE
+    var text by remember { mutableStateOf(initialText) }
+    val parsedCount = remember(text) {
+        app.slipnet.tunnel.DnsPoolScanner.parsePool(text).size
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let {
+            try {
+                val content = context.contentResolver.openInputStream(it)
+                    ?.bufferedReader()?.readText() ?: ""
+                text = capPoolText(content, max)
+            } catch (_: Exception) {}
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "DNS Resolver Pool",
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                CountBadge(count = parsedCount, max = max)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Candidates scanned on each connect — top 10 lowest-latency win.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    PoolActionButton(
+                        icon = Icons.Default.UploadFile,
+                        label = "Import",
+                        onClick = { importLauncher.launch(arrayOf("text/plain", "*/*")) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    PoolActionButton(
+                        icon = Icons.Default.Shuffle,
+                        label = "Random",
+                        onClick = {
+                            val sampled = sampleRandomResolversFromBuiltIn(context, count = max)
+                            if (sampled.isNotBlank()) text = sampled
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    PoolActionButton(
+                        icon = Icons.Default.Delete,
+                        label = "Clear",
+                        onClick = { text = "" },
+                        modifier = Modifier.weight(1f),
+                        enabled = text.isNotEmpty()
+                    )
+                }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = capPoolText(it, max) },
+                    placeholder = { Text("One IP or host[:port] per line or comma-separated.\nLines starting with # are comments.") },
+                    minLines = 8,
+                    maxLines = 12,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(text) }) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun CountBadge(count: Int, max: Int) {
+    val nearLimit = count >= max
+    val containerColor = if (nearLimit)
+        MaterialTheme.colorScheme.errorContainer
+    else
+        MaterialTheme.colorScheme.secondaryContainer
+    val textColor = if (nearLimit)
+        MaterialTheme.colorScheme.onErrorContainer
+    else
+        MaterialTheme.colorScheme.onSecondaryContainer
+    Text(
+        text = "$count / $max",
+        style = MaterialTheme.typography.labelMedium,
+        color = textColor,
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(containerColor)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    )
+}
+
+@Composable
+private fun PoolActionButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+        modifier = modifier
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(Modifier.size(6.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium
+        )
+    }
+}
+
+private fun capPoolText(text: String, max: Int): String {
+    val lines = text.lines()
+    var validCount = 0
+    val out = mutableListOf<String>()
+    for (line in lines) {
+        val trimmed = line.trim()
+        val isEntry = trimmed.isNotEmpty() && !trimmed.startsWith("#")
+        if (isEntry) {
+            if (validCount >= max) continue
+            validCount++
+        }
+        out.add(line)
+    }
+    return out.joinToString("\n")
+}
+
+private val POOL_PINNED_DNS = listOf(
+    "208.67.222.222", "208.67.220.220",
+    "8.8.8.8", "8.8.4.4",
+    "77.88.8.2", "77.88.8.88",
+    "1.1.1.2", "1.0.0.2",
+    "223.5.5.5", "223.6.6.6",
+    "80.80.80.80", "80.80.81.81",
+    "9.9.9.9", "149.112.112.112"
+)
+
+private fun sampleRandomResolversFromBuiltIn(
+    context: android.content.Context,
+    count: Int,
+): String = try {
+    // Collect tier 1 + tier 2 only (stop at the second "# SHUFFLE_BELOW" marker).
+    // Tier 3 has 55k+ IPs that are not useful for random pool picks.
+    val pool = ArrayList<String>(count * 2)
+    var shuffleBelowCount = 0
+    context.resources.openRawResource(app.slipnet.R.raw.resolvers)
+        .bufferedReader().useLines { lines ->
+            for (raw in lines) {
+                val line = raw.trim()
+                if (line == "# SHUFFLE_BELOW") {
+                    shuffleBelowCount++
+                    if (shuffleBelowCount >= 2) return@useLines  // stop after tier 2
+                    continue
+                }
+                if (line.isEmpty() || line.startsWith("#")) continue
+                pool.add(line)
+            }
+        }
+    val sampled = pool.shuffled().take(count).toMutableList()
+    val sampledSet = sampled.toHashSet()
+    val missing = POOL_PINNED_DNS.filter { it !in sampledSet }
+    // Prepend pinned IPs, trim tail to stay within cap
+    val result = (missing + sampled).take(count)
+    result.joinToString("\n")
+} catch (_: Exception) {
+    ""
 }

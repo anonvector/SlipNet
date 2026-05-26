@@ -14,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -34,6 +35,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -826,6 +829,7 @@ fun MainScreen(
                 sleepTimerRemainingSeconds = uiState.sleepTimerRemainingSeconds,
                 onCancelSleepTimer = { viewModel.userCancelSleepTimer() },
                 dnsWarning = uiState.dnsWarning,
+                dnsPoolScan = uiState.dnsPoolScan,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = navBarPadding.calculateBottomPadding())
@@ -844,99 +848,110 @@ fun MainScreen(
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(start = 24.dp, top = 20.dp, bottom = 8.dp)
                     )
-                    AddMenuOption(
-                        icon = Icons.Default.Dns,
-                        title = "DNSTT",
-                        description = "DNS tunnel (KCP + Noise)",
-                        onClick = {
-                            showAddMenu = false
-                            onNavigateToAddProfile("dnstt")
-                        }
-                    )
-                    AddMenuOption(
-                        icon = Icons.Default.VisibilityOff,
-                        title = "NoizDNS",
-                        description = "Stealth DNS tunnel",
-                        onClick = {
-                            showAddMenu = false
-                            onNavigateToAddProfile(TunnelType.NOIZDNS.value)
-                        }
-                    )
-                    AddMenuOption(
-                        icon = Icons.Default.Air,
-                        title = "VayDNS",
-                        description = "Lean DNS tunnel (KCP + Noise)",
-                        onClick = {
-                            showAddMenu = false
-                            onNavigateToAddProfile(TunnelType.VAYDNS.value)
-                        }
-                    )
-                    AddMenuOption(
-                        icon = Icons.Default.Waves,
-                        title = "Slipstream",
-                        description = "DNS tunnel (QUIC)",
-                        onClick = {
-                            showAddMenu = false
-                            onNavigateToAddProfile("slipstream")
-                        }
-                    )
-                    AddMenuOption(
-                        icon = Icons.Default.Lock,
-                        title = "SSH",
-                        description = "Direct SSH tunnel",
-                        onClick = {
-                            showAddMenu = false
-                            onNavigateToAddProfile("ssh")
-                        }
-                    )
-                    AddMenuOption(
-                        icon = Icons.Default.Language,
-                        title = "DOH",
-                        description = "DNS over HTTPS",
-                        onClick = {
-                            showAddMenu = false
-                            onNavigateToAddProfile("doh")
-                        }
-                    )
-                    AddMenuOption(
-                        icon = Icons.Default.Share,
-                        title = "SOCKS5",
-                        description = "Remote SOCKS5 proxy",
-                        onClick = {
-                            showAddMenu = false
-                            onNavigateToAddProfile("socks5")
-                        }
-                    )
-                    AddMenuOption(
-                        icon = VlessIcon,
-                        title = "VLESS",
-                        description = "VLESS over WebSocket (CDN)",
-                        onClick = {
-                            showAddMenu = false
-                            onNavigateToAddProfile("vless")
-                        }
-                    )
-                    if (BuildConfig.INCLUDE_NAIVE) {
-                        AddMenuOption(
-                            icon = Icons.Default.Shield,
-                            title = "NaiveProxy",
-                            description = "Chromium HTTPS tunnel",
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        maxItemsInEachRow = 3
+                    ) {
+                        val tileMod = Modifier.weight(1f)
+                        AddMenuGridItem(
+                            modifier = tileMod,
+                            icon = Icons.Default.Dns,
+                            title = "DNSTT",
                             onClick = {
                                 showAddMenu = false
-                                onNavigateToAddProfile("naive")
+                                onNavigateToAddProfile("dnstt")
                             }
                         )
-                    }
-                    if (BuildConfig.INCLUDE_TOR) {
-                        AddMenuOption(
-                            icon = TorIcon,
-                            title = "Tor",
-                            description = "Connect via Tor network",
+                        AddMenuGridItem(
+                            modifier = tileMod,
+                            icon = Icons.Default.VisibilityOff,
+                            title = "NoizDNS",
                             onClick = {
                                 showAddMenu = false
-                                onNavigateToAddProfile("snowflake")
+                                onNavigateToAddProfile(TunnelType.NOIZDNS.value)
                             }
                         )
+                        AddMenuGridItem(
+                            modifier = tileMod,
+                            icon = Icons.Default.Air,
+                            title = "VayDNS",
+                            onClick = {
+                                showAddMenu = false
+                                onNavigateToAddProfile(TunnelType.VAYDNS.value)
+                            }
+                        )
+                        AddMenuGridItem(
+                            modifier = tileMod,
+                            icon = Icons.Default.Waves,
+                            title = "Slipstream",
+                            onClick = {
+                                showAddMenu = false
+                                onNavigateToAddProfile("slipstream")
+                            }
+                        )
+                        AddMenuGridItem(
+                            modifier = tileMod,
+                            icon = Icons.Default.Lock,
+                            title = "SSH",
+                            onClick = {
+                                showAddMenu = false
+                                onNavigateToAddProfile("ssh")
+                            }
+                        )
+                        AddMenuGridItem(
+                            modifier = tileMod,
+                            icon = Icons.Default.Language,
+                            title = "DOH",
+                            onClick = {
+                                showAddMenu = false
+                                onNavigateToAddProfile("doh")
+                            }
+                        )
+                        AddMenuGridItem(
+                            modifier = tileMod,
+                            icon = Icons.Default.Share,
+                            title = "SOCKS5",
+                            onClick = {
+                                showAddMenu = false
+                                onNavigateToAddProfile("socks5")
+                            }
+                        )
+                        AddMenuGridItem(
+                            modifier = tileMod,
+                            icon = VlessIcon,
+                            title = "VLESS",
+                            onClick = {
+                                showAddMenu = false
+                                onNavigateToAddProfile("vless")
+                            }
+                        )
+                        if (BuildConfig.INCLUDE_NAIVE) {
+                            AddMenuGridItem(
+                                modifier = tileMod,
+                                icon = Icons.Default.Shield,
+                                title = "NaiveProxy",
+                                onClick = {
+                                    showAddMenu = false
+                                    onNavigateToAddProfile("naive")
+                                }
+                            )
+                        }
+                        if (BuildConfig.INCLUDE_TOR) {
+                            AddMenuGridItem(
+                                modifier = tileMod,
+                                icon = TorIcon,
+                                title = "Tor",
+                                onClick = {
+                                    showAddMenu = false
+                                    onNavigateToAddProfile("snowflake")
+                                }
+                            )
+                        }
                     }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     AddMenuOption(
@@ -1436,6 +1451,8 @@ fun MainScreen(
     if (showExportAllEncryptedDialog) {
         var pw by remember { mutableStateOf("") }
         var pwVisible by remember { mutableStateOf(false) }
+        var profilePw by remember { mutableStateOf("") }
+        var profilePwVisible by remember { mutableStateOf(false) }
         var hideRes by remember { mutableStateOf(false) }
         var expiry by remember { mutableStateOf(false) }
         var expiryDays by remember { mutableStateOf("30") }
@@ -1452,7 +1469,7 @@ fun MainScreen(
                     OutlinedTextField(
                         value = pw,
                         onValueChange = { pw = it },
-                        label = { Text("Lock Password") },
+                        label = { Text("Bundle Password") },
                         visualTransformation = if (pwVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
                             IconButton(onClick = { pwVisible = !pwVisible }) {
@@ -1464,6 +1481,32 @@ fun MainScreen(
                         },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "Required to decrypt the bundle on import.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = profilePw,
+                        onValueChange = { profilePw = it },
+                        label = { Text("Per-Config Password (optional)") },
+                        visualTransformation = if (profilePwVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { profilePwVisible = !profilePwVisible }) {
+                                Icon(
+                                    imageVector = if (profilePwVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (profilePwVisible) "Hide password" else "Show password"
+                                )
+                            }
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "Locks each profile after bundle decryption. Leave blank to reuse the bundle password.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1528,7 +1571,8 @@ fun MainScreen(
                             System.currentTimeMillis() + days * 24 * 60 * 60 * 1000L
                         } else 0L
                         viewModel.exportAllProfilesEncrypted(
-                            password = pw,
+                            bundlePassword = pw,
+                            profilePassword = profilePw,
                             expirationDate = expiryMs,
                             allowSharing = allowSharing,
                             boundDeviceId = deviceId,
@@ -1877,6 +1921,7 @@ private fun ConnectionStatusStrip(
     sleepTimerRemainingSeconds: Int = 0,
     onCancelSleepTimer: () -> Unit = {},
     dnsWarning: String? = null,
+    dnsPoolScan: app.slipnet.tunnel.DnsPoolScanState = app.slipnet.tunnel.DnsPoolScanState(),
     modifier: Modifier = Modifier
 ) {
     val isConnected = connectionState is ConnectionState.Connected
@@ -1885,6 +1930,7 @@ private fun ConnectionStatusStrip(
     val isError = connectionState is ConnectionState.Error
     val showTorProgress = connectionState is ConnectionState.Connecting &&
             snowflakeBootstrapProgress in 0..99
+    val showDnsPoolProgress = dnsPoolScan.isRunning && dnsPoolScan.total > 0
 
     val statusColor by animateColorAsState(
         targetValue = when {
@@ -2048,6 +2094,50 @@ private fun ConnectionStatusStrip(
                 }
             }
 
+            // DNS pool scan progress (per-profile auto-pick).
+            // Bar always starts at 0 each scan and animates up to the real
+            // tested/total fraction — the Animatable is keyed to the scan's
+            // running flag so it resets to 0 every time a scan begins, no
+            // matter how many results have already landed in the state flow.
+            AnimatedVisibility(
+                visible = showDnsPoolProgress,
+                enter = expandVertically(animationSpec = tween(300)) + fadeIn(animationSpec = tween(300)),
+                exit = shrinkVertically(animationSpec = tween(200)) + fadeOut(animationSpec = tween(200))
+            ) {
+                val targetProgress = if (dnsPoolScan.total > 0)
+                    dnsPoolScan.probed.toFloat() / dnsPoolScan.total
+                else 0f
+                val progressAnim = remember(dnsPoolScan.isRunning) { Animatable(0f) }
+                LaunchedEffect(dnsPoolScan.isRunning, targetProgress) {
+                    if (dnsPoolScan.isRunning) {
+                        progressAnim.animateTo(targetProgress, tween(durationMillis = 400))
+                    }
+                }
+                Column {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        LinearProgressIndicator(
+                            progress = { progressAnim.value },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = ConnectingOrange,
+                            trackColor = ConnectingOrange.copy(alpha = 0.2f),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "DNS ${dnsPoolScan.probed}/${dnsPoolScan.total} · ${dnsPoolScan.alive} alive · ${dnsPoolScan.verified}✓",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ConnectingOrange
+                        )
+                    }
+                }
+            }
+
             // Tor bootstrap progress
             AnimatedVisibility(
                 visible = showTorProgress,
@@ -2182,6 +2272,35 @@ private fun AddMenuOption(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun AddMenuGridItem(
+    icon: ImageVector,
+    title: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(28.dp)
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1
+        )
     }
 }
 

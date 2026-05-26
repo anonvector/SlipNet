@@ -64,6 +64,10 @@ data class SettingsUiState(
     // Global DNS Resolver Override
     val globalResolverEnabled: Boolean = false,
     val globalResolverList: String = "",
+    // Global DNS Pool (auto-pick top 10 working resolvers on DNSTT/NoizDNS/VayDNS connects)
+    val dnsPoolEnabled: Boolean = false,
+    val dnsPoolText: String = "",
+    val dnsPoolFullVerification: Boolean = false,
     // DNS Worker Mode
     val dnsWorkerMode: DnsWorkerMode = DnsWorkerMode.TWO,
     // Remote DNS Settings
@@ -227,6 +231,12 @@ class SettingsViewModel @Inject constructor(
                 preferencesDataStore.globalResolverList
             ) { enabled, list -> Pair(enabled, list) }
 
+            val dnsPoolFlow = combine(
+                preferencesDataStore.dnsPoolEnabled,
+                preferencesDataStore.dnsPoolText,
+                preferencesDataStore.dnsPoolFullVerification
+            ) { enabled, text, fullVerification -> Triple(enabled, text, fullVerification) }
+
             val bandwidthFlow = combine(
                 preferencesDataStore.uploadLimitKbps,
                 preferencesDataStore.downloadLimitKbps
@@ -252,6 +262,12 @@ class SettingsViewModel @Inject constructor(
                     proxyAuthEnabled = proxyAuth.enabled,
                     proxyAuthUsername = proxyAuth.username,
                     proxyAuthPassword = proxyAuth.password
+                )
+            }.combine(dnsPoolFlow) { state, pool ->
+                state.copy(
+                    dnsPoolEnabled = pool.first,
+                    dnsPoolText = pool.second,
+                    dnsPoolFullVerification = pool.third
                 )
             }.collect { newState ->
                 // Preserve update check state across DataStore re-emissions
@@ -502,6 +518,24 @@ class SettingsViewModel @Inject constructor(
     fun setGlobalResolverList(list: String) {
         viewModelScope.launch {
             preferencesDataStore.setGlobalResolverList(list)
+        }
+    }
+
+    fun setDnsPoolEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setDnsPoolEnabled(enabled)
+        }
+    }
+
+    fun setDnsPoolText(text: String) {
+        viewModelScope.launch {
+            preferencesDataStore.setDnsPoolText(text)
+        }
+    }
+
+    fun setDnsPoolFullVerification(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesDataStore.setDnsPoolFullVerification(enabled)
         }
     }
 
