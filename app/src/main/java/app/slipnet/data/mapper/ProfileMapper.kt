@@ -111,7 +111,8 @@ class ProfileMapper @Inject constructor(
             vlessSni = entity.vlessSni,
             chPaddingEnabled = entity.chPaddingEnabled,
             wsHeaderObfuscation = entity.wsHeaderObfuscation,
-            wsPaddingEnabled = entity.wsPaddingEnabled
+            wsPaddingEnabled = entity.wsPaddingEnabled,
+            dnsAutoTune = entity.dnsAutoTune
         )
     }
 
@@ -137,11 +138,9 @@ class ProfileMapper @Inject constructor(
             updatedAt = profile.updatedAt,
             tunnelType = profile.tunnelType.value,
             dnsttPublicKey = profile.dnsttPublicKey,
-            sshEnabled = profile.tunnelType == TunnelType.SSH || profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.SLIPSTREAM_SSH || profile.tunnelType == TunnelType.NAIVE_SSH,
             sshUsername = profile.sshUsername,
             sshPassword = profile.sshPassword,
             sshPort = profile.sshPort,
-            forwardDnsThroughSsh = false,
             sshHost = profile.sshHost,
             dohUrl = profile.dohUrl,
             lastConnectedAt = profile.lastConnectedAt,
@@ -200,10 +199,10 @@ class ProfileMapper @Inject constructor(
             fakeDecoyHost = profile.fakeDecoyHost,
             tcpMaxSeg = profile.tcpMaxSeg,
             vlessSni = profile.vlessSni,
-            fakeSni = "",
             chPaddingEnabled = profile.chPaddingEnabled,
             wsHeaderObfuscation = profile.wsHeaderObfuscation,
-            wsPaddingEnabled = profile.wsPaddingEnabled
+            wsPaddingEnabled = profile.wsPaddingEnabled,
+            dnsAutoTune = profile.dnsAutoTune
         )
     }
 

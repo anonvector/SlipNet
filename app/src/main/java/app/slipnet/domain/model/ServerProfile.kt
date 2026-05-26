@@ -156,7 +156,11 @@ data class ServerProfile(
     // DPI that fingerprints by WS upgrade header shape.
     val wsHeaderObfuscation: Boolean = true,
     // DPI evasion: send random WS ping frames as cover traffic during relay
-    val wsPaddingEnabled: Boolean = false
+    val wsPaddingEnabled: Boolean = false,
+    // When true, probe the resolver at connect time and pick DNS query length
+    // (and, for VayDNS, the rate limit) automatically — overrides the manual
+    // dnsPayloadSize / vaydnsMaxQnameLen / vaydnsRps values for that connect.
+    val dnsAutoTune: Boolean = false
 ) {
     val isExpired: Boolean get() = expirationDate > 0 && System.currentTimeMillis() > expirationDate
 }
