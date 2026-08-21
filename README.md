@@ -2,6 +2,9 @@
 
 > **SlipNet is NOT available on any app store.** Any version you find on Google Play, the Apple App Store, or any other marketplace is **not published by us** and may be outdated, modified, or unsafe. The only official sources are this GitHub repository and our [Telegram channel](https://t.me/SlipNet_app).
 
+> Copyright (C) 2026 Anonvector
+
+
 <p align="center">
   <img src="imgs/icon.png" alt="SlipNet Logo" width="200">
 </p>
