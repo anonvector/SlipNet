@@ -39,6 +39,7 @@ import app.slipnet.tunnel.NaiveSocksBridge
 import app.slipnet.tunnel.RateLimiter
 import app.slipnet.tunnel.SlipstreamBridge
 import app.slipnet.tunnel.SlipstreamSocksBridge
+import app.slipnet.tunnel.SoarBridge
 import app.slipnet.tunnel.Socks5ProxyBridge
 import app.slipnet.tunnel.VlessBridge
 import app.slipnet.tunnel.SnowflakeBridge
@@ -327,6 +328,7 @@ class SlipNetVpnService : VpnService() {
                 try { Socks5ProxyBridge.stopAll() } catch (_: Exception) {}
                 try { DnsttBridge.stopClient() } catch (_: Exception) {}
                 try { VaydnsBridge.stopClient() } catch (_: Exception) {}
+                try { SoarBridge.stopClient() } catch (_: Exception) {}
                 try { SlipstreamBridge.stopClient() } catch (_: Exception) {}
                 // Give native threads extra time to fully release ports after stop.
                 // Both Go (DNSTT/VayDNS) and Rust (Slipstream) may take a moment to close listeners.
@@ -546,6 +548,8 @@ class SlipNetVpnService : VpnService() {
                     TunnelType.VAYDNS_SSH -> connectVaydnsSsh(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
                     TunnelType.SOCKS5 -> connectSocks5(profile, dnsServer, remoteDns)
                     TunnelType.VLESS -> connectVless(profile, dnsServer)
+                    TunnelType.SOAR -> connectSoar(profile, dnsServer, remoteDns, globalResolverOverride)
+                    TunnelType.SOAR_SSH -> connectSoarSsh(profile, dnsServer, remoteDns, remoteDnsFallback, globalResolverOverride)
                 }
 
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -762,6 +766,10 @@ class SlipNetVpnService : VpnService() {
             delay(200)
         }
 
+        // Port the previous layer actually listens on — a Go bridge may bind an
+        // alternative port when its preferred one is still draining.
+        var prevLayerPort = -1
+
         // Start each layer from outermost to innermost
         for (i in profiles.indices) {
             val profile = profiles[i]
@@ -770,7 +778,7 @@ class SlipNetVpnService : VpnService() {
             val isLast = i == chainSize - 1
 
             // Previous layer's output (null for outermost)
-            val prevPort = if (i > 0) proxyPort + (chainSize - i) else -1
+            val prevPort = if (i > 0) prevLayerPort else -1
 
             Log.i(TAG, "Chain layer $i/${chainSize - 1}: ${profile.tunnelType.displayName} on port $layerPort" +
                     if (prevPort > 0) " (through port $prevPort)" else " (outermost)")
@@ -825,6 +833,11 @@ class SlipNetVpnService : VpnService() {
                 VaydnsBridge.getClientPort().also {
                     if (it != layerPort) Log.i(TAG, "VayDNS bound to alternative port $it (preferred $layerPort)")
                 }
+            } else if (profile.tunnelType == TunnelType.SOAR && !isLast) {
+                // As the final layer Soar sits behind Socks5ProxyBridge on layerPort
+                SoarBridge.getClientPort().also {
+                    if (it != layerPort) Log.i(TAG, "Soar bound to alternative port $it (preferred $layerPort)")
+                }
             } else layerPort
 
             // NaiveProxy needs its own readiness check (log-based, not TCP probe)
@@ -873,6 +886,8 @@ class SlipNetVpnService : VpnService() {
                 }
                 Log.i(TAG, "Chain layer $i: Tor bootstrapped")
             }
+
+            prevLayerPort = actualPort
 
             // For Slipstream, wait for QUIC handshake
             if (profile.tunnelType == TunnelType.SLIPSTREAM) {
@@ -1024,6 +1039,51 @@ class SlipNetVpnService : VpnService() {
                     )
                 } else {
                     vpnRepository.startVaydnsProxy(profile, portOverride = layerPort, hostOverride = "127.0.0.1")
+                }
+            }
+            TunnelType.SOAR -> {
+                // Behind a SOCKS5 layer, Soar sends its resolver queries through it as DNS over
+                // TCP (a CONNECT-only proxy can't carry UDP).
+                val upstream = if (prevPort > 0 && prevLayerType != null &&
+                    app.slipnet.domain.model.ChainValidation.outputType(prevLayerType) ==
+                    app.slipnet.domain.model.LayerOutput.SOCKS5
+                ) {
+                    "$prevHost:$prevPort".also {
+                        Log.i(TAG, "Soar[$layerIndex]: routing resolver traffic through SOCKS5 $it")
+                    }
+                } else null
+
+                if (isLast) {
+                    val proxyResult = vpnRepository.startSoarProxy(
+                        profile, portOverride = internalPortBase, hostOverride = "127.0.0.1",
+                        socksProxyAddr = upstream, socksProxyUser = prevProfile?.socksUsername,
+                        socksProxyPass = prevProfile?.socksPassword
+                    )
+                    if (proxyResult.isFailure) return proxyResult
+                    // Final layer faces tun2socks: Socks5ProxyBridge (default instance) handles
+                    // its UDP/DNS, as in a single-profile Soar connection.
+                    Socks5ProxyBridge.debugLogging = preferencesDataStore.debugLogging.first()
+                    val ulKbpsChain = preferencesDataStore.uploadLimitKbps.first()
+                    val dlKbpsChain = preferencesDataStore.downloadLimitKbps.first()
+                    Socks5ProxyBridge.uploadLimiter = if (ulKbpsChain > 0) RateLimiter(ulKbpsChain.toLong() * 1024) else null
+                    Socks5ProxyBridge.downloadLimiter = if (dlKbpsChain > 0) RateLimiter(dlKbpsChain.toLong() * 1024) else null
+                    withContext(Dispatchers.IO) {
+                        Socks5ProxyBridge.start(
+                            remoteHost = "127.0.0.1",
+                            remotePort = SoarBridge.getClientPort(),
+                            remoteUsername = null,
+                            remotePassword = null,
+                            listenPort = layerPort,
+                            listenHost = layerHost,
+                            dnsHost = remoteDns
+                        )
+                    }
+                } else {
+                    vpnRepository.startSoarProxy(
+                        profile, portOverride = layerPort, hostOverride = "127.0.0.1",
+                        socksProxyAddr = upstream, socksProxyUser = prevProfile?.socksUsername,
+                        socksProxyPass = prevProfile?.socksPassword
+                    )
                 }
             }
             TunnelType.SLIPSTREAM -> {
@@ -1242,6 +1302,10 @@ class SlipNetVpnService : VpnService() {
             TunnelType.VAYDNS -> {
                 DnsttSocksBridge.stop()
                 VaydnsBridge.stopClient()
+            }
+            TunnelType.SOAR -> {
+                Socks5ProxyBridge.stop()
+                SoarBridge.stopClient()
             }
             TunnelType.SLIPSTREAM -> {
                 SlipstreamSocksBridge.stop()
@@ -2726,6 +2790,263 @@ class SlipNetVpnService : VpnService() {
     }
 
     /**
+     * Connect using Soar tunnel type.
+     * Order: VPN interface (with app exclusion) -> Start Soar (SOCKS5 on proxyPort+1) -> Wait for ready
+     *        -> Socks5ProxyBridge on proxyPort -> tun2socks
+     *
+     * Traffic flow:
+     * App -> TUN -> hev-socks5-tunnel -> Socks5ProxyBridge (proxyPort)
+     *   -> Soar SOCKS5 (proxyPort+1) -> DNS tunnel over every resolver at once
+     *   -> Soar server (dials the destination) -> Internet
+     *
+     * Socks5ProxyBridge resolves TUN DNS as DNS-over-TCP CONNECTs to remoteDns:53; the Soar
+     * client answers those with DoH through the tunnel, since a stock soar-server only
+     * lets streams reach ports 80 and 443.
+     */
+    private suspend fun connectSoar(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, globalResolverOverride: List<app.slipnet.domain.model.DnsResolver>? = null) {
+        val proxyPort = preferencesDataStore.proxyListenPort.first()
+        val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        val soarPort = proxyPort + 1
+        val localAuthUser = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null
+        val localAuthPass = if (preferencesDataStore.proxyAuthEnabled.first()) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
+
+        // Step 1: Establish VPN interface FIRST (with addDisallowedApplication for this app)
+        // so Soar's resolver sockets bypass the VPN when created
+        if (!isProxyOnly) {
+            vpnInterface = establishVpnInterface(dnsServer)
+            if (vpnInterface == null) {
+                connectionManager.onVpnError("Failed to establish VPN interface")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+            delay(200)
+        }
+
+        // Step 2: Start Soar on internal port (127.0.0.1 only)
+        val soarResult = vpnRepository.startSoarProxy(profile, portOverride = soarPort, hostOverride = "127.0.0.1", resolverOverride = globalResolverOverride)
+        if (soarResult.isFailure) {
+            connectionManager.onVpnError(soarResult.exceptionOrNull()?.message ?: "Failed to start Soar")
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Read actual port — may differ from requested if preferred port was stuck
+        val actualSoarPort = SoarBridge.getClientPort()
+        if (actualSoarPort != soarPort) {
+            Log.i(TAG, "Soar bound to alternative port $actualSoarPort (preferred $soarPort was stuck)")
+        }
+
+        if (!waitForProxyReady(actualSoarPort, maxAttempts = 20, delayMs = 100)) {
+            handleProxyStartupFailure(actualSoarPort)
+            vpnInterface?.close()
+            vpnInterface = null
+            return
+        }
+
+        // Step 3: Start the user-facing SOCKS5 bridge on proxyPort (handles UDP/DNS from tun2socks)
+        Socks5ProxyBridge.debugLogging = preferencesDataStore.debugLogging.first()
+        val bridgeResult = withContext(Dispatchers.IO) {
+            Socks5ProxyBridge.start(
+                remoteHost = "127.0.0.1",
+                remotePort = actualSoarPort,
+                remoteUsername = null,
+                remotePassword = null,
+                listenPort = proxyPort,
+                listenHost = proxyHost,
+                dnsHost = remoteDns,
+                localAuthUsername = localAuthUser,
+                localAuthPassword = localAuthPass
+            )
+        }
+        if (bridgeResult.isFailure) {
+            connectionManager.onVpnError(bridgeResult.exceptionOrNull()?.message ?: "Failed to start Soar SOCKS5 bridge")
+            SoarBridge.stopClient()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 100)) {
+            Log.e(TAG, "Socks5ProxyBridge failed to become ready on port $proxyPort")
+            connectionManager.onVpnError("Soar SOCKS5 bridge failed to start")
+            Socks5ProxyBridge.stop()
+            SoarBridge.stopClient()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Proxy-only mode: skip tun2socks
+        if (isProxyOnly) {
+            vpnRepository.setProxyConnected(profile)
+            Log.i(TAG, "Proxy-only mode: Soar SOCKS5 proxy ready on $proxyHost:$proxyPort")
+            finishConnection()
+            return
+        }
+
+        // Step 4: Start tun2socks pointing at the bridge on proxyPort
+        val tun2socksResult = vpnRepository.startTun2Socks(profile, vpnInterface!!)
+        if (tun2socksResult.isFailure) {
+            connectionManager.onVpnError(tun2socksResult.exceptionOrNull()?.message ?: "Failed to start tunnel")
+            Socks5ProxyBridge.stop()
+            SoarBridge.stopClient()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        Log.d(TAG, "Soar tunnel started")
+        finishConnection()
+    }
+
+    /**
+     * Connect using Soar+SSH tunnel type.
+     * Order: VPN interface (with app exclusion) -> Start Soar (SOCKS5 on proxyPort+1) -> Wait for ready
+     *        -> SSH through Soar's SOCKS5 -> Wait for SSH ready -> tun2socks on proxyPort
+     *
+     * Traffic flow:
+     * App -> TUN -> hev-socks5-tunnel -> SSH SOCKS5 (proxyPort)
+     *   -> SSH direct-tcpip -> Soar SOCKS5 (proxyPort+1) -> DNS tunnel
+     *   -> Soar server -> sshHost:sshPort (as seen from the Soar server) -> Internet
+     *
+     * The Soar server must be allowed to reach the SSH server: a stock soar-server refuses
+     * port 22 and its own/private addresses (run it with -allow-ports and -allow-private).
+     */
+    private suspend fun connectSoarSsh(profile: app.slipnet.domain.model.ServerProfile, dnsServer: String, remoteDns: String, remoteDnsFallback: String, globalResolverOverride: List<app.slipnet.domain.model.DnsResolver>? = null) {
+        val proxyPort = preferencesDataStore.proxyListenPort.first()
+        val proxyHost = preferencesDataStore.proxyListenAddress.first()
+        val soarPort = proxyPort + 1
+
+        if (!isProxyOnly) {
+            // Step 1: Establish VPN interface with addDisallowedApplication
+            vpnInterface = establishVpnInterface(dnsServer)
+            if (vpnInterface == null) {
+                connectionManager.onVpnError("Failed to establish VPN interface")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+            delay(200)
+        }
+
+        // Step 2: Start Soar on internal port (127.0.0.1 only)
+        val soarResult = vpnRepository.startSoarProxy(profile, portOverride = soarPort, hostOverride = "127.0.0.1", resolverOverride = globalResolverOverride)
+        if (soarResult.isFailure) {
+            connectionManager.onVpnError(soarResult.exceptionOrNull()?.message ?: "Failed to start Soar")
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        val actualSoarPort = SoarBridge.getClientPort()
+        if (actualSoarPort != soarPort) {
+            Log.i(TAG, "Soar bound to alternative port $actualSoarPort (preferred $soarPort was stuck)")
+        }
+
+        if (!waitForProxyReady(actualSoarPort, maxAttempts = 20, delayMs = 100)) {
+            handleProxyStartupFailure(actualSoarPort)
+            vpnInterface?.close()
+            vpnInterface = null
+            return
+        }
+
+        // Step 3: Switch tunnel type to SOAR_SSH before starting SSH
+        vpnRepository.setCurrentTunnelType(TunnelType.SOAR_SSH)
+        currentTunnelType = TunnelType.SOAR_SSH
+
+        // Step 4: Start SSH through Soar's SOCKS5 (with retry)
+        configureSshBridge()
+        var sshResult: Result<Unit> = Result.failure(RuntimeException("SSH not attempted"))
+        for (attempt in 1..SSH_OVER_TUNNEL_RETRIES) {
+            sshResult = withContext(Dispatchers.IO) {
+                Log.i(TAG, "Starting SSH tunnel through Soar (${profile.sshHost}:${profile.sshPort} via 127.0.0.1:$actualSoarPort) attempt $attempt/$SSH_OVER_TUNNEL_RETRIES")
+                SshTunnelBridge.startOverSocks5Proxy(
+                    sshHost = profile.sshHost,
+                    sshPort = profile.sshPort,
+                    sshUsername = profile.sshUsername,
+                    sshPassword = profile.sshPassword,
+                    proxyHost = "127.0.0.1",
+                    proxyPort = actualSoarPort,
+                    socksUsername = null,
+                    socksPassword = null,
+                    listenPort = proxyPort,
+                    listenHost = proxyHost,
+                    blockDirectDns = true,
+                    sshAuthType = profile.sshAuthType,
+                    sshPrivateKey = profile.sshPrivateKey,
+                    sshKeyPassphrase = profile.sshKeyPassphrase,
+                    remoteDnsHost = remoteDns,
+                    remoteDnsFallback = remoteDnsFallback
+                )
+            }
+            if (sshResult.isSuccess) break
+            if (attempt < SSH_OVER_TUNNEL_RETRIES) {
+                Log.w(TAG, "SSH over Soar attempt $attempt failed: ${sshResult.exceptionOrNull()?.message}, retrying...")
+                delay(1000L * attempt)
+            }
+        }
+        if (sshResult.isFailure) {
+            Log.w(TAG, "SSH over Soar failed — the Soar server must allow ${profile.sshHost}:${profile.sshPort} (soar-server -allow-ports / -allow-private)")
+            connectionManager.onVpnError(sshResult.exceptionOrNull()?.message ?: "Failed to start SSH tunnel over Soar")
+            SoarBridge.stopClient()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 100)) {
+            Log.e(TAG, "SSH SOCKS5 proxy failed to become ready on port $proxyPort")
+            connectionManager.onVpnError("SSH tunnel failed to start over Soar")
+            SshTunnelBridge.stop()
+            SoarBridge.stopClient()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Proxy-only mode: skip tun2socks
+        if (isProxyOnly) {
+            vpnRepository.setProxyConnected(profile)
+            Log.i(TAG, "Proxy-only mode: Soar+SSH SOCKS5 proxy ready on $proxyHost:$proxyPort")
+            finishConnection()
+            return
+        }
+
+        // Step 5: Start tun2socks pointing at SSH SOCKS5 on proxyPort
+        val tun2socksResult = vpnRepository.startTun2Socks(profile, vpnInterface!!)
+        if (tun2socksResult.isFailure) {
+            connectionManager.onVpnError(tun2socksResult.exceptionOrNull()?.message ?: "Failed to start tunnel")
+            SshTunnelBridge.stop()
+            SoarBridge.stopClient()
+            vpnInterface?.close()
+            vpnInterface = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        delay(500)
+        Log.d(TAG, "Soar+SSH tunnel started")
+        finishConnection()
+    }
+
+    /**
      * Connect using DoH (DNS-over-HTTPS) tunnel type.
      * Order: Establish VPN interface (with app exclusion) -> Start DoH proxy -> Wait for ready -> tun2socks
      *
@@ -3308,6 +3629,7 @@ class SlipNetVpnService : VpnService() {
             TunnelType.SNOWFLAKE -> SnowflakeBridge.isRunning()
             TunnelType.SOCKS5 -> Socks5ProxyBridge.isRunning()
             TunnelType.VLESS -> VlessBridge.isRunning()
+            TunnelType.SOAR, TunnelType.SOAR_SSH -> SoarBridge.isRunning()
         }
         Log.e(TAG, "Proxy failed to become ready on port $port, nativeRunning=$nativeRunning")
 
@@ -3554,6 +3876,7 @@ class SlipNetVpnService : VpnService() {
                         }
                     }
                     TunnelType.VLESS -> VlessBridge.isRunning()
+                    TunnelType.SOAR, TunnelType.SOAR_SSH -> SoarBridge.isRunning()
                 }
 
                 if (!nativeRunning) {
@@ -3688,6 +4011,7 @@ class SlipNetVpnService : VpnService() {
                         currentTunnelType == TunnelType.DNSTT_SSH ||
                         currentTunnelType == TunnelType.NOIZDNS_SSH ||
                         currentTunnelType == TunnelType.VAYDNS_SSH ||
+                        currentTunnelType == TunnelType.SOAR_SSH ||
                         currentTunnelType == TunnelType.SLIPSTREAM_SSH ||
                         currentTunnelType == TunnelType.NAIVE_SSH
                 if (usesSsh && healthCheckCount % SSH_PROBE_INTERVAL == 0) {
@@ -3707,7 +4031,8 @@ class SlipNetVpnService : VpnService() {
                     TunnelType.SLIPSTREAM -> SlipstreamSocksBridge.isDnsPoolDead()
                     TunnelType.NAIVE -> NaiveSocksBridge.isDnsPoolDead()
                     TunnelType.SSH, TunnelType.DNSTT_SSH, TunnelType.NOIZDNS_SSH,
-                    TunnelType.VAYDNS_SSH, TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH -> SshTunnelBridge.isDnsPoolDead()
+                    TunnelType.VAYDNS_SSH, TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH,
+                    TunnelType.SOAR_SSH -> SshTunnelBridge.isDnsPoolDead()
                     else -> false
                 }
                 if (dnsPoolDead) {
@@ -3716,7 +4041,8 @@ class SlipNetVpnService : VpnService() {
                         TunnelType.DNSTT, TunnelType.DNSTT_SSH,
                         TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
                         TunnelType.VAYDNS, TunnelType.VAYDNS_SSH,
-                        TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
+                        TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH,
+                        TunnelType.SOAR, TunnelType.SOAR_SSH
                     )
                     val threshold = if (isDnsTunneled) DNS_POOL_DEAD_THRESHOLD else DNS_POOL_DEAD_THRESHOLD_SOCKS
                     if (dnsPoolDeadChecks >= threshold) {
@@ -3736,7 +4062,8 @@ class SlipNetVpnService : VpnService() {
                     TunnelType.DNSTT, TunnelType.DNSTT_SSH,
                     TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
                     TunnelType.VAYDNS, TunnelType.VAYDNS_SSH,
-                    TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
+                    TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH,
+                    TunnelType.SOAR, TunnelType.SOAR_SSH
                 )
                 val stallCheckInterval = if (isDnsTunneledStall) TUNNEL_STALL_CHECK_INTERVAL else TUNNEL_STALL_CHECK_INTERVAL_SOCKS
                 val stallThreshold = if (isDnsTunneledStall) TUNNEL_STALL_THRESHOLD else TUNNEL_STALL_THRESHOLD_SOCKS
@@ -4136,6 +4463,9 @@ class SlipNetVpnService : VpnService() {
                 if (isVaydns) {
                     VaydnsBridge.stopClientBlocking()  // no-op if already stopped, but ensures port is released
                 }
+                if (currentTunnelType == TunnelType.SOAR || currentTunnelType == TunnelType.SOAR_SSH) {
+                    SoarBridge.stopClientBlocking()  // no-op if already stopped, but ensures port is released
+                }
 
                 val proxyPort = preferencesDataStore.proxyListenPort.first()
                 val proxyHost = preferencesDataStore.proxyListenAddress.first()
@@ -4288,6 +4618,60 @@ class SlipNetVpnService : VpnService() {
                     if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 50)) {
                         Log.e(TAG, "SSH SOCKS5 proxy failed to restart on port $proxyPort")
                         handleTunnelFailure("failed to reconnect VayDNS+SSH after network change")
+                        return@launch
+                    }
+                } else if (currentTunnelType == TunnelType.SOAR_SSH) {
+                    // Soar+SSH: restart Soar on internal port, then SSH through its SOCKS5 on proxyPort
+                    val soarResult = vpnRepository.startSoarProxy(
+                        profile, portOverride = proxyPort + 1, hostOverride = "127.0.0.1",
+                        resolverOverride = preferencesDataStore.parsedGlobalResolvers().takeIf { it.isNotEmpty() }
+                    )
+                    if (soarResult.isFailure) {
+                        Log.e(TAG, "Failed to restart Soar after network change", soarResult.exceptionOrNull())
+                        handleTunnelFailure("failed to reconnect Soar+SSH after network change")
+                        return@launch
+                    }
+
+                    val actualSoarPort = SoarBridge.getClientPort()
+
+                    if (!waitForProxyReady(actualSoarPort, maxAttempts = 20, delayMs = 50)) {
+                        Log.e(TAG, "Soar proxy failed to restart")
+                        handleTunnelFailure("failed to reconnect Soar+SSH after network change")
+                        return@launch
+                    }
+
+                    vpnRepository.setCurrentTunnelType(currentTunnelType!!)
+
+                    configureSshBridge()
+                    val sshResult = withContext(Dispatchers.IO) {
+                        SshTunnelBridge.startOverSocks5Proxy(
+                            sshHost = profile.sshHost,
+                            sshPort = profile.sshPort,
+                            sshUsername = profile.sshUsername,
+                            sshPassword = profile.sshPassword,
+                            proxyHost = "127.0.0.1",
+                            proxyPort = actualSoarPort,
+                            socksUsername = null,
+                            socksPassword = null,
+                            listenPort = proxyPort,
+                            listenHost = proxyHost,
+                            blockDirectDns = true,
+                            sshAuthType = profile.sshAuthType,
+                            sshPrivateKey = profile.sshPrivateKey,
+                            sshKeyPassphrase = profile.sshKeyPassphrase,
+                            remoteDnsHost = remoteDns,
+                            remoteDnsFallback = remoteDnsFallback
+                        )
+                    }
+                    if (sshResult.isFailure) {
+                        Log.e(TAG, "Failed to restart SSH over Soar after network change", sshResult.exceptionOrNull())
+                        handleTunnelFailure("failed to reconnect Soar+SSH after network change")
+                        return@launch
+                    }
+
+                    if (!waitForProxyReady(proxyPort, maxAttempts = 30, delayMs = 50)) {
+                        Log.e(TAG, "SSH SOCKS5 proxy failed to restart on port $proxyPort")
+                        handleTunnelFailure("failed to reconnect Soar+SSH after network change")
                         return@launch
                     }
                 } else if (currentTunnelType == TunnelType.SLIPSTREAM_SSH) {
@@ -4483,6 +4867,51 @@ class SlipNetVpnService : VpnService() {
                     if (!waitForProxyReady(proxyPort, maxAttempts = 20, delayMs = 50)) {
                         Log.e(TAG, "VayDNS bridge failed to restart on port $proxyPort")
                         handleTunnelFailure("failed to reconnect VayDNS after network change")
+                        return@launch
+                    }
+                } else if (currentTunnelType == TunnelType.SOAR) {
+                    // Soar: restart Soar on internal port + SOCKS5 bridge on proxyPort
+                    val soarResult = vpnRepository.startSoarProxy(
+                        profile, portOverride = proxyPort + 1, hostOverride = "127.0.0.1",
+                        resolverOverride = preferencesDataStore.parsedGlobalResolvers().takeIf { it.isNotEmpty() }
+                    )
+                    if (soarResult.isFailure) {
+                        Log.e(TAG, "Failed to restart Soar after network change", soarResult.exceptionOrNull())
+                        handleTunnelFailure("failed to reconnect Soar after network change")
+                        return@launch
+                    }
+
+                    val actualSoarPort = SoarBridge.getClientPort()
+
+                    if (!waitForProxyReady(actualSoarPort, maxAttempts = 20, delayMs = 50)) {
+                        Log.e(TAG, "Soar proxy failed to restart on port $actualSoarPort")
+                        handleTunnelFailure("failed to reconnect Soar after network change")
+                        return@launch
+                    }
+
+                    val authEnabled = preferencesDataStore.proxyAuthEnabled.first()
+                    val bridgeResult = withContext(Dispatchers.IO) {
+                        Socks5ProxyBridge.start(
+                            remoteHost = "127.0.0.1",
+                            remotePort = actualSoarPort,
+                            remoteUsername = null,
+                            remotePassword = null,
+                            listenPort = proxyPort,
+                            listenHost = proxyHost,
+                            dnsHost = remoteDns,
+                            localAuthUsername = if (authEnabled) preferencesDataStore.proxyAuthUsername.first().ifEmpty { null } else null,
+                            localAuthPassword = if (authEnabled) preferencesDataStore.proxyAuthPassword.first().ifEmpty { null } else null
+                        )
+                    }
+                    if (bridgeResult.isFailure) {
+                        Log.e(TAG, "Failed to restart Soar bridge after network change")
+                        handleTunnelFailure("failed to reconnect Soar after network change")
+                        return@launch
+                    }
+
+                    if (!waitForProxyReady(proxyPort, maxAttempts = 20, delayMs = 50)) {
+                        Log.e(TAG, "Soar bridge failed to restart on port $proxyPort")
+                        handleTunnelFailure("failed to reconnect Soar after network change")
                         return@launch
                     }
                 } else if (currentTunnelType == TunnelType.NAIVE_SSH) {
@@ -4826,6 +5255,16 @@ class SlipNetVpnService : VpnService() {
                 Log.d(TAG, "Stopping VLESS bridge")
                 VlessBridge.stop()
             }
+            TunnelType.SOAR -> {
+                Log.d(TAG, "Stopping Soar: bridge first, then Soar")
+                Socks5ProxyBridge.stop()
+                SoarBridge.stopClient()
+            }
+            TunnelType.SOAR_SSH -> {
+                Log.d(TAG, "Stopping Soar+SSH: SSH first, then Soar")
+                SshTunnelBridge.stop()
+                SoarBridge.stopClient()
+            }
         }
     }
 
@@ -4849,6 +5288,7 @@ class SlipNetVpnService : VpnService() {
             TunnelType.SNOWFLAKE -> { /* Snowflake: no bridge reference to clear */ }
             TunnelType.SOCKS5 -> { /* SOCKS5: no bridge reference to clear */ }
             TunnelType.VLESS -> { /* VLESS: no VpnService reference to clear */ }
+            TunnelType.SOAR, TunnelType.SOAR_SSH -> { /* Soar: no VpnService reference to clear */ }
         }
     }
 
@@ -4878,6 +5318,8 @@ class SlipNetVpnService : VpnService() {
             TunnelType.SNOWFLAKE -> SnowflakeBridge.isClientHealthy() && TorSocksBridge.isClientHealthy()
             TunnelType.SOCKS5 -> Socks5ProxyBridge.isRunning() && Socks5ProxyBridge.isClientHealthy()
             TunnelType.VLESS -> VlessBridge.isRunning() && VlessBridge.isClientHealthy()
+            TunnelType.SOAR -> SoarBridge.isClientHealthy() && Socks5ProxyBridge.isClientHealthy()
+            TunnelType.SOAR_SSH -> SoarBridge.isClientHealthy() && SshTunnelBridge.isClientHealthy()
         }
     }
 
@@ -4924,7 +5366,9 @@ class SlipNetVpnService : VpnService() {
                 currentTunnelType == TunnelType.NAIVE ||
                 currentTunnelType == TunnelType.SNOWFLAKE ||
                 currentTunnelType == TunnelType.SOCKS5 ||
-                currentTunnelType == TunnelType.VLESS
+                currentTunnelType == TunnelType.VLESS ||
+                currentTunnelType == TunnelType.SOAR ||
+                currentTunnelType == TunnelType.SOAR_SSH
 
         val splitEnabled = preferencesDataStore.splitTunnelingEnabled.first()
         val splitMode = preferencesDataStore.splitTunnelingMode.first()
@@ -5223,6 +5667,7 @@ class SlipNetVpnService : VpnService() {
         DnsttSocksBridge.resetTrafficStats()
         SshTunnelBridge.resetTrafficStats()
         Socks5ProxyBridge.resetTrafficStats()
+        NaiveSocksBridge.resetTrafficStats()
 
         disconnectJob = serviceScope.launch {
             Log.i(TAG, "Disconnecting VPN")
@@ -5256,7 +5701,8 @@ class SlipNetVpnService : VpnService() {
         val isDnstt = currentTunnelType in listOf(
             TunnelType.DNSTT, TunnelType.NOIZDNS,
             TunnelType.DNSTT_SSH, TunnelType.NOIZDNS_SSH,
-            TunnelType.VAYDNS, TunnelType.VAYDNS_SSH
+            TunnelType.VAYDNS, TunnelType.VAYDNS_SSH,
+            TunnelType.SOAR, TunnelType.SOAR_SSH
         )
         val maxSeamless = if (isDnstt) MAX_SEAMLESS_RECONNECTS_DNSTT else MAX_SEAMLESS_RECONNECTS
         if (tunnelAlive && seamlessReconnectAttempts < maxSeamless

@@ -106,6 +106,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import app.slipnet.domain.model.CongestionControl
 import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ResolverMode
+import app.slipnet.domain.model.SoarConfig
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.tunnel.DOH_SERVERS
 import app.slipnet.tunnel.DohServer
@@ -195,11 +196,11 @@ fun EditProfileScreen(
                     }
                 },
                 actions = {
-                    val lockedCanEditDns = uiState.isDnsttOrNoizOrVaydnsBased || uiState.isSlipstreamBased
+                    val lockedCanEditDns = uiState.isDnsttOrNoizOrVaydnsBased || uiState.isSlipstreamBased || uiState.isSoarBased
                     val lockedCanEditCreds = (uiState.useSsh && uiState.sshAuthType == SshAuthType.PASSWORD) ||
                             uiState.isSocks5 ||
                             uiState.isNaiveBased ||
-                            (uiState.showConnectionMethod && !uiState.useSsh && !uiState.isNaiveBased)
+                            (uiState.showConnectionMethod && !uiState.useSsh && !uiState.isNaiveBased && !uiState.isSoarBased)
                     val lockedCanEdit = uiState.isLocked && (lockedCanEditDns || lockedCanEditCreds)
                     if (!uiState.isLocked || lockedCanEdit) {
                         if (uiState.isSaving) {
@@ -325,7 +326,7 @@ fun EditProfileScreen(
                 }
 
                 // DNS settings section
-                if (uiState.isDnsttOrNoizOrVaydnsBased || uiState.isSlipstreamBased) {
+                if (uiState.isDnsttOrNoizOrVaydnsBased || uiState.isSlipstreamBased || uiState.isSoarBased) {
                     Text(
                         text = "DNS Settings",
                         style = MaterialTheme.typography.titleMedium,
@@ -524,7 +525,7 @@ fun EditProfileScreen(
                                 // Check both visible resolvers and hidden defaults
                                 val hasMultipleResolvers = uiState.resolvers.contains(",") ||
                                     (!uiState.useCustomResolver && uiState.defaultResolversList.size >= 2)
-                                if (hasMultipleResolvers && !uiState.isSlipstreamBased) {
+                                if (hasMultipleResolvers && !uiState.isSlipstreamBased && !uiState.isSoarBased) {
                                     MultiResolverSettings(
                                         resolverMode = uiState.resolverMode,
                                         rrSpreadCount = uiState.rrSpreadCount,
@@ -532,6 +533,18 @@ fun EditProfileScreen(
                                         onSpreadCountChange = { viewModel.updateRrSpreadCount(it) }
                                     )
                                 }
+                            }
+
+                            // Soar discovery / TCP settings (locked profiles)
+                            if (uiState.isSoarBased) {
+                                SoarSettings(
+                                    discovery = uiState.soarDiscovery,
+                                    country = uiState.soarCountry,
+                                    tcpMode = uiState.soarTcpMode,
+                                    onDiscoveryChange = { viewModel.updateSoarDiscovery(it) },
+                                    onCountryChange = { viewModel.updateSoarCountry(it) },
+                                    onTcpModeChange = { viewModel.updateSoarTcpMode(it) }
+                                )
                             }
 
                             // DNS Query Size (locked profiles, not for VayDNS — it uses QNAME length instead).
@@ -1027,7 +1040,7 @@ fun EditProfileScreen(
                 // Credentials section — editable username and password (masked)
                 val showSshCreds = uiState.useSsh && uiState.sshAuthType == SshAuthType.PASSWORD
                 val showSocksCreds = uiState.isSocks5 ||
-                        (uiState.showConnectionMethod && !uiState.useSsh && !uiState.isNaiveBased)
+                        (uiState.showConnectionMethod && !uiState.useSsh && !uiState.isNaiveBased && !uiState.isSoarBased)
                 val showNaiveCreds = uiState.isNaiveBased
                 if (showSshCreds || showSocksCreds || showNaiveCreds) {
                     Text(
@@ -1244,7 +1257,7 @@ fun EditProfileScreen(
                         placeholder = {
                             Text(
                                 when {
-                                    uiState.isDnsttOrNoizOrVaydnsBased -> "t.example.com"
+                                    uiState.isDnsttOrNoizOrVaydnsBased || uiState.isSoarBased -> "t.example.com"
                                     uiState.isSshOnly -> "ssh.example.com"
                                     uiState.isNaiveBased -> "proxy.example.com"
                                     else -> "vpn.example.com"
@@ -1257,6 +1270,7 @@ fun EditProfileScreen(
                                 uiState.domainError ?: when {
                                     uiState.isNoizdnsBased -> "NoizDNS tunnel domain"
                                     uiState.isVaydnsBased -> "VayDNS tunnel domain"
+                                    uiState.isSoarBased -> "Soar tunnel zone (delegated to the Soar server)"
                                     uiState.isDnsttBased -> "DNSTT tunnel domain"
                                     uiState.isSlipstreamBased -> "Slipstream tunnel domain"
                                     uiState.isNaiveBased -> "Caddy server hostname"
@@ -1632,6 +1646,22 @@ fun EditProfileScreen(
                     )
                 }
 
+                // Soar Public Key (Ed25519, base64 from `soar-server pubkey`)
+                if (uiState.isSoarBased) {
+                    OutlinedTextField(
+                        value = uiState.dnsttPublicKey,
+                        onValueChange = { viewModel.updateDnsttPublicKey(it) },
+                        label = { Text("Public Key") },
+                        placeholder = { Text("Server's Ed25519 public key (base64)") },
+                        isError = uiState.dnsttPublicKeyError != null,
+                        supportingText = {
+                            Text(uiState.dnsttPublicKeyError ?: "Output of `soar-server pubkey` on the server")
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
                 // DNSTT Public Key
                 if (uiState.isDnsttOrNoizOrVaydnsBased) {
                     OutlinedTextField(
@@ -1826,7 +1856,7 @@ fun EditProfileScreen(
                         }
                     }
                     // Multi-resolver mode (only shown when 2+ resolvers, not for slipstream which uses QUIC multipath)
-                    if (uiState.resolvers.contains(",") && !uiState.isSlipstreamBased) {
+                    if (uiState.resolvers.contains(",") && !uiState.isSlipstreamBased && !uiState.isSoarBased) {
                         MultiResolverSettings(
                             resolverMode = uiState.resolverMode,
                             rrSpreadCount = uiState.rrSpreadCount,
@@ -1835,6 +1865,18 @@ fun EditProfileScreen(
                         )
                     }
 
+                }
+
+                // Soar-specific settings
+                if (uiState.isSoarBased) {
+                    SoarSettings(
+                        discovery = uiState.soarDiscovery,
+                        country = uiState.soarCountry,
+                        tcpMode = uiState.soarTcpMode,
+                        onDiscoveryChange = { viewModel.updateSoarDiscovery(it) },
+                        onCountryChange = { viewModel.updateSoarCountry(it) },
+                        onTcpModeChange = { viewModel.updateSoarTcpMode(it) }
+                    )
                 }
 
                 // Authoritative Mode toggle (DNSTT/NoizDNS only — VayDNS has no authoritative mode)
@@ -2689,8 +2731,9 @@ fun EditProfileScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        val directLabel = if (uiState.isNaiveBased) "Direct" else "SOCKS"
-                        val sshLabel = if (uiState.isNaiveBased) "+ SSH" else "SSH"
+                        // NaiveProxy and Soar servers dial destinations themselves: no SOCKS server to log in to
+                        val directLabel = if (uiState.isNaiveBased || uiState.isSoarBased) "Direct" else "SOCKS"
+                        val sshLabel = if (uiState.isNaiveBased || uiState.isSoarBased) "+ SSH" else "SSH"
 
                         if (uiState.useSsh) {
                             OutlinedButton(
@@ -2722,8 +2765,17 @@ fun EditProfileScreen(
                     }
                 }
 
+                // Soar+SSH: the Soar server dials SSH itself, and a stock soar-server refuses it
+                if (uiState.isSoarBased && uiState.useSsh) {
+                    Text(
+                        text = "The Soar server connects to SSH at 127.0.0.1:${uiState.sshPort.ifBlank { "22" }}. Run soar-server with -allow-private and -allow-ports including the SSH port, or it refuses the connection.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
                 // SOCKS5 Credentials (optional, when SOCKS selected for DNSTT/Slipstream)
-                if (uiState.showConnectionMethod && !uiState.useSsh && !uiState.isNaiveBased) {
+                if (uiState.showConnectionMethod && !uiState.useSsh && !uiState.isNaiveBased && !uiState.isSoarBased) {
                     Text(
                         text = "SOCKS5 Credentials (Optional)",
                         style = MaterialTheme.typography.titleMedium,
@@ -3563,3 +3615,92 @@ private fun MultiResolverSettings(
     }
 }
 
+/**
+ * Soar settings: resolver discovery (with the country whose bundled resolver
+ * list to try) and TCP/53 paths.
+ */
+@Composable
+private fun SoarSettings(
+    discovery: Boolean,
+    country: String,
+    tcpMode: String,
+    onDiscoveryChange: (Boolean) -> Unit,
+    onCountryChange: (String) -> Unit,
+    onTcpModeChange: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Resolver Discovery",
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = "Find more resolvers that carry the tunnel; each is checked against the server's signed handshake",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(
+            checked = discovery,
+            onCheckedChange = onDiscoveryChange
+        )
+    }
+    if (discovery) {
+        Text(
+            text = "Network country: also try that country's bundled resolver list",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+        ) {
+            SoarConfig.DISCOVERY_COUNTRIES.forEach { cc ->
+                FilterChip(
+                    selected = country == cc,
+                    onClick = { onCountryChange(cc) },
+                    label = { Text(cc.ifEmpty { "Global" }) },
+                    modifier = Modifier.padding(end = 4.dp)
+                )
+            }
+        }
+    }
+
+    Column(modifier = Modifier.padding(top = 8.dp)) {
+        Text(
+            text = "DNS over TCP",
+            style = MaterialTheme.typography.bodyLarge
+        )
+        Text(
+            text = when (tcpMode) {
+                SoarConfig.TCP_ON -> "TCP/53 alongside UDP for every resolver"
+                SoarConfig.TCP_ONLY -> "TCP/53 only, for networks that block or tamper with UDP/53"
+                SoarConfig.TCP_OFF -> "UDP/53 only"
+                else -> "TCP/53 for resolvers whose UDP never answers"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+    ) {
+        SoarConfig.TCP_MODES.forEach { mode ->
+            FilterChip(
+                selected = tcpMode == mode,
+                onClick = { onTcpModeChange(mode) },
+                label = { Text(mode.replaceFirstChar { it.uppercase() }) },
+                modifier = Modifier.padding(end = 4.dp)
+            )
+        }
+    }
+}

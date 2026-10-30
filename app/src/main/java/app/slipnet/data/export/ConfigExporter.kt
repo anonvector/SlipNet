@@ -18,6 +18,9 @@ import javax.inject.Singleton
  * Encoded profile format v24 (pipe-delimited):
  * v24|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId|resolversHidden|hiddenResolvers|noizdnsStealth|dnsPayloadSize|socks5ServerPort|vaydnsDnsttCompat|vaydnsRecordType|vaydnsMaxQnameLen|vaydnsRps|vaydnsIdleTimeout|vaydnsKeepalive|vaydnsUdpTimeout|vaydnsMaxNumLabels|vaydnsClientIdSize|sshTlsEnabled|sshTlsSni|sshHttpProxyHost|sshHttpProxyPort|sshHttpProxyCustomHost|sshWsEnabled|sshWsPath|sshWsUseTls|sshWsCustomHost|sshPayload(b64)|resolverMode|rrSpreadCount
  *
+ * v25–v28 append VLESS / SNI-fragmentation fields (positions 62–78); v29 appends
+ * soarDiscovery|soarCountry|soarTcpMode (positions 79–81).
+ *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
 @Singleton
@@ -28,7 +31,7 @@ class ConfigExporter @Inject constructor() {
         const val ENCRYPTED_SCHEME = "slipnet-enc://"
         /** Scheme for password-encrypted multi-profile bundles (see [exportAllProfilesEncrypted]). */
         const val BUNDLE_ENCRYPTED_SCHEME = "slipnet-bundle-enc://"
-        const val VERSION = "28"
+        const val VERSION = "29"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -44,6 +47,8 @@ class ConfigExporter @Inject constructor() {
         const val MODE_VAYDNS = "vaydns"
         const val MODE_VAYDNS_SSH = "vaydns_ssh"
         const val MODE_VLESS = "vless"
+        const val MODE_SOAR = "soar"
+        const val MODE_SOAR_SSH = "soar_ssh"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -166,6 +171,8 @@ class ConfigExporter @Inject constructor() {
             TunnelType.VAYDNS -> MODE_VAYDNS
             TunnelType.VAYDNS_SSH -> MODE_VAYDNS_SSH
             TunnelType.VLESS -> MODE_VLESS
+            TunnelType.SOAR -> MODE_SOAR
+            TunnelType.SOAR_SSH -> MODE_SOAR_SSH
         }
 
         // When hideResolvers is true, leave position 4 empty so old versions (v1-v16)
@@ -194,7 +201,7 @@ class ConfigExporter @Inject constructor() {
             sanitize(profile.dnsttPublicKey),
             sanitize(profile.socksUsername ?: ""),
             sanitize(profile.socksPassword ?: ""),
-            if (profile.tunnelType == TunnelType.SSH || profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.SLIPSTREAM_SSH || profile.tunnelType == TunnelType.NAIVE_SSH || profile.tunnelType == TunnelType.VAYDNS_SSH) "1" else "0",
+            if (profile.tunnelType == TunnelType.SSH || profile.tunnelType == TunnelType.DNSTT_SSH || profile.tunnelType == TunnelType.SLIPSTREAM_SSH || profile.tunnelType == TunnelType.NAIVE_SSH || profile.tunnelType == TunnelType.VAYDNS_SSH || profile.tunnelType == TunnelType.SOAR_SSH) "1" else "0",
             sanitize(profile.sshUsername),
             sanitize(profile.sshPassword),
             profile.sshPort.toString(),
@@ -275,7 +282,11 @@ class ConfigExporter @Inject constructor() {
             // v28: Single TLS SNI for VLESS. Empty = the bridge falls back to
             // profile.domain (the WS Host). Replaces the legacy position-71
             // field that v25–v27 used.
-            sanitize(profile.vlessSni)
+            sanitize(profile.vlessSni),
+            // v29: Soar resolver discovery, discovery country, TCP/53 mode
+            if (profile.soarDiscovery) "1" else "0",
+            sanitize(profile.soarCountry),
+            sanitize(profile.soarTcpMode)
         ).joinToString(FIELD_DELIMITER)
     }
 

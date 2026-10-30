@@ -106,6 +106,7 @@ object AppLog {
         "NaiveBridge",
         "VpnRepositoryImpl",
         "VaydnsBridge",
+        "SoarBridge",
         "DnsResolverProber",
         "DohBridge",
         "HttpProxyServer",

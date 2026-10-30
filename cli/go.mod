@@ -1,8 +1,9 @@
 module slipnet-cli
 
-go 1.24.4
+go 1.27.3
 
 require (
+	golang.org/x/crypto v0.47.0
 	golang.org/x/net v0.49.0
 	noizdns v0.0.0
 	vaydns-mobile v0.0.0-00010101000000-000000000000
@@ -22,7 +23,6 @@ require (
 	github.com/xtaci/kcp-go/v5 v5.6.61 // indirect
 	github.com/xtaci/smux v1.5.50 // indirect
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0 // indirect
-	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/time v0.14.0 // indirect

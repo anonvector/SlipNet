@@ -160,7 +160,16 @@ data class ServerProfile(
     // When true, probe the resolver at connect time and pick DNS query length
     // (and, for VayDNS, the rate limit) automatically — overrides the manual
     // dnsPayloadSize / vaydnsMaxQnameLen / vaydnsRps values for that connect.
-    val dnsAutoTune: Boolean = false
+    val dnsAutoTune: Boolean = false,
+    // Soar: discover more resolvers that carry the tunnel (vetted by the server's
+    // authenticated handshake), on top of the configured ones
+    val soarDiscovery: Boolean = false,
+    // Soar: ISO 3166-1 alpha-2 code selecting the bundled in-country resolver
+    // lists used by discovery ("IR", "RU", "CN"; "" = global list only)
+    val soarCountry: String = "",
+    // Soar: TCP/53 paths — "auto" (TCP for resolvers whose UDP never answers),
+    // "on" (TCP alongside UDP), "only" (TCP alone), "off"
+    val soarTcpMode: String = "auto"
 ) {
     val isExpired: Boolean get() = expirationDate > 0 && System.currentTimeMillis() > expirationDate
 }
@@ -197,7 +206,9 @@ enum class TunnelType(val value: String, val displayName: String) {
     SOCKS5("socks5", "SOCKS5 Proxy"),
     VAYDNS("vaydns", "VayDNS"),
     VAYDNS_SSH("vaydns_ssh", "VayDNS + SSH"),
-    VLESS("vless", "VLESS");
+    VLESS("vless", "VLESS"),
+    SOAR("soar", "Soar"),
+    SOAR_SSH("soar_ssh", "Soar + SSH");
 
     companion object {
         fun fromValue(value: String): TunnelType {

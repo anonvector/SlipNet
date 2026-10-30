@@ -1365,14 +1365,18 @@ class SshTunnelInstance(val instanceId: String = "default") {
 
             // Forward the packet (block AAAA to avoid IPv6 failures)
             try {
-                val response = if (dest.second == 53 && DnsUtils.isAAAAQuery(payload)) {
+                // AAAA queries are answered locally (NoData) and never cross the tunnel
+                val answeredLocally = dest.second == 53 && DnsUtils.isAAAAQuery(payload)
+                val response = if (answeredLocally) {
                     DnsUtils.buildAAAANoDataResponse(payload)
                 } else {
                     forwardUdpPacket(dest.first, dest.second, payload)
                 }
-                tunnelTxBytes.addAndGet(payload.size.toLong())
                 if (response != null && response.isNotEmpty()) {
-                    tunnelRxBytes.addAndGet(response.size.toLong())
+                    if (!answeredLocally) {
+                        tunnelTxBytes.addAndGet(payload.size.toLong())
+                        tunnelRxBytes.addAndGet(response.size.toLong())
+                    }
                     val respHdr = ByteArray(3)
                     respHdr[0] = ((response.size shr 8) and 0xFF).toByte()
                     respHdr[1] = (response.size and 0xFF).toByte()

@@ -721,6 +721,11 @@ class MainViewModel @Inject constructor(
             TunnelType.VAYDNS, TunnelType.VAYDNS_SSH,
             TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
         )
+        /** Tunnel types ping can't test: no server reachable over plain TCP, and no E2E probe
+         *  (Soar's server is only reachable through recursive resolvers). */
+        private val PING_UNSUPPORTED_TYPES = setOf(
+            TunnelType.SNOWFLAKE, TunnelType.SOAR, TunnelType.SOAR_SSH
+        )
         private const val E2E_TEST_URL = "http://www.gstatic.com/generate_204"
         /** Per-resolver E2E test timeout. With HTTP verification removed and
          *  the warmup SOCKS5 CONNECT dropped, the only significant cost is
@@ -743,7 +748,7 @@ class MainViewModel @Inject constructor(
         val profiles = _uiState.value.profiles
         if (profiles.isEmpty()) return
 
-        val skipped = setOf(TunnelType.SNOWFLAKE)
+        val skipped = PING_UNSUPPORTED_TYPES
         val initial = profiles.associate { profile ->
             profile.id to if (profile.tunnelType in skipped) {
                 PingResult.Skipped
@@ -805,7 +810,7 @@ class MainViewModel @Inject constructor(
         val profiles = _uiState.value.profiles
         if (profiles.isEmpty()) return
 
-        val skipped = setOf(TunnelType.SNOWFLAKE)
+        val skipped = PING_UNSUPPORTED_TYPES
         val initial = profiles.associate { profile ->
             profile.id to if (profile.tunnelType in skipped) {
                 PingResult.Skipped
@@ -880,7 +885,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun pingSingleProfile(profile: ServerProfile) {
-        if (profile.tunnelType == TunnelType.SNOWFLAKE) return
+        if (profile.tunnelType in PING_UNSUPPORTED_TYPES) return
 
         _uiState.value = _uiState.value.copy(
             pingResults = _uiState.value.pingResults + (profile.id to PingResult.Pending)

@@ -10,6 +10,7 @@ import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.ResolverMode
 import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.SoarConfig
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.ConnectionState
 import app.slipnet.domain.model.TunnelType
@@ -220,9 +221,13 @@ data class EditProfileUiState(
     val chPaddingEnabled: Boolean = false,
     val wsHeaderObfuscation: Boolean = true,
     val wsPaddingEnabled: Boolean = false,
+    // Soar fields
+    val soarDiscovery: Boolean = false,
+    val soarCountry: String = "",
+    val soarTcpMode: String = SoarConfig.TCP_AUTO,
 ) {
     val useSsh: Boolean
-        get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.VAYDNS_SSH
+        get() = tunnelType == TunnelType.SSH || tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.VAYDNS_SSH || tunnelType == TunnelType.SOAR_SSH
 
     val isDnsttBased: Boolean
         get() = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH
@@ -265,6 +270,9 @@ data class EditProfileUiState(
 
     val isVless: Boolean
         get() = tunnelType == TunnelType.VLESS
+
+    val isSoarBased: Boolean
+        get() = tunnelType == TunnelType.SOAR || tunnelType == TunnelType.SOAR_SSH
 
     val showConnectionMethod: Boolean
         get() = !isSshOnly && !isDoh && !isSnowflake && !isSocks5 && !isVless
@@ -310,6 +318,7 @@ class EditProfileViewModel @Inject constructor(
             TunnelType.DNSTT, TunnelType.DNSTT_SSH,
             TunnelType.NOIZDNS, TunnelType.NOIZDNS_SSH,
             TunnelType.VAYDNS, TunnelType.VAYDNS_SSH,
+            TunnelType.SOAR, TunnelType.SOAR_SSH,
             TunnelType.SLIPSTREAM, TunnelType.SLIPSTREAM_SSH
         )
         if (!needsResolver) return
@@ -432,6 +441,9 @@ class EditProfileViewModel @Inject constructor(
                     chPaddingEnabled = profile.chPaddingEnabled,
                     wsHeaderObfuscation = profile.wsHeaderObfuscation,
                     wsPaddingEnabled = profile.wsPaddingEnabled,
+                    soarDiscovery = profile.soarDiscovery,
+                    soarCountry = profile.soarCountry,
+                    soarTcpMode = profile.soarTcpMode,
                     isLoading = false
                 )
             } else {
@@ -556,11 +568,13 @@ class EditProfileViewModel @Inject constructor(
             useSsh && (currentType == TunnelType.SLIPSTREAM || currentType == TunnelType.SLIPSTREAM_SSH) -> TunnelType.SLIPSTREAM_SSH
             useSsh && (currentType == TunnelType.NAIVE || currentType == TunnelType.NAIVE_SSH) -> TunnelType.NAIVE_SSH
             useSsh && (currentType == TunnelType.VAYDNS || currentType == TunnelType.VAYDNS_SSH) -> TunnelType.VAYDNS_SSH
+            useSsh && (currentType == TunnelType.SOAR || currentType == TunnelType.SOAR_SSH) -> TunnelType.SOAR_SSH
             !useSsh && (currentType == TunnelType.DNSTT || currentType == TunnelType.DNSTT_SSH) -> TunnelType.DNSTT
             !useSsh && (currentType == TunnelType.NOIZDNS || currentType == TunnelType.NOIZDNS_SSH) -> TunnelType.NOIZDNS
             !useSsh && (currentType == TunnelType.SLIPSTREAM || currentType == TunnelType.SLIPSTREAM_SSH) -> TunnelType.SLIPSTREAM
             !useSsh && (currentType == TunnelType.NAIVE || currentType == TunnelType.NAIVE_SSH) -> TunnelType.NAIVE
             !useSsh && (currentType == TunnelType.VAYDNS || currentType == TunnelType.VAYDNS_SSH) -> TunnelType.VAYDNS
+            !useSsh && (currentType == TunnelType.SOAR || currentType == TunnelType.SOAR_SSH) -> TunnelType.SOAR
             else -> currentType
         }
         _uiState.value = _uiState.value.copy(
@@ -574,7 +588,7 @@ class EditProfileViewModel @Inject constructor(
     fun updateDnsttPublicKey(publicKey: String) {
         // Validate in real-time but only show error if user has typed something
         val error = if (publicKey.isNotBlank()) {
-            validateDnsttPublicKey(publicKey)
+            if (_uiState.value.isSoarBased) SoarConfig.validatePublicKey(publicKey) else validateDnsttPublicKey(publicKey)
         } else {
             null
         }
@@ -620,6 +634,18 @@ class EditProfileViewModel @Inject constructor(
 
     fun updateDnsAutoTune(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(dnsAutoTune = enabled)
+    }
+
+    fun updateSoarDiscovery(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(soarDiscovery = enabled, resolversError = null)
+    }
+
+    fun updateSoarCountry(country: String) {
+        _uiState.value = _uiState.value.copy(soarCountry = SoarConfig.normalizeCountry(country))
+    }
+
+    fun updateSoarTcpMode(mode: String) {
+        _uiState.value = _uiState.value.copy(soarTcpMode = SoarConfig.normalizeTcpMode(mode))
     }
 
     fun updateNaivePort(port: String) {
@@ -1341,7 +1367,9 @@ class EditProfileViewModel @Inject constructor(
         val skipResolvers = forScanner || state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DOH ||
                 state.tunnelType == TunnelType.SNOWFLAKE || state.isNaiveBased || state.isSocks5 || state.isVless ||
                 (state.isDnsttOrNoizOrVaydnsBased && state.dnsTransport == DnsTransport.DOH) ||
-                (state.resolversHidden && !state.useCustomResolver)
+                (state.resolversHidden && !state.useCustomResolver) ||
+                // Soar can run on discovered resolvers alone
+                (state.isSoarBased && state.soarDiscovery && state.resolvers.isBlank())
         if (!skipResolvers) {
             if (state.resolvers.isBlank()) {
                 _uiState.value = _uiState.value.copy(resolversError = "At least one resolver is required")
@@ -1358,6 +1386,15 @@ class EditProfileViewModel @Inject constructor(
         // DNSTT/NoizDNS-specific validation
         if (state.isDnsttOrNoizOrVaydnsBased) {
             val publicKeyError = validateDnsttPublicKey(state.dnsttPublicKey)
+            if (publicKeyError != null) {
+                _uiState.value = _uiState.value.copy(dnsttPublicKeyError = publicKeyError)
+                hasError = true
+            }
+        }
+
+        // Soar: Ed25519 server key (base64 or hex)
+        if (state.isSoarBased) {
+            val publicKeyError = SoarConfig.validatePublicKey(state.dnsttPublicKey)
             if (publicKeyError != null) {
                 _uiState.value = _uiState.value.copy(dnsttPublicKeyError = publicKeyError)
                 hasError = true
@@ -1422,7 +1459,7 @@ class EditProfileViewModel @Inject constructor(
         }
 
         // SSH validation (SSH-only, DNSTT+SSH, NoizDNS+SSH, Slipstream+SSH, and NAIVE_SSH tunnel types)
-        if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.NOIZDNS_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH || state.tunnelType == TunnelType.NAIVE_SSH) {
+        if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.NOIZDNS_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH || state.tunnelType == TunnelType.NAIVE_SSH || state.tunnelType == TunnelType.SOAR_SSH) {
             if (state.sshUsername.isBlank()) {
                 _uiState.value = _uiState.value.copy(sshUsernameError = "SSH username is required")
                 hasError = true
@@ -1444,7 +1481,7 @@ class EditProfileViewModel @Inject constructor(
         }
 
         // SSH port validation (SSH-only, DNSTT+SSH, NoizDNS+SSH, Slipstream+SSH, and NAIVE_SSH)
-        if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.NOIZDNS_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH || state.tunnelType == TunnelType.NAIVE_SSH) {
+        if (state.tunnelType == TunnelType.SSH || state.tunnelType == TunnelType.DNSTT_SSH || state.tunnelType == TunnelType.NOIZDNS_SSH || state.tunnelType == TunnelType.SLIPSTREAM_SSH || state.tunnelType == TunnelType.NAIVE_SSH || state.tunnelType == TunnelType.SOAR_SSH) {
             val sshPort = state.sshPort.toIntOrNull()
             if (sshPort == null || sshPort !in 1..65535) {
                 _uiState.value = _uiState.value.copy(sshPortError = "Port must be between 1 and 65535")
@@ -1566,7 +1603,10 @@ class EditProfileViewModel @Inject constructor(
                     vlessSni = if (state.isVless) state.vlessSni.trim() else "",
                     chPaddingEnabled = if (state.isVless) state.chPaddingEnabled else false,
                     wsHeaderObfuscation = if (state.isVless) state.wsHeaderObfuscation else false,
-                    wsPaddingEnabled = if (state.isVless) state.wsPaddingEnabled else false
+                    wsPaddingEnabled = if (state.isVless) state.wsPaddingEnabled else false,
+                    soarDiscovery = if (state.isSoarBased) state.soarDiscovery else false,
+                    soarCountry = if (state.isSoarBased) state.soarCountry else "",
+                    soarTcpMode = if (state.isSoarBased) state.soarTcpMode else SoarConfig.TCP_AUTO
                 )
 
                 val savedId = saveProfileUseCase(profile)
@@ -1651,7 +1691,8 @@ class EditProfileViewModel @Inject constructor(
     private fun validateDomain(domain: String, tunnelType: TunnelType): String? {
         val isDnsTunnel = tunnelType == TunnelType.DNSTT || tunnelType == TunnelType.DNSTT_SSH ||
                 tunnelType == TunnelType.NOIZDNS || tunnelType == TunnelType.NOIZDNS_SSH ||
-                tunnelType == TunnelType.SLIPSTREAM || tunnelType == TunnelType.SLIPSTREAM_SSH
+                tunnelType == TunnelType.SLIPSTREAM || tunnelType == TunnelType.SLIPSTREAM_SSH ||
+                tunnelType == TunnelType.SOAR || tunnelType == TunnelType.SOAR_SSH
 
         // SSH accepts hostnames and IPs — no DNS domain validation needed
         if (!isDnsTunnel) return null

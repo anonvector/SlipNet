@@ -371,11 +371,11 @@ func formatDNSAddr(p *Profile) string {
 
 	for _, r := range resolverParts {
 		parts := strings.Split(strings.TrimSpace(r), ":")
-		if len(parts) < 1 {
+		host := parts[0]
+		if host == "" { // empty entry, e.g. from a leading or trailing comma
 			continue
 		}
 
-		host := parts[0]
 		port := "53"
 		if len(parts) >= 2 && parts[1] != "" {
 			port = parts[1]

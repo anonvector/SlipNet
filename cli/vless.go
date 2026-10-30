@@ -252,7 +252,7 @@ func handleVlessSocks5(client net.Conn, profile *Profile, uuid []byte) {
 	client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 
 	// Connect to CDN
-	cdnAddr := fmt.Sprintf("%s:%d", profile.VlessCdnIp, profile.VlessCdnPort)
+	cdnAddr := net.JoinHostPort(profile.VlessCdnIp, strconv.Itoa(profile.VlessCdnPort))
 	rawConn, err := net.DialTimeout("tcp", cdnAddr, 30*time.Second)
 	if err != nil {
 		return

@@ -50,6 +50,8 @@ SlipNet supports multiple tunnel types with optional SSH chaining:
 | **NoizDNS + SSH** | KCP + Noise + SSH | NoizDNS with SSH chaining |
 | **VayDNS** | KCP + Noise | Optimized DNS tunneling with configurable wire format |
 | **VayDNS + SSH** | KCP + Noise + SSH | VayDNS with SSH chaining |
+| **Soar** | Soar (X25519 + ChaCha20-Poly1305) | Multi-resolver DNS tunnel with resolver discovery ([getlantern/soar](https://github.com/getlantern/soar)) |
+| **Soar + SSH** | Soar + SSH | Soar with SSH chaining |
 | **Slipstream** | QUIC | High-performance QUIC tunneling |
 | **Slipstream + SSH** | QUIC + SSH | Slipstream with SSH chaining |
 | **SSH** | SSH | Standalone SSH tunnel (no DNS tunneling) |
@@ -58,15 +60,16 @@ SlipNet supports multiple tunnel types with optional SSH chaining:
 | **DOH** | DNS over HTTPS | DNS-only encryption via HTTPS (RFC 8484) |
 | **Tor** | Tor Network | Connect via Tor with Snowflake, obfs4, Meek, or custom bridges |
 
-**Note:** DNSTT is the default and recommended tunnel type for most users. NoizDNS adds DPI resistance on top of DNSTT for censored networks. VayDNS offers an optimized wire format with configurable QNAME lengths, record types, and rate limiting. SSH variants add an extra layer of encryption and can prevent DNS leaks.
+**Note:** DNSTT is the default and recommended tunnel type for most users. NoizDNS adds DPI resistance on top of DNSTT for censored networks. VayDNS offers an optimized wire format with configurable QNAME lengths, record types, and rate limiting. Soar sends through every resolver at once (UDP, TCP/53, or both), recovers quickly from loss, and can discover more working resolvers on its own. SSH variants add an extra layer of encryption and can prevent DNS leaks.
 
 ## Features
 
 - **Modern UI**: Built entirely with Jetpack Compose and Material 3 design
-- **Multiple Tunnel Types**: DNSTT, NoizDNS, VayDNS, Slipstream, SSH, NaiveProxy, DOH, and Tor with optional SSH chaining
+- **Multiple Tunnel Types**: DNSTT, NoizDNS, VayDNS, Soar, Slipstream, SSH, NaiveProxy, DOH, and Tor with optional SSH chaining
 - **NoizDNS**: DPI-resistant DNS tunneling with optional stealth mode
 - **VayDNS**: Optimized DNS tunneling with configurable wire format, record types, QNAME lengths, and rate limiting
-- **SSH Tunneling**: Chain SSH through DNSTT, NoizDNS, VayDNS, Slipstream, or NaiveProxy, or use standalone SSH
+- **Soar**: DNS tunneling over all configured resolvers at once, with authenticated resolver discovery and TCP/53 fallback
+- **SSH Tunneling**: Chain SSH through DNSTT, NoizDNS, VayDNS, Soar, Slipstream, or NaiveProxy, or use standalone SSH
 - **SSH over TLS**: Wrap SSH in TLS with custom SNI for domain fronting and DPI bypass
 - **SSH over WebSocket**: Tunnel SSH through WebSocket (ws/wss) for CDN-based proxying (Cloudflare, etc.)
 - **SSH over HTTP CONNECT**: Route SSH through HTTP CONNECT proxies with custom Host headers
@@ -90,6 +93,19 @@ To use this client, you must run a compatible server. The official, supported wa
 
 [**SlipGate**](https://github.com/anonvector/slipgate) — one-command server installer with interactive management menu
 
+### Soar server
+
+Soar profiles connect to a standard [`soar-server`](https://github.com/getlantern/soar#server). Delegate a zone (e.g. `t.example.com`) to the server with an `NS` record, then:
+
+```sh
+go install github.com/getlantern/soar/cmd/soar-server@latest
+(umask 077; soar-server keygen | awk '$1 == "private" { print $2 }' > key)
+soar-server pubkey key        # paste this public key into the SlipNet profile
+soar-server -zone t.example.com -key-file key -listen :53
+```
+
+By default `soar-server` only lets streams reach public addresses on ports 80 and 443. SlipNet resolves DNS through the tunnel with DNS over HTTPS, so plain **Soar** profiles work with these defaults. **Soar + SSH** connects to SSH on the server itself (`127.0.0.1`), so it needs `-allow-private -allow-ports 22,80,443` (with your SSH port). Note that `-allow-private` lets anyone holding the server's public key reach private addresses from the server, including other services on `127.0.0.1`.
+
 ## Screenshots
 
 <p align="center">
@@ -110,7 +126,7 @@ To use this client, you must run a compatible server. The official, supported wa
 - Android NDK 29
 
 ### CLI Client
-- Go 1.24+ (auto-downloaded via GOTOOLCHAIN if needed)
+- Go 1.27+ (auto-downloaded via GOTOOLCHAIN if needed)
 - No external dependencies — fully self-contained (native Go SSH, no `ssh`/`sshpass` binaries needed)
 
 ## Building (Android)

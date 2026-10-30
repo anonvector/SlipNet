@@ -632,8 +632,6 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
             val payload = ByteArray(datLen)
             input.readFully(payload)
 
-            tunnelTxBytes.addAndGet(payload.size.toLong())
-
             val dest = parseSocksAddress(addrBytes)
             if (dest == null) {
                 Log.w(TAG, "FWD_UDP: failed to parse address")
@@ -650,21 +648,23 @@ class Socks5ProxyInstance(val instanceId: String = "default") {
             val payloadCopy = payload.copyOf()
             dnsExecutor.submit {
                 try {
-                    // Check cache first
+                    // Check cache first. Only answers fetched through the tunnel count as
+                    // tunnel traffic; cache hits and dropped non-DNS UDP never cross it.
                     val cached = getCachedDns(payloadCopy)
                     val response = if (cached != null) {
                         logd("DNS: cache hit")
                         cached
                     } else {
                         val resolved = forwardDnsTcp(payloadCopy)
-                        if (resolved != null) {
+                        if (resolved != null && resolved.isNotEmpty()) {
                             cacheDnsResponse(payloadCopy, resolved)
+                            tunnelTxBytes.addAndGet(payloadCopy.size.toLong())
+                            tunnelRxBytes.addAndGet(resolved.size.toLong())
                         }
                         resolved
                     }
 
                     if (response != null && response.isNotEmpty()) {
-                        tunnelRxBytes.addAndGet(response.size.toLong())
 
                         val respHdr = ByteArray(3)
                         respHdr[0] = ((response.size shr 8) and 0xFF).toByte()

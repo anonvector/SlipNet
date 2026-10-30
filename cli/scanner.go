@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -278,7 +279,7 @@ func testNXDOMAIN(host string, port int, timeoutMs int) bool {
 // --- DNS packet construction & parsing ---
 
 func dnsQuery(host string, port int, name string, qtype uint16, timeoutMs int, additional []byte) ([]byte, error) {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("udp", addr, time.Duration(timeoutMs)*time.Millisecond)
 	if err != nil {
 		return nil, err

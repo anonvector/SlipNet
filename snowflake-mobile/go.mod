@@ -1,6 +1,6 @@
 module snowflake-mobile
 
-go 1.24.0
+go 1.27.3
 
 require (
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2 v2.10.1

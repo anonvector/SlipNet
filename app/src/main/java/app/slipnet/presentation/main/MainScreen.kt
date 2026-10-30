@@ -57,6 +57,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Air
+import androidx.compose.material.icons.filled.FlightTakeoff
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Link
@@ -887,6 +888,15 @@ fun MainScreen(
                         )
                         AddMenuGridItem(
                             modifier = tileMod,
+                            icon = Icons.Default.FlightTakeoff,
+                            title = "Soar",
+                            onClick = {
+                                showAddMenu = false
+                                onNavigateToAddProfile(TunnelType.SOAR.value)
+                            }
+                        )
+                        AddMenuGridItem(
+                            modifier = tileMod,
                             icon = Icons.Default.Waves,
                             title = "Slipstream",
                             onClick = {
@@ -1272,7 +1282,8 @@ fun MainScreen(
                             profile.tunnelType in listOf(
                                 TunnelType.SSH, TunnelType.DNSTT_SSH,
                                 TunnelType.SLIPSTREAM_SSH, TunnelType.NOIZDNS_SSH,
-                                TunnelType.VAYDNS_SSH, TunnelType.NAIVE_SSH
+                                TunnelType.VAYDNS_SSH, TunnelType.NAIVE_SSH,
+                                TunnelType.SOAR_SSH
                             )
                         ) {
                             Card(

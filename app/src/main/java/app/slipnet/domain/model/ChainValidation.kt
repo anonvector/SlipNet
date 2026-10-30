@@ -20,30 +20,32 @@ enum class LayerOutput {
  * - SshTunnelBridge: SSH (and the SSH layer in combo types)
  * - NaiveBridge: NAIVE
  * - SnowflakeBridge/TorSocksBridge: SNOWFLAKE
+ * - SoarBridge: SOAR
  *
  * In a chain, combo types (DNSTT_SSH, SLIPSTREAM_SSH, etc.) are NOT used.
  * Each profile contributes exactly one layer using its single-layer tunnel type.
- * Valid single-layer types for chaining: DNSTT, NOIZDNS, SLIPSTREAM, SSH, NAIVE, SNOWFLAKE, DOH.
+ * Valid single-layer types for chaining: DNSTT, NOIZDNS, VAYDNS, SOAR, SLIPSTREAM, SSH, NAIVE,
+ * SNOWFLAKE, DOH, SOCKS5.
  */
 object ChainValidation {
 
     /** Tunnel types that can be used in a chain (single-layer types only). */
     val CHAINABLE_TYPES = setOf(
-        TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS, TunnelType.SLIPSTREAM,
+        TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS, TunnelType.SOAR, TunnelType.SLIPSTREAM,
         TunnelType.SSH, TunnelType.NAIVE, TunnelType.SNOWFLAKE, TunnelType.DOH,
         TunnelType.SOCKS5
     )
 
     /** Tunnel types that can serve as an intermediate (non-final) layer. */
     val CAN_BE_INTERMEDIATE = setOf(
-        TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS, TunnelType.SLIPSTREAM,
+        TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS, TunnelType.SOAR, TunnelType.SLIPSTREAM,
         TunnelType.NAIVE, TunnelType.SNOWFLAKE, TunnelType.SOCKS5,
         TunnelType.SSH, TunnelType.DOH
     )
 
     /** Tunnel types that can serve as the final (innermost) layer. */
     val CAN_BE_FINAL = setOf(
-        TunnelType.SSH, TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS,
+        TunnelType.SSH, TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS, TunnelType.SOAR,
         TunnelType.SLIPSTREAM, TunnelType.NAIVE, TunnelType.SNOWFLAKE, TunnelType.DOH,
         TunnelType.SOCKS5
     )
@@ -54,6 +56,8 @@ object ChainValidation {
         // so the next layer must perform a SOCKS5 handshake (with auth) to connect.
         TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS -> LayerOutput.SOCKS5
         TunnelType.SLIPSTREAM -> LayerOutput.SOCKS5
+        // Soar's client is itself a SOCKS5 server; its server dials each destination.
+        TunnelType.SOAR -> LayerOutput.SOCKS5
         TunnelType.SSH -> LayerOutput.SOCKS5
         TunnelType.NAIVE -> LayerOutput.SOCKS5
         TunnelType.SNOWFLAKE -> LayerOutput.SOCKS5
@@ -71,6 +75,8 @@ object ChainValidation {
         TunnelType.SOCKS5 -> true  // SOCKS5 outbound traffic is routed through VPN/previous layer
         TunnelType.DNSTT, TunnelType.NOIZDNS, TunnelType.VAYDNS -> input == LayerOutput.SOCKS5  // needs SOCKS5 for resolver bypass
         TunnelType.NAIVE -> true  // NaiveProxy outbound is routed through VPN/previous layer
+        // Soar sends its resolver queries as DNS over TCP through the previous layer's SOCKS5
+        TunnelType.SOAR -> input == LayerOutput.SOCKS5
         TunnelType.SLIPSTREAM -> false  // Slipstream connects to its own server directly
         // DoH can route its upstream HTTPS through a previous SOCKS5 layer
         // (e.g. Snowflake/Tor), giving DoH-over-Tor.
@@ -90,6 +96,7 @@ object ChainValidation {
     fun bridgeGroup(type: TunnelType): String = when (type) {
         TunnelType.DNSTT, TunnelType.NOIZDNS -> "dnstt"
         TunnelType.VAYDNS -> "vaydns"
+        TunnelType.SOAR -> "soar"
         TunnelType.SLIPSTREAM -> "slipstream"
         TunnelType.SSH -> "ssh"
         TunnelType.NAIVE -> "naive"

@@ -264,5 +264,17 @@ data class ProfileEntity(
     // When true, the DNS query length (and, for VayDNS, the rate limit) are
     // probed at connect time instead of read from the user-set fields.
     @ColumnInfo(name = "dns_auto_tune", defaultValue = "0")
-    val dnsAutoTune: Boolean = false
+    val dnsAutoTune: Boolean = false,
+
+    // Soar: discover more resolvers that carry the tunnel
+    @ColumnInfo(name = "soar_discovery", defaultValue = "0")
+    val soarDiscovery: Boolean = false,
+
+    // Soar: ISO country code selecting the bundled in-country resolver lists ("" = global only)
+    @ColumnInfo(name = "soar_country", defaultValue = "")
+    val soarCountry: String = "",
+
+    // Soar: TCP/53 paths — "auto", "on", "only" or "off"
+    @ColumnInfo(name = "soar_tcp_mode", defaultValue = "auto")
+    val soarTcpMode: String = "auto"
 )

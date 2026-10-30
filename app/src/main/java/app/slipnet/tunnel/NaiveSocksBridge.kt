@@ -755,7 +755,7 @@ object NaiveSocksBridge {
 
             val t1 = Thread({
                 try {
-                    copyStream(clientInput, remoteOutput, uploadLimiter, tunnelTxBytes)
+                    copyStream(clientInput, remoteOutput, uploadLimiter)
                 } catch (_: Exception) {
                 } finally {
                     try { remoteOutput.close() } catch (_: Exception) {}
@@ -765,7 +765,7 @@ object NaiveSocksBridge {
             t1.start()
 
             try {
-                copyStream(remoteInput, clientOutput, downloadLimiter, tunnelRxBytes)
+                copyStream(remoteInput, clientOutput, downloadLimiter)
             } catch (_: Exception) {
             } finally {
                 try { remote.close() } catch (_: Exception) {}
@@ -806,8 +806,10 @@ object NaiveSocksBridge {
             }
 
             try {
+                // AAAA queries are answered locally (NoData) and never cross the tunnel
+                val answeredLocally = dest.second == 53 && DnsUtils.isAAAAQuery(payload)
                 val response = if (dest.second == 53) {
-                    if (DnsUtils.isAAAAQuery(payload)) {
+                    if (answeredLocally) {
                         DnsUtils.buildAAAANoDataResponse(payload)
                     } else {
                         forwardDnsPooled(payload)
@@ -818,6 +820,10 @@ object NaiveSocksBridge {
                 }
 
                 if (response != null && response.isNotEmpty()) {
+                    if (!answeredLocally) {
+                        tunnelTxBytes.addAndGet(payload.size.toLong())
+                        tunnelRxBytes.addAndGet(response.size.toLong())
+                    }
                     val respHdr = ByteArray(3)
                     respHdr[0] = ((response.size shr 8) and 0xFF).toByte()
                     respHdr[1] = (response.size and 0xFF).toByte()

@@ -112,7 +112,10 @@ class ProfileMapper @Inject constructor(
             chPaddingEnabled = entity.chPaddingEnabled,
             wsHeaderObfuscation = entity.wsHeaderObfuscation,
             wsPaddingEnabled = entity.wsPaddingEnabled,
-            dnsAutoTune = entity.dnsAutoTune
+            dnsAutoTune = entity.dnsAutoTune,
+            soarDiscovery = entity.soarDiscovery,
+            soarCountry = entity.soarCountry,
+            soarTcpMode = entity.soarTcpMode
         )
     }
 
@@ -202,7 +205,10 @@ class ProfileMapper @Inject constructor(
             chPaddingEnabled = profile.chPaddingEnabled,
             wsHeaderObfuscation = profile.wsHeaderObfuscation,
             wsPaddingEnabled = profile.wsPaddingEnabled,
-            dnsAutoTune = profile.dnsAutoTune
+            dnsAutoTune = profile.dnsAutoTune,
+            soarDiscovery = profile.soarDiscovery,
+            soarCountry = profile.soarCountry,
+            soarTcpMode = profile.soarTcpMode
         )
     }
 

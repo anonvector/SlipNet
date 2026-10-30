@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ProfileEntity::class, ChainEntity::class],
-    version = 42,
+    version = 43,
     exportSchema = true
 )
 abstract class SlipNetDatabase : RoomDatabase() {
@@ -629,6 +629,13 @@ abstract class SlipNetDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_42_43 = object : Migration(42, 43) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN soar_discovery INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN soar_country TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE server_profiles ADD COLUMN soar_tcp_mode TEXT NOT NULL DEFAULT 'auto'")
+            }
+        }
 
     }
 }

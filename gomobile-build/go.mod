@@ -1,11 +1,12 @@
 module gomobile-build
 
-go 1.24.4
+go 1.27.3
 
 require (
 	golang.org/x/mobile v0.0.0-20260204172633-1dceadbbeea3
 	noizdns v0.0.0
 	snowflake-mobile v0.0.0
+	soar-mobile v0.0.0
 	vaydns-mobile v0.0.0-00010101000000-000000000000
 )
 
@@ -27,6 +28,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.1 // indirect
 	github.com/aws/smithy-go v1.23.2 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
+	github.com/getlantern/soar v0.2.4 // indirect
 	github.com/golang/mock v1.7.0-rc.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.3 // indirect
@@ -65,14 +67,14 @@ require (
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0 // indirect
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/ptutil v0.0.0-20250815012447-418f76dcf315 // indirect
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2 v2.12.1 // indirect
-	golang.org/x/crypto v0.47.0 // indirect
-	golang.org/x/mod v0.32.0 // indirect
-	golang.org/x/net v0.49.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/mod v0.35.0 // indirect
+	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
-	golang.org/x/tools v0.41.0 // indirect
+	golang.org/x/tools v0.44.0 // indirect
 	www.bamsoftware.com/git/dnstt.git v0.0.0-00010101000000-000000000000 // indirect
 )
 
@@ -82,6 +84,7 @@ replace (
 	github.com/xtaci/kcp-go/v5 => github.com/net2share/kcp-go/v5 v5.0.0-20260325165956-416ba9d3856d
 	noizdns => ../noizdns
 	snowflake-mobile => ../snowflake-mobile
+	soar-mobile => ../soar-mobile
 	vaydns-mobile => ../vaydns-mobile
 	www.bamsoftware.com/git/dnstt.git => ../dnstt
 )

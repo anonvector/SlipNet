@@ -20,6 +20,7 @@ import app.slipnet.tunnel.DohBridge
 import app.slipnet.tunnel.HevSocks5Tunnel
 import app.slipnet.tunnel.ResolverConfig
 import app.slipnet.tunnel.SlipstreamBridge
+import app.slipnet.tunnel.SoarBridge
 import app.slipnet.tunnel.DnsttSocksBridge
 import app.slipnet.tunnel.SlipstreamSocksBridge
 import app.slipnet.tunnel.NaiveBridge
@@ -514,6 +515,61 @@ class VpnRepositoryImpl @Inject constructor(
             val error = result.exceptionOrNull()?.message ?: "Failed to start VayDNS proxy"
             connectedProfile = null
             Log.e(TAG, "Failed to start VayDNS proxy: $error")
+            Result.failure(Exception(error))
+        }
+    }
+
+    /**
+     * Start the Soar client's local SOCKS5 proxy. Soar sends through every
+     * resolver at once and probes query sizes per path itself, so the resolver
+     * list is passed as-is: no DNS pool scan and no auto-tune.
+     *
+     * [socksProxyAddr] routes resolver traffic (as DNS over TCP) through a previous chain
+     * layer's SOCKS5 proxy.
+     */
+    suspend fun startSoarProxy(
+        profile: ServerProfile,
+        portOverride: Int? = null,
+        hostOverride: String? = null,
+        resolverOverride: List<DnsResolver>? = null,
+        socksProxyAddr: String? = null,
+        socksProxyUser: String? = null,
+        socksProxyPass: String? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        connectedProfile = profile
+
+        // Resolve hostnames to IPs — Go on Android cannot resolve hostnames.
+        val resolvers = (resolverOverride ?: profile.resolvers).joinToString(",") {
+            val ip = resolveHost(it.host)
+            if (ip.contains(':')) "[$ip]:${it.port}" else "$ip:${it.port}"
+        }
+
+        val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
+        val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
+
+        val result = SoarBridge.startClient(
+            resolvers = resolvers,
+            zone = profile.domain,
+            publicKey = profile.dnsttPublicKey,
+            listenPort = proxyPort,
+            listenHost = proxyHost,
+            discovery = profile.soarDiscovery,
+            country = profile.soarCountry,
+            tcpMode = profile.soarTcpMode,
+            verbose = preferencesDataStore.debugLogging.first(),
+            upstreamSocks = socksProxyAddr,
+            upstreamSocksUser = socksProxyUser,
+            upstreamSocksPass = socksProxyPass
+        )
+
+        if (result.isSuccess) {
+            Log.i(TAG, "Soar SOCKS5 proxy started successfully")
+            currentTunnelType = TunnelType.SOAR
+            Result.success(Unit)
+        } else {
+            val error = result.exceptionOrNull()?.message ?: "Failed to start Soar proxy"
+            connectedProfile = null
+            Log.e(TAG, "Failed to start Soar proxy: $error")
             Result.failure(Exception(error))
         }
     }
@@ -1047,6 +1103,16 @@ class VpnRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Stopping VLESS proxy bridge")
                 VlessBridge.stop()
             }
+            TunnelType.SOAR -> {
+                Log.d(TAG, "Stopping Soar: bridge first, then Soar")
+                Socks5ProxyBridge.stop()
+                SoarBridge.stopClient()
+            }
+            TunnelType.SOAR_SSH -> {
+                Log.d(TAG, "Stopping Soar+SSH: SSH first, then Soar")
+                SshTunnelBridge.stop()
+                SoarBridge.stopClient()
+            }
             null -> {
                 // Try to stop all just in case
                 Log.d(TAG, "No tunnel type set, stopping all proxies")
@@ -1054,6 +1120,7 @@ class VpnRepositoryImpl @Inject constructor(
                 SlipstreamBridge.stopClient()
                 DnsttBridge.stopClient()
                 VaydnsBridge.stopClient()
+                SoarBridge.stopClient()
                 SshTunnelBridge.stop()
                 DnsDoHProxy.stop()
                 TorSocksBridge.stop()
@@ -1256,11 +1323,12 @@ class VpnRepositoryImpl @Inject constructor(
                 received = DnsttSocksBridge.getTunnelRxBytes()
             }
             TunnelType.SSH, TunnelType.DNSTT_SSH, TunnelType.NOIZDNS_SSH,
-            TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH, TunnelType.VAYDNS_SSH -> {
+            TunnelType.SLIPSTREAM_SSH, TunnelType.NAIVE_SSH, TunnelType.VAYDNS_SSH,
+            TunnelType.SOAR_SSH -> {
                 sent = SshTunnelBridge.getTunnelTxBytes()
                 received = SshTunnelBridge.getTunnelRxBytes()
             }
-            TunnelType.SOCKS5 -> {
+            TunnelType.SOCKS5, TunnelType.SOAR -> {
                 sent = Socks5ProxyBridge.getTunnelTxBytes()
                 received = Socks5ProxyBridge.getTunnelRxBytes()
             }

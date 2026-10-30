@@ -6,6 +6,7 @@ import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
 import app.slipnet.domain.model.ResolverMode
 import app.slipnet.domain.model.ServerProfile
+import app.slipnet.domain.model.SoarConfig
 import app.slipnet.domain.model.SshAuthType
 import app.slipnet.domain.model.TunnelType
 import app.slipnet.util.BundleCrypto
@@ -112,6 +113,8 @@ class ConfigImporter @Inject constructor() {
         private const val MODE_VAYDNS = "vaydns"
         private const val MODE_VAYDNS_SSH = "vaydns_ssh"
         private const val MODE_VLESS = "vless"
+        private const val MODE_SOAR = "soar"
+        private const val MODE_SOAR_SSH = "soar_ssh"
         private const val FIELD_DELIMITER = "|"
         private const val RESOLVER_DELIMITER = ","
         private const val RESOLVER_PART_DELIMITER = ":"
@@ -133,7 +136,7 @@ class ConfigImporter @Inject constructor() {
         private const val V16_FIELD_COUNT = 36
         private const val V17_FIELD_COUNT = 38
         private const val V18_FIELD_COUNT = 41
-        private const val CURRENT_MAX_VERSION = 28
+        private const val CURRENT_MAX_VERSION = 29
         private const val VLESS_SCHEME = "vless://"
     }
 
@@ -309,12 +312,13 @@ class ConfigImporter @Inject constructor() {
             "26" -> parseProfileV26(fields, lineNum)
             "27" -> parseProfileV27(fields, lineNum)
             "28" -> parseProfileV28(fields, lineNum)
+            "29" -> parseProfileV29(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 28) {
-                    parseProfileV28(fields, lineNum)
+                if (versionNum != null && versionNum > 29) {
+                    parseProfileV29(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -401,6 +405,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -488,6 +494,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -580,6 +588,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -675,6 +685,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -782,6 +794,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -889,6 +903,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -992,6 +1008,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -1106,6 +1124,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -1242,6 +1262,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -1380,6 +1402,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -1525,6 +1549,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -1671,6 +1697,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -1834,6 +1862,8 @@ class ConfigImporter @Inject constructor() {
             MODE_SOCKS5 -> TunnelType.SOCKS5
             MODE_VAYDNS -> TunnelType.VAYDNS
             MODE_VAYDNS_SSH -> TunnelType.VAYDNS_SSH
+            MODE_SOAR -> TunnelType.SOAR
+            MODE_SOAR_SSH -> TunnelType.SOAR_SSH
             MODE_VLESS -> TunnelType.VLESS
 
             else -> {
@@ -1894,6 +1924,8 @@ class ConfigImporter @Inject constructor() {
                 tunnelType == TunnelType.SNOWFLAKE || tunnelType == TunnelType.SOCKS5 ||
                 tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.NAIVE ||
                 tunnelType == TunnelType.VLESS ||
+                // Soar may run on discovered resolvers alone; parseProfileV29 checks it
+                tunnelType == TunnelType.SOAR || tunnelType == TunnelType.SOAR_SSH ||
                 (isDnsttBased && dnsTransport == DnsTransport.DOH)
         if (resolvers.isEmpty() && !skipResolvers) {
             return ProfileParseResult.Error("Line $lineNum: At least one resolver is required")
@@ -1910,7 +1942,7 @@ class ConfigImporter @Inject constructor() {
             }
         }
 
-        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH) {
+        if (tunnelType == TunnelType.DNSTT_SSH || tunnelType == TunnelType.NOIZDNS_SSH || tunnelType == TunnelType.SLIPSTREAM_SSH || tunnelType == TunnelType.SSH || tunnelType == TunnelType.NAIVE_SSH || tunnelType == TunnelType.SOAR_SSH) {
             if (sshUsername.isBlank()) {
                 return ProfileParseResult.Error("Line $lineNum: ${tunnelType.displayName} profiles require SSH username")
             }
@@ -2440,6 +2472,32 @@ class ConfigImporter @Inject constructor() {
         } else {
             baseResult
         }
+    }
+
+    // v29 adds the Soar tunnel: resolver discovery (position 79), discovery
+    // country (80) and TCP/53 mode (81).
+    private fun parseProfileV29(fields: List<String>, lineNum: Int): ProfileParseResult {
+        val baseResult = parseProfileV28(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        val soarDiscovery = if (fields.size > 79) fields[79] == "1" else false
+        val soarCountry = if (fields.size > 80) SoarConfig.normalizeCountry(fields[80]) else ""
+        val soarTcpMode = if (fields.size > 81) SoarConfig.normalizeTcpMode(fields[81]) else SoarConfig.TCP_AUTO
+        val profile = baseResult.profile.copy(
+            soarDiscovery = soarDiscovery,
+            soarCountry = soarCountry,
+            soarTcpMode = soarTcpMode
+        )
+
+        if (profile.tunnelType == TunnelType.SOAR || profile.tunnelType == TunnelType.SOAR_SSH) {
+            SoarConfig.validatePublicKey(profile.dnsttPublicKey)?.let {
+                return ProfileParseResult.Error("Line $lineNum: $it")
+            }
+            if (profile.resolvers.isEmpty() && !profile.resolversHidden && !soarDiscovery) {
+                return ProfileParseResult.Error("Line $lineNum: Soar profiles need a resolver or resolver discovery")
+            }
+        }
+        return ProfileParseResult.Success(profile)
     }
 
     private fun parseResolvers(resolversStr: String): List<DnsResolver> {
