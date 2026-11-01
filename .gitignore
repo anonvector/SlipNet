@@ -102,6 +102,7 @@ app/schemas/
 # Release build output
 app/release/
 app/lite/release/
+app/full/release/
 
 # Baseline profile DEX metadata (build artifacts)
 *.dm
