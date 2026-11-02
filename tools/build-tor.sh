@@ -17,21 +17,22 @@
 set -euo pipefail
 
 # --- Pinned versions ---
-TOR_VERSION=0.4.9.6
-OPENSSL_VERSION=3.5.6
-LIBEVENT_VERSION=2.1.12
-ZLIB_VERSION=1.3.1
+TOR_VERSION=0.4.9.15
+OPENSSL_VERSION=3.5.9
+LIBEVENT_VERSION=2.1.13
+ZLIB_VERSION=1.3.2
 XZ_VERSION=5.6.4
 ZSTD_VERSION=1.5.7
 
-# SHA256s verified against upstream on 2026-04-23.
+# SHA256s verified against upstream on 2026-11-01 (published checksums and
+# GPG signatures from each project's release signing key).
 # If you bump a version, update the hash or the script will refuse to build.
-TOR_SHA256=""           # filled on first run; pin manually once verified
-OPENSSL_SHA256=""
-LIBEVENT_SHA256="92e6de1be9ec176428fd2367677e61ceffc2ee1cb119035037a27d346b0403bb"
-ZLIB_SHA256="9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
-XZ_SHA256=""
-ZSTD_SHA256=""
+TOR_SHA256="1911f5b216a6814ed143a08bbcff1c6dc96d2ca3b505df9a21876080a92963f3"
+OPENSSL_SHA256="603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
+LIBEVENT_SHA256="f7e9383b8c0baa81b687e5b5eecc01beefaf1b19b64151d95ed61647fe7a315c"
+ZLIB_SHA256="bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+XZ_SHA256="269e3f2e512cbd3314849982014dc199a7b2148cf5c91cedc6db629acdf5e09b"
+ZSTD_SHA256="eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
 
 API_LEVEL=24
 PAGE_SIZE=16384
@@ -45,7 +46,8 @@ OUT_BASE="$REPO_ROOT/app/src/full/jniLibs"
 if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
     for candidate in \
         "$HOME/Library/Android/sdk/ndk/29.0.14206865" \
-        "$HOME/Library/Android/sdk/ndk"/*; do
+        "$HOME/Library/Android/sdk/ndk"/* \
+        "$HOME/Android/Sdk/ndk"/*; do
         [[ -d "$candidate/toolchains/llvm/prebuilt" ]] && { ANDROID_NDK_HOME="$candidate"; break; }
     done
 fi
@@ -286,7 +288,7 @@ EOF
     type=$("$TOOLCHAIN/bin/llvm-readelf" -h "$OUT_SO" | awk '/Type:/ {print $2}')
     echo
     echo "==> [$ABI] Installed $OUT_SO"
-    echo "    Size:      $(stat -f%z "$OUT_SO") bytes"
+    echo "    Size:      $(stat -f%z "$OUT_SO" 2>/dev/null || stat -c%s "$OUT_SO") bytes"
     echo "    ELF type:  $type (want DYN for PIE)"
     echo "    LOAD align: $align (want 0x4000 for 16KB)"
     echo "    Version:   $(strings "$OUT_SO" | grep -o 'on Tor [0-9.]*' | head -1)"
