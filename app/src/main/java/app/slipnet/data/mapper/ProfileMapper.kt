@@ -115,6 +115,8 @@ class ProfileMapper @Inject constructor(
             dnsAutoTune = entity.dnsAutoTune,
             soarDiscovery = entity.soarDiscovery,
             soarCountry = entity.soarCountry,
+            soarDiscoveryList = entity.soarDiscoveryList,
+            soarDiscoveryCustom = entity.soarDiscoveryCustom,
             soarTcpMode = entity.soarTcpMode
         )
     }
@@ -208,6 +210,8 @@ class ProfileMapper @Inject constructor(
             dnsAutoTune = profile.dnsAutoTune,
             soarDiscovery = profile.soarDiscovery,
             soarCountry = profile.soarCountry,
+            soarDiscoveryList = profile.soarDiscoveryList,
+            soarDiscoveryCustom = profile.soarDiscoveryCustom,
             soarTcpMode = profile.soarTcpMode
         )
     }

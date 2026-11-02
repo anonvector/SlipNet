@@ -274,6 +274,14 @@ data class ProfileEntity(
     @ColumnInfo(name = "soar_country", defaultValue = "")
     val soarCountry: String = "",
 
+    // Soar: discovery candidates — "soar" (bundled lists), "app" (app's resolver list) or "custom"
+    @ColumnInfo(name = "soar_discovery_list", defaultValue = "soar")
+    val soarDiscoveryList: String = "soar",
+
+    // Soar: custom discovery list, comma-separated "ip" or "ip:port"
+    @ColumnInfo(name = "soar_discovery_custom", defaultValue = "")
+    val soarDiscoveryCustom: String = "",
+
     // Soar: TCP/53 paths — "auto", "on", "only" or "off"
     @ColumnInfo(name = "soar_tcp_mode", defaultValue = "auto")
     val soarTcpMode: String = "auto"

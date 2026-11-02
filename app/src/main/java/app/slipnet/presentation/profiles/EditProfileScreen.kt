@@ -540,9 +540,16 @@ fun EditProfileScreen(
                                 SoarSettings(
                                     discovery = uiState.soarDiscovery,
                                     country = uiState.soarCountry,
+                                    discoveryList = uiState.soarDiscoveryList,
+                                    customList = uiState.soarDiscoveryCustom,
+                                    customListError = uiState.soarDiscoveryCustomError,
+                                    customListHidden = uiState.soarDiscoveryCustomHidden,
+                                    discoveryError = uiState.soarDiscoveryError,
                                     tcpMode = uiState.soarTcpMode,
                                     onDiscoveryChange = { viewModel.updateSoarDiscovery(it) },
                                     onCountryChange = { viewModel.updateSoarCountry(it) },
+                                    onDiscoveryListChange = { viewModel.updateSoarDiscoveryList(it) },
+                                    onCustomListChange = { viewModel.updateSoarDiscoveryCustom(it) },
                                     onTcpModeChange = { viewModel.updateSoarTcpMode(it) }
                                 )
                             }
@@ -1872,9 +1879,16 @@ fun EditProfileScreen(
                     SoarSettings(
                         discovery = uiState.soarDiscovery,
                         country = uiState.soarCountry,
+                        discoveryList = uiState.soarDiscoveryList,
+                        customList = uiState.soarDiscoveryCustom,
+                        customListError = uiState.soarDiscoveryCustomError,
+                        customListHidden = false,
+                        discoveryError = uiState.soarDiscoveryError,
                         tcpMode = uiState.soarTcpMode,
                         onDiscoveryChange = { viewModel.updateSoarDiscovery(it) },
                         onCountryChange = { viewModel.updateSoarCountry(it) },
+                        onDiscoveryListChange = { viewModel.updateSoarDiscoveryList(it) },
+                        onCustomListChange = { viewModel.updateSoarDiscoveryCustom(it) },
                         onTcpModeChange = { viewModel.updateSoarTcpMode(it) }
                     )
                 }
@@ -3616,16 +3630,23 @@ private fun MultiResolverSettings(
 }
 
 /**
- * Soar settings: resolver discovery (with the country whose bundled resolver
- * list to try) and TCP/53 paths.
+ * Soar settings: resolver discovery (from Soar's bundled lists for a country,
+ * the app's resolver list, or a custom list) and TCP/53 paths.
  */
 @Composable
 private fun SoarSettings(
     discovery: Boolean,
     country: String,
+    discoveryList: String,
+    customList: String,
+    customListError: String?,
+    customListHidden: Boolean,
+    discoveryError: String?,
     tcpMode: String,
     onDiscoveryChange: (Boolean) -> Unit,
     onCountryChange: (String) -> Unit,
+    onDiscoveryListChange: (String) -> Unit,
+    onCustomListChange: (String) -> Unit,
     onTcpModeChange: (String) -> Unit
 ) {
     Row(
@@ -3651,9 +3672,20 @@ private fun SoarSettings(
             onCheckedChange = onDiscoveryChange
         )
     }
+    if (discoveryError != null) {
+        Text(
+            text = discoveryError,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+        )
+    }
     if (discovery) {
         Text(
-            text = "Network country: also try that country's bundled resolver list",
+            text = when (discoveryList) {
+                SoarConfig.LIST_APP -> "Discovery list: the app's resolver list (the scanner's default), then public resolvers"
+                SoarConfig.LIST_CUSTOM -> "Discovery list: your resolvers, then public resolvers"
+                else -> "Discovery list: Soar's bundled lists"
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -3662,13 +3694,65 @@ private fun SoarSettings(
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
         ) {
-            SoarConfig.DISCOVERY_COUNTRIES.forEach { cc ->
+            SoarConfig.DISCOVERY_LISTS.forEach { list ->
                 FilterChip(
-                    selected = country == cc,
-                    onClick = { onCountryChange(cc) },
-                    label = { Text(cc.ifEmpty { "Global" }) },
+                    selected = discoveryList == list,
+                    onClick = { onDiscoveryListChange(list) },
+                    label = {
+                        Text(
+                            when (list) {
+                                SoarConfig.LIST_APP -> "App list"
+                                SoarConfig.LIST_CUSTOM -> "Custom"
+                                else -> "Built-in"
+                            }
+                        )
+                    },
                     modifier = Modifier.padding(end = 4.dp)
                 )
+            }
+        }
+        when (discoveryList) {
+            SoarConfig.LIST_SOAR -> {
+                Text(
+                    text = "Network country: also try that country's bundled resolver list",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                ) {
+                    SoarConfig.DISCOVERY_COUNTRIES.forEach { cc ->
+                        FilterChip(
+                            selected = country == cc,
+                            onClick = { onCountryChange(cc) },
+                            label = { Text(cc.ifEmpty { "Global" }) },
+                            modifier = Modifier.padding(end = 4.dp)
+                        )
+                    }
+                }
+            }
+            SoarConfig.LIST_CUSTOM -> {
+                if (customListHidden) {
+                    Text(
+                        text = "Using the custom list that came with this profile",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = customList,
+                        onValueChange = onCustomListChange,
+                        label = { Text("Custom resolvers") },
+                        placeholder = { Text("e.g. 5.202.171.124\n46.100.40.59:53") },
+                        isError = customListError != null,
+                        supportingText = { Text(customListError ?: "One per line: IP or IP:port") },
+                        minLines = 3,
+                        maxLines = 8,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
     }

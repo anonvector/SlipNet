@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	soarlib "github.com/getlantern/soar"
 	"golang.org/x/net/proxy"
@@ -50,6 +51,9 @@ type SoarClient struct {
 	// country is the ISO 3166-1 alpha-2 code selecting Soar's bundled
 	// in-country resolver lists (e.g. "IR"). Empty = global list only.
 	country string
+	// candidates are extra resolvers for discovery to vet, tried before
+	// Soar's bundled lists.
+	candidates []string
 	// tcpMode controls TCP/53 paths: "auto" (default), "on", "only", "off".
 	tcpMode string
 	// safeQName is the query-name length every path starts at. 0 = Soar's
@@ -148,6 +152,16 @@ func (c *SoarClient) SetDiscovery(enabled bool, country string) {
 	c.country = strings.TrimSpace(country)
 }
 
+// SetDiscoveryCandidates sets extra resolvers for discovery to vet, tried
+// before Soar's bundled lists: "ip" or "ip:port", separated by commas or
+// whitespace. Entries that aren't IP addresses are skipped. Must be called
+// before Start.
+func (c *SoarClient) SetDiscoveryCandidates(list string) {
+	c.candidates = strings.FieldsFunc(list, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+}
+
 // SetTCPMode controls TCP/53 paths: "auto" (default) adds one for a resolver
 // whose UDP path never answers, "on" adds one for every resolver, "only"
 // uses TCP alone, "off" never. Must be called before Start.
@@ -208,7 +222,7 @@ func (c *SoarClient) Start() error {
 		Zone:      c.zone,
 		ServerKey: c.serverKey,
 		Resolvers: c.resolvers,
-		Discovery: soarlib.Discovery{Enabled: c.discovery, Country: c.country},
+		Discovery: soarlib.Discovery{Enabled: c.discovery, Country: c.country, Candidates: c.candidates},
 		SafeQName: c.safeQName,
 		TCP:       c.tcpMode,
 		Logger:    logger,
@@ -248,8 +262,8 @@ func (c *SoarClient) Start() error {
 	c.dns = newDNSResolver(client.DialContext)
 	c.running = true
 
-	log.Printf("soar: %d resolvers, discovery=%v country=%q tcp=%s, listening on %s",
-		len(c.resolvers), c.discovery, c.country, cfg.TCP, ln.Addr())
+	log.Printf("soar: %d resolvers, discovery=%v country=%q candidates=%d tcp=%s, listening on %s",
+		len(c.resolvers), c.discovery, c.country, len(c.candidates), cfg.TCP, ln.Addr())
 	if c.upstream != "" {
 		log.Printf("soar: resolver traffic goes through SOCKS5 %s (DNS over TCP)", c.upstream)
 	}

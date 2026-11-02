@@ -33,6 +33,8 @@ object SoarBridge {
      * @param listenHost Local host (default: 127.0.0.1)
      * @param discovery Discover more resolvers that carry the tunnel
      * @param country ISO country code selecting bundled resolver lists ("" = global)
+     * @param candidates Comma-separated resolvers ("ip" or "ip:port") for discovery to vet
+     *        before Soar's bundled lists ("" = bundled lists only)
      * @param tcpMode TCP/53 paths: "auto", "on", "only" or "off"
      * @param upstreamSocks SOCKS5 proxy (host:port) to send resolver traffic through, as DNS
      *        over TCP — the previous layer of a proxy chain. Null = resolvers are reached directly.
@@ -46,6 +48,7 @@ object SoarBridge {
         listenHost: String = "127.0.0.1",
         discovery: Boolean = false,
         country: String = "",
+        candidates: String = "",
         tcpMode: String = "auto",
         verbose: Boolean = false,
         upstreamSocks: String? = null,
@@ -59,6 +62,9 @@ object SoarBridge {
         Log.i(TAG, "  Public Key: ${publicKey.take(12)}...")
         Log.i(TAG, "  Listen: $listenHost:$listenPort")
         Log.i(TAG, "  Discovery: ${if (discovery) "on (${country.ifBlank { "global" }})" else "off"}")
+        if (discovery && candidates.isNotBlank()) {
+            Log.i(TAG, "  Discovery candidates: ${candidates.count { it == ',' } + 1}")
+        }
         Log.i(TAG, "  TCP/53: ${if (upstreamSocks != null) "only (through upstream SOCKS5)" else tcpMode}")
         if (upstreamSocks != null) {
             Log.i(TAG, "  Upstream SOCKS5: $upstreamSocks")
@@ -100,6 +106,9 @@ object SoarBridge {
         return try {
             val newClient = Soar.newClient(resolvers, zone, publicKey, "$listenHost:$actualPort")
             newClient.setDiscovery(discovery, country)
+            if (discovery && candidates.isNotBlank()) {
+                newClient.setDiscoveryCandidates(candidates)
+            }
             newClient.setTCPMode(tcpMode)
             newClient.setVerbose(verbose)
             if (upstreamSocks != null) {

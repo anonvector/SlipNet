@@ -224,6 +224,13 @@ data class EditProfileUiState(
     // Soar fields
     val soarDiscovery: Boolean = false,
     val soarCountry: String = "",
+    val soarDiscoveryList: String = SoarConfig.LIST_SOAR,
+    val soarDiscoveryCustom: String = "",
+    val soarDiscoveryCustomError: String? = null,
+    // A locked profile's custom list ships with its hidden resolvers: keep it, don't show it
+    val soarDiscoveryCustomHidden: Boolean = false,
+    // Discovery off with no resolvers at all (a locked profile's hidden list can be empty)
+    val soarDiscoveryError: String? = null,
     val soarTcpMode: String = SoarConfig.TCP_AUTO,
 ) {
     val useSsh: Boolean
@@ -443,6 +450,10 @@ class EditProfileViewModel @Inject constructor(
                     wsPaddingEnabled = profile.wsPaddingEnabled,
                     soarDiscovery = profile.soarDiscovery,
                     soarCountry = profile.soarCountry,
+                    soarDiscoveryList = profile.soarDiscoveryList,
+                    soarDiscoveryCustom = SoarConfig.splitCandidates(profile.soarDiscoveryCustom).joinToString("\n"),
+                    soarDiscoveryCustomHidden = profile.isLocked && profile.resolversHidden &&
+                        profile.soarDiscoveryCustom.isNotBlank(),
                     soarTcpMode = profile.soarTcpMode,
                     isLoading = false
                 )
@@ -484,7 +495,8 @@ class EditProfileViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(
             useCustomResolver = enabled,
             resolvers = if (!enabled) "" else _uiState.value.resolvers,
-            resolversError = null
+            resolversError = null,
+            soarDiscoveryError = null
         )
     }
 
@@ -637,11 +649,22 @@ class EditProfileViewModel @Inject constructor(
     }
 
     fun updateSoarDiscovery(enabled: Boolean) {
-        _uiState.value = _uiState.value.copy(soarDiscovery = enabled, resolversError = null)
+        _uiState.value = _uiState.value.copy(soarDiscovery = enabled, resolversError = null, soarDiscoveryError = null)
     }
 
     fun updateSoarCountry(country: String) {
         _uiState.value = _uiState.value.copy(soarCountry = SoarConfig.normalizeCountry(country))
+    }
+
+    fun updateSoarDiscoveryList(list: String) {
+        _uiState.value = _uiState.value.copy(
+            soarDiscoveryList = SoarConfig.normalizeDiscoveryList(list),
+            soarDiscoveryCustomError = null
+        )
+    }
+
+    fun updateSoarDiscoveryCustom(text: String) {
+        _uiState.value = _uiState.value.copy(soarDiscoveryCustom = text, soarDiscoveryCustomError = null)
     }
 
     fun updateSoarTcpMode(mode: String) {
@@ -1383,6 +1406,33 @@ class EditProfileViewModel @Inject constructor(
             }
         }
 
+        // Soar custom discovery list (a hidden one came validated with its config).
+        // It's saved whenever it's the selected list, so check it with discovery
+        // off too (an empty list is fine then). The field is hidden while discovery
+        // is off, so also flag it under the switch.
+        if (state.isSoarBased && state.soarDiscoveryList == SoarConfig.LIST_CUSTOM &&
+            !state.soarDiscoveryCustomHidden &&
+            (state.soarDiscovery || state.soarDiscoveryCustom.isNotBlank())
+        ) {
+            SoarConfig.validateCandidates(state.soarDiscoveryCustom)?.let {
+                _uiState.value = _uiState.value.copy(
+                    soarDiscoveryCustomError = it,
+                    soarDiscoveryError = if (state.soarDiscovery) null else
+                        "The custom discovery list has an error: turn on discovery to fix it"
+                )
+                hasError = true
+            }
+        }
+
+        // Soar needs a resolver or discovery. The resolver check above skips hidden
+        // resolvers, and a locked profile's hidden list can be empty.
+        if (!forScanner && state.isSoarBased && !state.soarDiscovery &&
+            state.resolversHidden && !state.useCustomResolver && state.defaultResolversList.isEmpty()
+        ) {
+            _uiState.value = _uiState.value.copy(soarDiscoveryError = "This profile has no resolvers: turn on discovery or use a custom resolver")
+            hasError = true
+        }
+
         // DNSTT/NoizDNS-specific validation
         if (state.isDnsttOrNoizOrVaydnsBased) {
             val publicKeyError = validateDnsttPublicKey(state.dnsttPublicKey)
@@ -1606,6 +1656,11 @@ class EditProfileViewModel @Inject constructor(
                     wsPaddingEnabled = if (state.isVless) state.wsPaddingEnabled else false,
                     soarDiscovery = if (state.isSoarBased) state.soarDiscovery else false,
                     soarCountry = if (state.isSoarBased) state.soarCountry else "",
+                    soarDiscoveryList = if (state.isSoarBased) state.soarDiscoveryList else SoarConfig.LIST_SOAR,
+                    // Kept only while it's the selected list
+                    soarDiscoveryCustom = if (state.isSoarBased && state.soarDiscoveryList == SoarConfig.LIST_CUSTOM) {
+                        SoarConfig.normalizeCandidates(state.soarDiscoveryCustom)
+                    } else "",
                     soarTcpMode = if (state.isSoarBased) state.soarTcpMode else SoarConfig.TCP_AUTO
                 )
 

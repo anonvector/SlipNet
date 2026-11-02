@@ -25,6 +25,11 @@ interface ResolverScannerRepository {
     fun getDefaultResolverTierBoundaries(): List<Int>
 
     /**
+     * The default list in scan order: the first tier as listed, every later tier shuffled.
+     */
+    fun getDefaultResolversShuffled(): List<String>
+
+    /**
      * Parse a text file content into a list of IP addresses
      */
     fun parseResolverList(content: String): List<String>
