@@ -313,12 +313,13 @@ class ConfigImporter @Inject constructor() {
             "27" -> parseProfileV27(fields, lineNum)
             "28" -> parseProfileV28(fields, lineNum)
             "29" -> parseProfileV29(fields, lineNum)
+            "30" -> parseProfileV30(fields, lineNum)
             else -> {
                 // Forward compatibility: try the highest known parser for newer versions.
                 // Extra trailing fields are safely ignored (parsers only check minimum count).
                 val versionNum = version.toIntOrNull()
-                if (versionNum != null && versionNum > 29) {
-                    parseProfileV29(fields, lineNum)
+                if (versionNum != null && versionNum > 30) {
+                    parseProfileV30(fields, lineNum)
                 } else {
                     ProfileParseResult.Error("Line $lineNum: Unsupported version '$version'")
                 }
@@ -2493,11 +2494,44 @@ class ConfigImporter @Inject constructor() {
             SoarConfig.validatePublicKey(profile.dnsttPublicKey)?.let {
                 return ProfileParseResult.Error("Line $lineNum: $it")
             }
-            if (profile.resolvers.isEmpty() && !profile.resolversHidden && !soarDiscovery) {
+            // Hidden resolvers are already in profile.resolvers (parseProfileV17)
+            if (profile.resolvers.isEmpty() && !soarDiscovery) {
                 return ProfileParseResult.Error("Line $lineNum: Soar profiles need a resolver or resolver discovery")
             }
         }
         return ProfileParseResult.Success(profile)
+    }
+
+    // v30 adds the Soar discovery list (position 82: "soar", "app" or "custom")
+    // and the custom list (83).
+    private fun parseProfileV30(fields: List<String>, lineNum: Int): ProfileParseResult {
+        val baseResult = parseProfileV29(fields, lineNum)
+        if (baseResult !is ProfileParseResult.Success) return baseResult
+
+        val isSoar = baseResult.profile.tunnelType == TunnelType.SOAR ||
+            baseResult.profile.tunnelType == TunnelType.SOAR_SSH
+        val discoveryList = if (isSoar && fields.size > 82) {
+            SoarConfig.normalizeDiscoveryList(fields[82])
+        } else SoarConfig.LIST_SOAR
+        // Like the editor, keep the custom list only while it's the selected list
+        val discoveryCustom = if (discoveryList == SoarConfig.LIST_CUSTOM && fields.size > 83) {
+            SoarConfig.normalizeCandidates(fields[83])
+        } else ""
+
+        // Stored even with discovery off, so check it then too (empty is fine then)
+        if (discoveryList == SoarConfig.LIST_CUSTOM &&
+            (baseResult.profile.soarDiscovery || discoveryCustom.isNotEmpty())
+        ) {
+            SoarConfig.validateCandidates(discoveryCustom)?.let {
+                return ProfileParseResult.Error("Line $lineNum: $it")
+            }
+        }
+        return ProfileParseResult.Success(
+            baseResult.profile.copy(
+                soarDiscoveryList = discoveryList,
+                soarDiscoveryCustom = discoveryCustom
+            )
+        )
     }
 
     private fun parseResolvers(resolversStr: String): List<DnsResolver> {

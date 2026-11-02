@@ -91,6 +91,18 @@ class ResolverScannerRepositoryImpl @Inject constructor(
         return cachedTierBoundaries
     }
 
+    override fun getDefaultResolversShuffled(): List<String> {
+        val defaultResolvers = getDefaultResolvers()
+        val boundaries = getDefaultResolverTierBoundaries()
+        Log.d("ResolverScanner", "Shuffle default: tiers=${boundaries.size + 1}, boundaries=$boundaries, total=${defaultResolvers.size}")
+        // First tier (before first marker) stays in order; all others are shuffled
+        val indices = listOf(0) + boundaries + listOf(defaultResolvers.size)
+        return indices.zipWithNext().flatMapIndexed { i, (from, to) ->
+            val tier = defaultResolvers.subList(from, to)
+            if (i == 0) tier else tier.shuffled()
+        }
+    }
+
     override fun parseResolverList(content: String): List<String> {
         return parseResolverList(java.io.BufferedReader(java.io.StringReader(content)))
     }

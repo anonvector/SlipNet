@@ -19,7 +19,8 @@ import javax.inject.Singleton
  * v24|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|dnsttPublicKey|socksUsername|socksPassword|sshEnabled|sshUsername|sshPassword|sshPort|forwardDnsThroughSsh|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivateKey(b64)|sshKeyPassphrase(b64)|torBridgeLines(b64)|dnsttAuthoritative|naivePort|naiveUsername|naivePassword(b64)|isLocked|lockPasswordHash|expirationDate|allowSharing|boundDeviceId|resolversHidden|hiddenResolvers|noizdnsStealth|dnsPayloadSize|socks5ServerPort|vaydnsDnsttCompat|vaydnsRecordType|vaydnsMaxQnameLen|vaydnsRps|vaydnsIdleTimeout|vaydnsKeepalive|vaydnsUdpTimeout|vaydnsMaxNumLabels|vaydnsClientIdSize|sshTlsEnabled|sshTlsSni|sshHttpProxyHost|sshHttpProxyPort|sshHttpProxyCustomHost|sshWsEnabled|sshWsPath|sshWsUseTls|sshWsCustomHost|sshPayload(b64)|resolverMode|rrSpreadCount
  *
  * v25–v28 append VLESS / SNI-fragmentation fields (positions 62–78); v29 appends
- * soarDiscovery|soarCountry|soarTcpMode (positions 79–81).
+ * soarDiscovery|soarCountry|soarTcpMode (positions 79–81); v30 appends
+ * soarDiscoveryList|soarDiscoveryCustom (positions 82–83).
  *
  * Resolvers format (comma-separated): host:port:auth,host:port:auth
  */
@@ -31,7 +32,7 @@ class ConfigExporter @Inject constructor() {
         const val ENCRYPTED_SCHEME = "slipnet-enc://"
         /** Scheme for password-encrypted multi-profile bundles (see [exportAllProfilesEncrypted]). */
         const val BUNDLE_ENCRYPTED_SCHEME = "slipnet-bundle-enc://"
-        const val VERSION = "29"
+        const val VERSION = "30"
         const val MODE_SLIPSTREAM = "ss"
         const val MODE_SLIPSTREAM_SSH = "slipstream_ssh"
         const val MODE_DNSTT = "dnstt"
@@ -286,7 +287,10 @@ class ConfigExporter @Inject constructor() {
             // v29: Soar resolver discovery, discovery country, TCP/53 mode
             if (profile.soarDiscovery) "1" else "0",
             sanitize(profile.soarCountry),
-            sanitize(profile.soarTcpMode)
+            sanitize(profile.soarTcpMode),
+            // v30: Soar discovery list ("soar", "app" or "custom") and the custom list
+            sanitize(profile.soarDiscoveryList),
+            sanitize(profile.soarDiscoveryCustom)
         ).joinToString(FIELD_DELIMITER)
     }
 

@@ -68,7 +68,7 @@ SlipNet supports multiple tunnel types with optional SSH chaining:
 - **Multiple Tunnel Types**: DNSTT, NoizDNS, VayDNS, Soar, Slipstream, SSH, NaiveProxy, DOH, and Tor with optional SSH chaining
 - **NoizDNS**: DPI-resistant DNS tunneling with optional stealth mode
 - **VayDNS**: Optimized DNS tunneling with configurable wire format, record types, QNAME lengths, and rate limiting
-- **Soar**: DNS tunneling over all configured resolvers at once, with authenticated resolver discovery and TCP/53 fallback
+- **Soar**: DNS tunneling over all configured resolvers at once, with authenticated resolver discovery (from Soar's bundled lists, the app's resolver list, or your own) and TCP/53 fallback
 - **SSH Tunneling**: Chain SSH through DNSTT, NoizDNS, VayDNS, Soar, Slipstream, or NaiveProxy, or use standalone SSH
 - **SSH over TLS**: Wrap SSH in TLS with custom SNI for domain fronting and DPI bypass
 - **SSH over WebSocket**: Tunnel SSH through WebSocket (ws/wss) for CDN-based proxying (Cloudflare, etc.)

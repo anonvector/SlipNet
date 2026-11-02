@@ -167,6 +167,11 @@ data class ServerProfile(
     // Soar: ISO 3166-1 alpha-2 code selecting the bundled in-country resolver
     // lists used by discovery ("IR", "RU", "CN"; "" = global list only)
     val soarCountry: String = "",
+    // Soar: discovery candidates — "soar" (Soar's bundled lists, by soarCountry),
+    // "app" (the app's resolver list) or "custom" (soarDiscoveryCustom)
+    val soarDiscoveryList: String = "soar",
+    // Soar: the custom discovery list, comma-separated "ip" or "ip:port"
+    val soarDiscoveryCustom: String = "",
     // Soar: TCP/53 paths — "auto" (TCP for resolvers whose UDP never answers),
     // "on" (TCP alongside UDP), "only" (TCP alone), "off"
     val soarTcpMode: String = "auto"

@@ -261,6 +261,19 @@ func TestNewClientResolvers(t *testing.T) {
 	}
 }
 
+func TestSetDiscoveryCandidates(t *testing.T) {
+	c := &SoarClient{}
+	c.SetDiscoveryCandidates(" 5.202.171.124,46.100.40.59:53\n\n[2001:db8::1]:53 \t 9.9.9.9,,")
+	want := []string{"5.202.171.124", "46.100.40.59:53", "[2001:db8::1]:53", "9.9.9.9"}
+	if fmt.Sprint(c.candidates) != fmt.Sprint(want) {
+		t.Errorf("candidates = %v, want %v", c.candidates, want)
+	}
+	c.SetDiscoveryCandidates("")
+	if len(c.candidates) != 0 {
+		t.Errorf("candidates = %v, want none", c.candidates)
+	}
+}
+
 // TestSocksHandshakeMethods: JSch (SSH over Soar) offers no-auth and user/pass together; some
 // clients offer only user/pass. Both must reach the CONNECT, here by domain name.
 func TestSocksHandshakeMethods(t *testing.T) {

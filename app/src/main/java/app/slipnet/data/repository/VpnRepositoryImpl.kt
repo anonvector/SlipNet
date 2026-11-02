@@ -8,6 +8,7 @@ import app.slipnet.domain.model.ServerProfile
 import app.slipnet.domain.model.TrafficStats
 import app.slipnet.domain.model.DnsResolver
 import app.slipnet.domain.model.DnsTransport
+import app.slipnet.domain.model.SoarConfig
 import app.slipnet.domain.model.TunnelType
 import app.slipnet.domain.repository.ResolverScannerRepository
 import app.slipnet.domain.repository.VpnRepository
@@ -547,6 +548,15 @@ class VpnRepositoryImpl @Inject constructor(
         val proxyPort = portOverride ?: preferencesDataStore.proxyListenPort.first()
         val proxyHost = hostOverride ?: preferencesDataStore.proxyListenAddress.first()
 
+        // Discovery candidates are vetted before Soar's bundled global list. Soar's
+        // in-country lists apply only when discovering from its own lists.
+        val (discoveryCountry, discoveryCandidates) = when {
+            !profile.soarDiscovery -> profile.soarCountry to emptyList<String>()
+            profile.soarDiscoveryList == SoarConfig.LIST_APP -> "" to resolverScanner.getDefaultResolversShuffled()
+            profile.soarDiscoveryList == SoarConfig.LIST_CUSTOM -> "" to SoarConfig.splitCandidates(profile.soarDiscoveryCustom)
+            else -> profile.soarCountry to emptyList<String>()
+        }
+
         val result = SoarBridge.startClient(
             resolvers = resolvers,
             zone = profile.domain,
@@ -554,7 +564,8 @@ class VpnRepositoryImpl @Inject constructor(
             listenPort = proxyPort,
             listenHost = proxyHost,
             discovery = profile.soarDiscovery,
-            country = profile.soarCountry,
+            country = discoveryCountry,
+            candidates = discoveryCandidates.joinToString(","),
             tcpMode = profile.soarTcpMode,
             verbose = preferencesDataStore.debugLogging.first(),
             upstreamSocks = socksProxyAddr,
