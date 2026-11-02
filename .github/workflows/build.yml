@@ -28,6 +28,10 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The default also installs the legacy "tools" package, which
+          # current sdkmanager no longer finds
+          packages: 'platform-tools'
 
       - name: Install Android NDK
         run: |
