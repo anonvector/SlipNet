@@ -136,7 +136,8 @@ class ConfigImporter @Inject constructor() {
         private const val V16_FIELD_COUNT = 36
         private const val V17_FIELD_COUNT = 38
         private const val V18_FIELD_COUNT = 41
-        private const val CURRENT_MAX_VERSION = 29
+        // Newest format this build reads: the one it exports
+        private val CURRENT_MAX_VERSION = ConfigExporter.VERSION.toInt()
         private const val VLESS_SCHEME = "vless://"
     }
 
